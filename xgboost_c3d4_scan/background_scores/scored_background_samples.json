@@ -1,0 +1,31 @@
+{
+  "metadata": {
+    "model_file": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/xgboost_c3d4_scan/sm_optimization/signal_background_xgboost.json",
+    "threshold": 0.904,
+    "luminosity_fb_inverse": 3000.0,
+    "expected_preselected_events_total": 5.0499979828883355,
+    "expected_selected_events_total": 0.0021336794960578245,
+    "effective_sigma_eff_fb_total": 0.00014610026611082598,
+    "raw_sigma_eff_fb_total": 0.0002680832041589006
+  },
+  "backgrounds": [
+    {
+      "file": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/Backgrounds/events/HW-AlpGen8Q-LHEWriter-Reweighted_var.smearCMS.root",
+      "entries": 2269,
+      "selected_entries": 2,
+      "threshold": 0.904,
+      "xsec_fb": 0.6345000000000001,
+      "rate_factor": 0.5449810500781249,
+      "effective_xsec_fb": 0.34579047627457027,
+      "generated_events": 150000,
+      "expected_preselected_events": 5.0499979828883355,
+      "expected_selected_events": 0.0021336794960578245,
+      "expected_selected_error": 0.0015240044427830405,
+      "raw_sigma_eff_fb": 0.0002680832041589006,
+      "effective_sigma_eff_fb": 0.00014610026611082598,
+      "weighted_efficiency": 0.000422510960061309,
+      "raw_weight_efficiency": 0.00042251096006130895,
+      "mean_score": 0.14088119592667572
+    }
+  ]
+}

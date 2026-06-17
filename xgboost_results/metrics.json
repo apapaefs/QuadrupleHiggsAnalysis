@@ -1,0 +1,115 @@
+{
+  "n_events": 2524,
+  "n_train": 1640,
+  "n_test": 884,
+  "test_size": 0.35,
+  "seed": 12345,
+  "luminosity_fb_inverse": 3000.0,
+  "systematics": 0.0,
+  "accuracy_threshold_0p5": 0.8054298642533937,
+  "auc_unweighted": 0.8751630093539193,
+  "auc_weighted": 0.8727402073168945,
+  "best_threshold": {
+    "threshold": 0.9,
+    "signal_events": 0.0035794944000000005,
+    "background_events": 0.022141785409646415,
+    "significance": 0.024055554301163337,
+    "signal_efficiency": 0.276657060518732,
+    "background_efficiency": 0.01007255339098721
+  },
+  "confusion_matrix_at_best_threshold": [
+    [
+      531,
+      6
+    ],
+    [
+      251,
+      96
+    ]
+  ],
+  "expected_preselected_signal_events": 0.036913536,
+  "expected_preselected_background_events": 6.190522882395992,
+  "mc_event_counts": {
+    "signal_entries_read": 990,
+    "signal_generated_events": 10000,
+    "signal_known_generated_events": 10000,
+    "signal_files": 1,
+    "background_entries_read": 1534,
+    "background_generated_events": 150000,
+    "background_known_generated_events": 150000,
+    "background_files": 1
+  },
+  "signal_files": [
+    {
+      "file": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/Signals/events/HW-gg_hhhh_SM_var.smearCMS.root",
+      "entries": 990,
+      "sum_weight": 990.0,
+      "xsec_fb": 0.000124288,
+      "rate_factor": 1.0,
+      "effective_xsec_fb": 0.000124288,
+      "generated_events": 10000,
+      "expected_preselected_events": 0.036913536
+    }
+  ],
+  "background_files": [
+    {
+      "file": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/Backgrounds/events/HW-AlpGen8Q-LHEWriter-Reweighted_var.smearCMS.root",
+      "entries": 1534,
+      "sum_weight": 487.8268622849481,
+      "xsec_fb": 0.6345000000000001,
+      "rate_factor": 1.0,
+      "effective_xsec_fb": 0.6345000000000001,
+      "generated_events": 150000,
+      "expected_preselected_events": 6.190522882395992
+    }
+  ],
+  "top_features": [
+    [
+      "chi8",
+      0.0933726578950882
+    ],
+    [
+      "bjet5_pt",
+      0.08033285290002823
+    ],
+    [
+      "bjet3_pt",
+      0.06506738811731339
+    ],
+    [
+      "bjet4_pt",
+      0.058153413236141205
+    ],
+    [
+      "dr_hh_12",
+      0.05791443586349487
+    ],
+    [
+      "delta_m_med2",
+      0.04850532114505768
+    ],
+    [
+      "dr_bb_h1",
+      0.047245416790246964
+    ],
+    [
+      "delta_m_max",
+      0.04400711879134178
+    ],
+    [
+      "dr_hh_13",
+      0.04236505553126335
+    ],
+    [
+      "bjet6_pt",
+      0.03786202147603035
+    ]
+  ],
+  "outputs": {
+    "model": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/xgboost_results/signal_background_xgboost.json",
+    "metrics": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/xgboost_results/metrics.json",
+    "scores": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/xgboost_results/scores.csv",
+    "roc": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/xgboost_results/roc.png",
+    "feature_importance": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/xgboost_results/feature_importance.png"
+  }
+}

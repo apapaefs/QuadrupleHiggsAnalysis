@@ -1,0 +1,115 @@
+{
+  "n_events": 3259,
+  "n_train": 2118,
+  "n_test": 1141,
+  "test_size": 0.35,
+  "seed": 12345,
+  "luminosity_fb_inverse": 3000.0,
+  "systematics": 0.0,
+  "accuracy_threshold_0p5": 0.8378615249780894,
+  "auc_unweighted": 0.8862615146741775,
+  "auc_weighted": 0.8842530909848202,
+  "best_threshold": {
+    "threshold": 0.904,
+    "signal_events": 7.247346316648198e-05,
+    "background_events": 0.0021336794960578245,
+    "significance": 0.0015689692167879506,
+    "signal_efficiency": 0.08933717579250723,
+    "background_efficiency": 0.0011918932669100493
+  },
+  "confusion_matrix_at_best_threshold": [
+    [
+      792,
+      2
+    ],
+    [
+      316,
+      31
+    ]
+  ],
+  "expected_preselected_signal_events": 0.0023144751140263594,
+  "expected_preselected_background_events": 5.0499979828883355,
+  "mc_event_counts": {
+    "signal_entries_read": 990,
+    "signal_generated_events": 10000,
+    "signal_known_generated_events": 10000,
+    "signal_files": 1,
+    "background_entries_read": 2269,
+    "background_generated_events": 150000,
+    "background_known_generated_events": 150000,
+    "background_files": 1
+  },
+  "signal_files": [
+    {
+      "file": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/Signals/events/HW-gg_hhhh_SM_var.smearCMS.root",
+      "entries": 990,
+      "sum_weight": 990.0,
+      "xsec_fb": 0.000124288,
+      "rate_factor": 0.06269990265972783,
+      "effective_xsec_fb": 7.792845501772253e-06,
+      "generated_events": 10000,
+      "expected_preselected_events": 0.0023144751140263594
+    }
+  ],
+  "background_files": [
+    {
+      "file": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/Backgrounds/events/HW-AlpGen8Q-LHEWriter-Reweighted_var.smearCMS.root",
+      "entries": 2269,
+      "sum_weight": 730.2106809440368,
+      "xsec_fb": 0.6345000000000001,
+      "rate_factor": 0.5449810500781249,
+      "effective_xsec_fb": 0.34579047627457027,
+      "generated_events": 150000,
+      "expected_preselected_events": 5.0499979828883355
+    }
+  ],
+  "top_features": [
+    [
+      "chi8",
+      0.09910687804222107
+    ],
+    [
+      "bjet5_pt",
+      0.0874052420258522
+    ],
+    [
+      "bjet4_pt",
+      0.07154978066682816
+    ],
+    [
+      "dr_hh_12",
+      0.06797320395708084
+    ],
+    [
+      "delta_m_med2",
+      0.05235226824879646
+    ],
+    [
+      "delta_m_max",
+      0.04678245633840561
+    ],
+    [
+      "dr_bb_h1",
+      0.043983250856399536
+    ],
+    [
+      "bjet3_pt",
+      0.04316336661577225
+    ],
+    [
+      "bjet2_pt",
+      0.043077655136585236
+    ],
+    [
+      "dr_hh_13",
+      0.04296997934579849
+    ]
+  ],
+  "outputs": {
+    "model": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/xgboost_c3d4_scan/sm_optimization/signal_background_xgboost.json",
+    "metrics": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/xgboost_c3d4_scan/sm_optimization/metrics.json",
+    "scores": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/xgboost_c3d4_scan/sm_optimization/scores.csv",
+    "roc": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/xgboost_c3d4_scan/sm_optimization/roc.png",
+    "feature_importance": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/xgboost_c3d4_scan/sm_optimization/feature_importance.png"
+  }
+}

@@ -1,0 +1,202 @@
+##############################################################
+# Create a cuts object		                             
+# in this case the cuts objects removes *all* cuts that will
+# be applied within Herwig
+##############################################################
+cd /Herwig/EventHandlers
+create ThePEG::Cuts   /Herwig/Cuts/NoCuts
+
+#############################################################
+# Create a Les Houches file event
+# handler (set up & assigned below)
+#############################################################
+mkdir LesHouches
+cd LesHouches
+library LesHouches.so
+cd /Herwig/EventHandlers
+create ThePEG::LesHouchesFileReader theLHReader  LesHouches.so
+
+cd /Herwig/Particles
+create ThePEG::ParticleData eta0
+setup eta0 99925 eta0 0.0 0.0 0.0 0.0 0 0 0 1
+
+#############################################################
+# Create LHAPDF (set up & assigned below) ...            #
+#############################################################
+ cd /Herwig/Partons
+create ThePEG::LHAPDF thePDFset ThePEGLHAPDF.so
+
+#############################################################
+# Setup the Les Houches event handler ...                   #
+#############################################################
+cd /Herwig/EventHandlers
+
+create ThePEG::LesHouchesEventHandler LesHouchesHandler
+insert LesHouchesHandler:LesHouchesReaders[0] theLHReader
+set LesHouchesHandler:PartonExtractor /Herwig/Partons/PPExtractor
+
+set theLHReader:WeightWarnings    false # remove the weight warnings (not important)
+
+
+# this sets up the parton extractor ( do not change )
+# set LesHouchesHandler:PartonExtractor /Herwig/Partons/QCDExtractor
+#set LesHouchesHandler:StatLevel 2 # statistics information level
+
+set LesHouchesHandler:WeightOption VarNegWeight # handle negative weights as well 
+
+# set up ShowerHandler/ClusterHandler/DecayHandler
+set LesHouchesHandler:CascadeHandler /Herwig/Shower/ShowerHandler
+set LesHouchesHandler:HadronizationHandler /Herwig/Hadronization/ClusterHadHandler
+set LesHouchesHandler:DecayHandler /Herwig/Decays/DecayHandler
+
+# Input event file name:
+set theLHReader:FileName /mnt/ssd2/Projects/4H/MG5_aMC_v3_5_15/gg_4h_c3d4/Events/run_gg_4h_4_0.707107_0.0/unweighted_events.lhe.gz
+
+##################################################
+#  Shower parameters
+##################################################
+# normally, you want
+# the scale supplied in the event files (SCALUP)
+# to be used as a pT veto scale in the parton shower
+set /Herwig/Shower/ShowerHandler:MaxPtIsMuF Yes
+set /Herwig/Shower/ShowerHandler:RestrictPhasespace Yes
+# MC@NLO settings
+#set /Herwig/Shower/KinematicsReconstructor:InitialInitialBoostOption LongTransBoost
+#set /Herwig/Shower/KinematicsReconstructor:ReconstructionOption General
+#set /Herwig/Shower/KinematicsReconstructor:FinalStateReconOption Default
+#set /Herwig/Shower/KinematicsReconstructor:InitialStateReconOption Rapidity
+set /Herwig/Shower/ShowerHandler:SpinCorrelations No
+# Shower parameters
+# treatment of wide angle radiation
+#set /Herwig/Shower/PartnerFinder:PartnerMethod Random
+#set /Herwig/Shower/PartnerFinder:ScaleChoice Partner
+# fix issue before 7.0.4 
+#set /Herwig/Shower/GtoQQbarSplitFn:AngularOrdered Yes
+#set /Herwig/Shower/GammatoQQbarSplitFn:AngularOrdered Yes
+
+######################################################### /unweighted_events.lhe.gz
+# Option to off shower / hadronization / decays / MPI.  #
+# if all these are commented out, then full simulation
+# occurs
+######################################################### 
+cd /Herwig/EventHandlers 
+#set LesHouchesHandler:CascadeHandler        NULL 
+#set LesHouchesHandler:HadronizationHandler  NULL
+# remove the quark check in case hadronization is turned off
+#set /Herwig/Analysis/Basics:CheckQuark false
+#set LesHouchesHandler:DecayHandler          NULL 
+# The handler for multiple parton interactions 
+#set /Herwig/Shower/ShowerHandler:MPIHandler       NULL
+
+#############################################################
+# Set up the LHAPDF
+# NNPDF23_nlo_as_0119 is the default PDF for MG5_aMC
+#############################################################
+cd /Herwig/Partons
+
+set /Herwig/Partons/thePDFset:PDFName NNPDF23_nlo_as_0119
+set /Herwig/Partons/RemnantDecayer:AllowTop Yes
+set /Herwig/EventHandlers/theLHReader:PDFA /Herwig/Partons/thePDFset
+set /Herwig/EventHandlers/theLHReader:PDFB /Herwig/Partons/thePDFset
+set /Herwig/Shower/ShowerHandler:PDFA /Herwig/Partons/thePDFset
+set /Herwig/Shower/ShowerHandler:PDFB /Herwig/Partons/thePDFset
+set /Herwig/Partons/MPIExtractor:FirstPDF /Herwig/Partons/thePDFset
+set /Herwig/Partons/MPIExtractor:SecondPDF /Herwig/Partons/thePDFset
+set /Herwig/Partons/thePDFset:RemnantHandler  /Herwig/Partons/HadronRemnants
+
+
+##################################################
+# Technical parameters for this run
+# no need to be modified in general
+##################################################
+cd /Herwig/Generators
+
+# theGenerator represents the Les Houches Handler generator
+create ThePEG::EventGenerator theGenerator
+set theGenerator:RandomNumberGenerator /Herwig/Random
+set theGenerator:StandardModelParameters /Herwig/Model
+set theGenerator:EventHandler /Herwig/EventHandlers/LesHouchesHandler
+set theGenerator:EventHandler:Cuts /Herwig/Cuts/NoCuts
+
+set theGenerator:NumberOfEvents 10000
+set theGenerator:RandomNumberGenerator:Seed 32638002
+set theGenerator:DebugLevel 0
+set theGenerator:PrintEvent 100
+set theGenerator:MaxErrors 10000
+
+######################################################### 
+# HwSim Analysis framework
+# several options appear here  
+######################################################### 
+
+#cd /Herwig/Generators
+library HwSim.so
+create Herwig::HwSim /Herwig/Analysis/HwSim
+insert /Herwig/Generators/theGenerator:AnalysisHandlers 0 /Herwig/Analysis/HwSim
+
+set /Herwig/Analysis/HwSim:OutputLocation events/
+
+# the type of B-Tagging. Default requires the B-hadrons to be set to stable
+set /Herwig/Analysis/HwSim:BTaggingMethod GhostBHadrons
+
+set /Herwig/Analysis/HwSim:CharmTagging Yes
+
+set /Herwig/Analysis/HwSim:OnTheFlyAnalysis No
+
+set /Herwig/Analysis/HwSim:SaveObjects No
+
+set /Herwig/Analysis/HwSim:SaveReconstructed Yes
+
+set /Herwig/Analysis/HwSim:JetAlgorithm AntiKt
+set /Herwig/Analysis/HwSim:RParameter 0.4
+
+# whether to save fat jets
+#set /Herwig/Analysis/HwSim:FatJets Yes
+#set /Herwig/Analysis/HwSim:PTCutFatJets 150.0
+#set /Herwig/Analysis/HwSim:EtaCutFatJets 6.0
+#set /Herwig/Analysis/HwSim:RFatParameter 0.8
+# prune the fat jets?
+#set /Herwig/Analysis/HwSim:PruneFatJets Yes
+
+set /Herwig/Analysis/HwSim:PTCutParticles 0.4
+set /Herwig/Analysis/HwSim:EtaCutParticles 6.0
+
+set /Herwig/Analysis/HwSim:PTCutJets 10.0
+set /Herwig/Analysis/HwSim:EtaCutJets 6.0
+
+set /Herwig/Analysis/HwSim:PTCutElectron 10.0
+set /Herwig/Analysis/HwSim:EtaCutElectron 6.0
+
+set /Herwig/Analysis/HwSim:PTCutMuon 10.0
+set /Herwig/Analysis/HwSim:EtaCutMuon 6.0
+
+set /Herwig/Analysis/HwSim:PTCutPhoton 10.0
+set /Herwig/Analysis/HwSim:EtaCutPhoton 6.0
+
+######################################################### 
+# the following are necessary for "B-tagging" 
+#########################################################
+
+######################################################### 
+# the following are necessary for "B-tagging" 
+#########################################################
+
+# set Higgs/Vector bosons to stable
+#set /Herwig/Particles/h0:Stable Stable
+#set /Herwig/Particles/W+:Stable Stable
+#set /Herwig/Particles/W-:Stable Stable
+#set /Herwig/Particles/Z0:Stable Stable
+
+# set the Higgs decays
+decaymode h0->b,bbar; 1.0 1 /Herwig/Decays/Hff
+do /Herwig/Particles/h0:SelectDecayModes h0->b,bbar;
+do /Herwig/Particles/h0:PrintDecayModes
+
+
+
+
+################ 
+# Save the run # 
+################ 
+cd /Herwig/Generators 
+saverun HW-run_gg_4h_4_0.707107_0.0 theGenerator

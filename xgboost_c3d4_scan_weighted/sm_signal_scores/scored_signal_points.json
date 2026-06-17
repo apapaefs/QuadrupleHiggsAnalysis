@@ -1,0 +1,30 @@
+{
+  "model_file": "xgboost_c3d4_scan_weighted/sm_optimization/signal_background_xgboost.json",
+  "threshold": 0.904,
+  "luminosity_fb_inverse": 3000.0,
+  "points": [
+    {
+      "file": "/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/Signals/events/HW-gg_hhhh_SM_var.smearCMS.root",
+      "run_group": "",
+      "c3": null,
+      "d4": null,
+      "entries": 990,
+      "selected_entries": 128,
+      "threshold": 0.904,
+      "xsec_fb": 0.000124288,
+      "rate_factor": 0.06269990265972783,
+      "effective_xsec_fb": 7.792845501772253e-06,
+      "generated_events": 10000,
+      "normalisation_weight": 10000.0,
+      "normalisation_source": "input_weight_sum",
+      "expected_preselected_events": 0.0023144751140263594,
+      "expected_selected_events": 0.00029924526726805454,
+      "expected_selected_error": 2.6449794715402776e-05,
+      "raw_sigma_eff_fb": 1.60695595959596e-05,
+      "effective_sigma_eff_fb": 1.0075598224513619e-06,
+      "weighted_efficiency": 0.1292929292929293,
+      "raw_weight_efficiency": 0.1292929292929293,
+      "mean_score": 0.6693386847614263
+    }
+  ]
+}

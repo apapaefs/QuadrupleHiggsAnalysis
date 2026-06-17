@@ -1,0 +1,6 @@
+/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/Backgrounds/HW-gg_to_8b.in
+/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/Backgrounds/HW-pp_to_z_6b_z_to_bb.in
+/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/Backgrounds/HW-gg_to_6b_2j.in
+/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/Backgrounds/HW-gg_to_6b_2c.in
+/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/Backgrounds/HW-gg_to_4b_4c.in
+/home/apapaefs/Projects/AlpGen/alpgen_mod_repo/4H/Backgrounds/HW-gg_to_4b_2c_2j.in

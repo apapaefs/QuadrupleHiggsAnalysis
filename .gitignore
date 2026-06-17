@@ -1,0 +1,28 @@
+# Generated event data and analysis outputs
+*.root
+*.run
+*.out
+*.log
+*.tex
+*.top
+*.dat
+*.evp
+*.evp2
+*.analysis.log
+*_var.smear*.root
+
+# Build and Python cache artifacts
+*.o
+__pycache__/
+Code/FourHiggs8bAnalysis_smear_CMS
+
+# Local OS/editor artifacts
+.DS_Store
+._*
+
+# Large or transient generated samples not meant for normal git tracking
+Backgrounds/test*.lhe
+Backgrounds/AlpGen8Q-LHEWriter-Reweighted.lhe
+Backgrounds/events/
+Signals/events/
+HerwigSignalPoints/**/events/
