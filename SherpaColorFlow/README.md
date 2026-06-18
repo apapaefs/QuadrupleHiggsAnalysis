@@ -15,8 +15,15 @@ export.
 - `patches/sherpa-lhef-color-flow-hack.patch`: portable source patch.
 - `Examples/GluonFusion_GG_4bbbar_LHE/Sherpa.yaml`: corrected `gg -> 8b`
   card following the tiresias setup.
+- `Examples/GluonFusion_GG_3bbbar_ccbar_LHE/Sherpa.yaml`: `gg -> 6b + c cbar`.
+- `Examples/GluonFusion_GG_3bbbar_2j_LHE/Sherpa.yaml`: `gg -> 6b + 2j`.
+- `Examples/GluonFusion_GG_2bbbar_2ccbar_LHE/Sherpa.yaml`: `gg -> 4b + 4c`.
+- `Examples/GluonFusion_GG_2bbbar_ccbar_2j_LHE/Sherpa.yaml`: `gg -> 4b + 2c + 2j`.
+- `Examples/GluonFusion_GG_2bbbar_4j_LHE/Sherpa.yaml`: `gg -> 4b + 4j`.
 - `Examples/PP_Z_6bbbar_Zbb_DecayOS_LHE/Sherpa.yaml`: corrected
   `p p -> Z + 6b`, `Z -> b bbar` card.
+- `sherpa/Examples/QuadrupleHiggs/`: mirrored copies of the `gg` example
+  cards inside the patched Sherpa source tree.
 - `scripts/validate_lhe_color.py`: generic LHE mass-shell and colour-flow
   validator.
 - `scripts/build_sherpa_mpi.sh`: MPI build helper.
@@ -64,7 +71,15 @@ cd runs/z6b_40000evt
 mpirun --use-hwthread-cpus -np 64 --bind-to hwthread --map-by hwthread Sherpa
 ```
 
-For the pure 8b example, replace `z6b` with `gg8b`.
+Available example keys:
+
+- `gg8b`: `gg -> 8b`
+- `gg6bcc`: `gg -> 6b + c cbar`
+- `gg6b2j`: `gg -> 6b + 2j`
+- `gg4b4c`: `gg -> 4b + 4c`
+- `gg4b2c2j`: `gg -> 4b + 2c + 2j`
+- `gg4b4j`: `gg -> 4b + 4j`
+- `z6b`: `pp -> Z + 6b`, `Z -> b bbar`
 
 ## Validate LHE output
 

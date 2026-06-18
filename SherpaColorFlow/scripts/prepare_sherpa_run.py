@@ -12,6 +12,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = {
+    "gg4b2c2j": ROOT / "Examples" / "GluonFusion_GG_2bbbar_ccbar_2j_LHE",
+    "gg4b4c": ROOT / "Examples" / "GluonFusion_GG_2bbbar_2ccbar_LHE",
+    "gg4b4j": ROOT / "Examples" / "GluonFusion_GG_2bbbar_4j_LHE",
+    "gg6b2j": ROOT / "Examples" / "GluonFusion_GG_3bbbar_2j_LHE",
+    "gg6bcc": ROOT / "Examples" / "GluonFusion_GG_3bbbar_ccbar_LHE",
     "gg8b": ROOT / "Examples" / "GluonFusion_GG_4bbbar_LHE",
     "z6b": ROOT / "Examples" / "PP_Z_6bbbar_Zbb_DecayOS_LHE",
 }
