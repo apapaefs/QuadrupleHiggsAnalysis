@@ -40,6 +40,21 @@ void SetLHEEndpoint(LHEColourFlowPlan &flows,const size_t leg,
   else flows.m_flow2[leg]=tag;
 }
 
+void SetParticleLHEFlow(Particle *const particle,
+                        const LHEColourFlowPlan &flows,
+                        const size_t leg,
+                        const bool incoming)
+{
+  if (incoming) {
+    particle->SetFlow(1,flows.m_flow2[leg]);
+    particle->SetFlow(2,flows.m_flow1[leg]);
+  }
+  else {
+    particle->SetFlow(1,flows.m_flow1[leg]);
+    particle->SetFlow(2,flows.m_flow2[leg]);
+  }
+}
+
 void RemoveEndpoint(std::vector<size_t> &ends,const size_t leg)
 {
   std::vector<size_t>::iterator eit(std::find(ends.begin(),ends.end(),leg));
@@ -364,8 +379,7 @@ bool Signal_Processes::FillBlob(Blob_List *const bloblist,Blob *const blob)
     particle->SetInfo('G');
     blob->AddToInParticles(particle);
     if (m_lhecolorhack) {
-      particle->SetFlow(1,lheflows.m_flow1[i]);
-      particle->SetFlow(2,lheflows.m_flow2[i]);
+      SetParticleLHEFlow(particle,lheflows,i,true);
     }
     else if (ampl) {
       particle->SetFlow(1,ampl->Leg(i)->Col().m_j);
@@ -383,8 +397,7 @@ bool Signal_Processes::FillBlob(Blob_List *const bloblist,Blob *const blob)
     particle->SetInfo('H');
     blob->AddToOutParticles(particle);
     if (m_lhecolorhack) {
-      particle->SetFlow(1,lheflows.m_flow1[i]);
-      particle->SetFlow(2,lheflows.m_flow2[i]);
+      SetParticleLHEFlow(particle,lheflows,i,false);
     }
     else if (ampl) {
       particle->SetFlow(1,ampl->Leg(i)->Col().m_i);

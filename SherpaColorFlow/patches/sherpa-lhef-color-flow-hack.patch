@@ -69,7 +69,7 @@ index 3c6aef200..1ed4d94ff 100644
  
  using namespace SHERPA;
  using namespace METOOLS;
-@@ -23,6 +27,195 @@ using namespace ATOOLS;
+@@ -23,6 +27,210 @@ using namespace ATOOLS;
  using namespace PHASIC;
  using namespace std;
  
@@ -84,6 +84,21 @@ index 3c6aef200..1ed4d94ff 100644
 +{
 +  if (colour) flows.m_flow1[leg]=tag;
 +  else flows.m_flow2[leg]=tag;
++}
++
++void SetParticleLHEFlow(Particle *const particle,
++                        const LHEColourFlowPlan &flows,
++                        const size_t leg,
++                        const bool incoming)
++{
++  if (incoming) {
++    particle->SetFlow(1,flows.m_flow2[leg]);
++    particle->SetFlow(2,flows.m_flow1[leg]);
++  }
++  else {
++    particle->SetFlow(1,flows.m_flow1[leg]);
++    particle->SetFlow(2,flows.m_flow2[leg]);
++  }
 +}
 +
 +void RemoveEndpoint(std::vector<size_t> &ends,const size_t leg)
@@ -265,7 +280,7 @@ index 3c6aef200..1ed4d94ff 100644
  Signal_Processes::Signal_Processes(Matrix_Element_Handler* mehandler)
      : p_mehandler(mehandler), p_remnants(mehandler->GetISR()->GetRemnants()),
        m_overweight(0.0)
-@@ -37,6 +230,10 @@ Signal_Processes::Signal_Processes(Matrix_Element_Handler* mehandler)
+@@ -37,6 +245,10 @@ Signal_Processes::Signal_Processes(Matrix_Element_Handler* mehandler)
    m_cmode=mepssettings["CLUSTER_MODE"].Get<int>();
    Scoped_Settings spsettings{ Settings::GetMainSettings()["SP"] };
    m_setcolors = spsettings["SET_COLORS"].SetDefault(false).Get<bool>();
@@ -276,7 +291,7 @@ index 3c6aef200..1ed4d94ff 100644
    m_adddocumentation = spsettings["ADD_DOC"].SetDefault(false).Get<bool>();
  }
  
-@@ -73,6 +270,30 @@ bool Signal_Processes::FillBlob(Blob_List *const bloblist,Blob *const blob)
+@@ -73,6 +285,30 @@ bool Signal_Processes::FillBlob(Blob_List *const bloblist,Blob *const blob)
  {
    DEBUG_FUNC(blob->Id());
    PHASIC::Process_Base *proc(p_mehandler->Process());
@@ -307,27 +322,25 @@ index 3c6aef200..1ed4d94ff 100644
    blob->SetPosition(Vec4D(0.,0.,0.,0.));
    blob->SetTypeSpec(proc->Parent()->Name());
    Cluster_Amplitude *ampl(NULL);
-@@ -142,7 +363,11 @@ bool Signal_Processes::FillBlob(Blob_List *const bloblist,Blob *const blob)
+@@ -142,7 +378,10 @@ bool Signal_Processes::FillBlob(Blob_List *const bloblist,Blob *const blob)
      particle->SetStatus(part_status::decayed);
      particle->SetInfo('G');
      blob->AddToInParticles(particle);
 -    if (ampl) {
 +    if (m_lhecolorhack) {
-+      particle->SetFlow(1,lheflows.m_flow1[i]);
-+      particle->SetFlow(2,lheflows.m_flow2[i]);
++      SetParticleLHEFlow(particle,lheflows,i,true);
 +    }
 +    else if (ampl) {
        particle->SetFlow(1,ampl->Leg(i)->Col().m_j);
        particle->SetFlow(2,ampl->Leg(i)->Col().m_i);
      }
-@@ -157,7 +382,11 @@ bool Signal_Processes::FillBlob(Blob_List *const bloblist,Blob *const blob)
+@@ -157,7 +396,10 @@ bool Signal_Processes::FillBlob(Blob_List *const bloblist,Blob *const blob)
      particle->SetStatus(part_status::active);
      particle->SetInfo('H');
      blob->AddToOutParticles(particle);
 -    if (ampl) {
 +    if (m_lhecolorhack) {
-+      particle->SetFlow(1,lheflows.m_flow1[i]);
-+      particle->SetFlow(2,lheflows.m_flow2[i]);
++      SetParticleLHEFlow(particle,lheflows,i,false);
 +    }
 +    else if (ampl) {
        particle->SetFlow(1,ampl->Leg(i)->Col().m_i);
