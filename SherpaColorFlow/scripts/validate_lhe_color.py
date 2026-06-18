@@ -100,10 +100,10 @@ def expected_single_quark_flow(row: dict) -> list[str]:
         if pid < 0 and not (c1 == 0 and c2 != 0):
             return [f"final antiquark should carry colour2 only: {row['line']}"]
     elif status == -1:
-        if pid > 0 and not (c1 == 0 and c2 != 0):
-            return [f"incoming quark should carry crossed colour2 only: {row['line']}"]
-        if pid < 0 and not (c1 != 0 and c2 == 0):
-            return [f"incoming antiquark should carry crossed colour1 only: {row['line']}"]
+        if pid > 0 and not (c1 != 0 and c2 == 0):
+            return [f"incoming quark should carry colour1 only: {row['line']}"]
+        if pid < 0 and not (c1 == 0 and c2 != 0):
+            return [f"incoming antiquark should carry colour2 only: {row['line']}"]
     return []
 
 
@@ -172,10 +172,16 @@ def validate_event(rows: list[dict], label: str, args: argparse.Namespace) -> li
                 errors.extend(f"{label}: {err}" for err in expected_single_quark_flow(row))
         elif c1 != 0 or c2 != 0:
             errors.append(f"{label}: colourless row has nonzero colour flow: {row['line']}")
-        if c1:
-            endpoints[c1].append(("c", idx, row))
-        if c2:
-            endpoints[c2].append(("a", idx, row))
+        if row["status"] == -1:
+            if c1:
+                endpoints[c1].append(("a", idx, row))
+            if c2:
+                endpoints[c2].append(("c", idx, row))
+        else:
+            if c1:
+                endpoints[c1].append(("c", idx, row))
+            if c2:
+                endpoints[c2].append(("a", idx, row))
 
     for tag, ends in sorted(endpoints.items()):
         if len(ends) != 2:
