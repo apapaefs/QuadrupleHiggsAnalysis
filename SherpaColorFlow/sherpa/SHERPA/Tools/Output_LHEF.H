@@ -19,6 +19,7 @@ namespace SHERPA {
     std::ofstream     m_outstream;
 #endif    
     int m_bntp;
+    bool m_header_written, m_xs_set;
   public:
     Output_LHEF(const Output_Arguments &args);
     ~Output_LHEF();

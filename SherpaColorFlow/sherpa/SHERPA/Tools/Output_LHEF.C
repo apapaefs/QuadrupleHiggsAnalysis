@@ -91,7 +91,8 @@ void AssignMissingQQbarSinglet(Blob_List *const blobs)
 Output_LHEF::Output_LHEF(const Output_Arguments &args):
   Output_Base{ "LHEF" },
   m_xs(1.0), m_xserr(1.0),
-  m_max(1.0)
+  m_max(1.0),
+  m_header_written(false), m_xs_set(false)
 {
   Settings& s = Settings::GetMainSettings();
   RegisterDefaults();
@@ -119,6 +120,7 @@ void Output_LHEF::RegisterDefaults() const
   s["LHEF_BNTP"].SetDefault(0);
   s["LHEF_IDWTUP"].SetDefault(0);
   s["LHEF_ASSIGN_MISSING_QQBAR_SINGLET"].SetDefault(false);
+  s["LHEF_ENFORCE_BEAM_ORDER"].SetDefault(false);
 
   int PDFSUP1_default{ rpa->gen.PDF(0)?rpa->gen.PDF(0)->LHEFNumber():-1 };
   int PDFSUP2_default{ rpa->gen.PDF(1)?rpa->gen.PDF(1)->LHEFNumber():-1 };
@@ -142,6 +144,9 @@ void Output_LHEF::ChangeFile()
 
 void Output_LHEF::Header()
 {
+  if (m_header_written) return;
+  if (!m_xs_set) return;
+
   Settings& s = Settings::GetMainSettings();
 
   const auto path = s.GetPath();
@@ -200,6 +205,7 @@ void Output_LHEF::Header()
 	     <<std::setw(18)<<m_max<<" "
 	     <<std::setw(4)<<NPRUP<<std::endl;
   m_outstream<<"</init>"<<std::endl;
+  m_header_written=true;
 }
 
 void Output_LHEF::Output(Blob_List* blobs)
@@ -208,6 +214,7 @@ void Output_LHEF::Output(Blob_List* blobs)
   if (s["LHEF_ASSIGN_MISSING_QQBAR_SINGLET"].Get<bool>()) {
     AssignMissingQQbarSinglet(blobs);
   }
+  Header();
 
   const auto weight(blobs->Weight());
   Blob *sp(blobs->FindFirst(btp::Signal_Process));
@@ -245,7 +252,22 @@ void Output_LHEF::Output(Blob_List* blobs)
 		 <<std::setw(18)<<SCALUP<<" "
 		 <<std::setw(18)<<AQEDUP<<" "
 		 <<std::setw(18)<<AQCDUP<<std::endl;
-      for (int i=0;i<(*blit)->NInP();i++) {
+      std::vector<int> input_order;
+      for (int i=0;i<(*blit)->NInP();++i) input_order.push_back(i);
+      if (s["LHEF_ENFORCE_BEAM_ORDER"].Get<bool>()) {
+        if ((*blit)->NInP()!=2) {
+          THROW(fatal_error,"LHEF_ENFORCE_BEAM_ORDER requires exactly two incoming particles.");
+        }
+        Vec4D p0((*blit)->InParticle(0)->Momentum());
+        Vec4D p1((*blit)->InParticle(1)->Momentum());
+        if (m_bntp) {
+          cms.Boost(p0);
+          cms.Boost(p1);
+        }
+        if (p0[3]<p1[3]) std::swap(input_order[0],input_order[1]);
+      }
+      for (size_t oi=0;oi<input_order.size();++oi) {
+        const int i(input_order[oi]);
 	Vec4D p((*blit)->InParticle(i)->Momentum());
 	if (m_bntp) cms.Boost(p);
 	m_outstream<<std::setw(8)<<(long int)(*blit)->InParticle(i)->Flav()<<" -1  0  0 "
@@ -279,6 +301,10 @@ void Output_LHEF::Output(Blob_List* blobs)
 
 void Output_LHEF::Footer()
 {
+  if (!m_header_written) {
+    m_xs_set=true;
+    Header();
+  }
   string footer = std::string("</LesHouchesEvents>");
   m_outstream<<footer<<std::endl;
 }
@@ -289,6 +315,7 @@ void Output_LHEF::SetXS(const ATOOLS::Weights_Map& xs,
   m_xs = xs.Nominal();
   m_xserr = xserr.Nominal();
   m_max =1.;
+  m_xs_set=true;
 }
 
 DECLARE_GETTER(Output_LHEF,"LHEF",

@@ -139,6 +139,14 @@ def validate_event(rows: list[dict], label: str, args: argparse.Namespace) -> li
 
     if args.expect_incoming is not None and len(incoming) != args.expect_incoming:
         errors.append(f"{label}: expected {args.expect_incoming} incoming rows, found {len(incoming)}")
+    if args.require_beam_order:
+        if len(incoming) != 2:
+            errors.append(f"{label}: beam-order check requires exactly two incoming rows, found {len(incoming)}")
+        elif incoming[0]["pz"] < incoming[1]["pz"]:
+            errors.append(
+                f"{label}: incoming rows are not beam ordered: "
+                f"pz(row1)={incoming[0]['pz']}, pz(row2)={incoming[1]['pz']}"
+            )
     if args.expect_final_count is not None and len(final) != args.expect_final_count:
         errors.append(f"{label}: expected {args.expect_final_count} final rows, found {len(final)}")
     if args.expect_final_abs_pdg is not None:
@@ -229,6 +237,8 @@ def main() -> int:
     parser.add_argument("--forbid-final-pdg", type=int, action="append", default=[])
     parser.add_argument("--require-first-qqbar-singlet", type=int)
     parser.add_argument("--require-isolated-qqbar-singlet", type=int)
+    parser.add_argument("--require-beam-order", action="store_true",
+                        help="require the first incoming row to have pz >= the second incoming row")
     parser.add_argument("--mass-status", type=int, nargs="+", default=[-1, 1])
     parser.add_argument("--mass-abs-tol", type=float, default=1.0e-5)
     parser.add_argument("--mass-rel-tol", type=float, default=1.0e-6)
