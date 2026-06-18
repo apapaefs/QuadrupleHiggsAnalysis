@@ -1,0 +1,21 @@
+BEAMS:         [22, 22]
+BEAM_ENERGIES: [45.6, 45.6]
+
+PDF_LIBRARY: SASGSherpa
+PDF_SET: SAS2M
+ME_GENERATORS: [Comix]
+HADRON_DECAYS:
+  Max_Proper_Lifetime: 100
+
+ALPHAS(MZ): 0.1188
+ORDER_ALPHAS: 1
+
+PARTICLE_DATA: {5: {Massive: true}}
+
+PROCESSES:
+- 93 93 -> 5 -5:
+    Order: {QCD: 2, EW: 0}
+
+SELECTORS:
+- [Mass, 13, -13, 10., 10000000.]
+- [PT, 13, 5., 100000000.]

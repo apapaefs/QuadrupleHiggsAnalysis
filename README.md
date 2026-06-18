@@ -19,6 +19,12 @@ and c3/d4 limit plotting.
 files and cross sections. The generated `HW-*.in` files are included for the
 current background samples.
 
+## Sherpa Colour-Flow Generation
+
+`SherpaColorFlow/` contains a vendored patched Sherpa source tree, corrected
+8b and `Z+6b, Z -> b bbar` LHE cards, MPI build/run helpers, and a general LHE
+colour-flow validator.
+
 ## Data Policy
 
 Generated ROOT files, Herwig logs/outputs, build products, and temporary test

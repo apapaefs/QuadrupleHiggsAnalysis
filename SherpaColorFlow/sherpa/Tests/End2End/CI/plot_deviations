@@ -1,0 +1,76 @@
+#!/usr/bin/env python
+
+import subprocess
+import yoda
+import sys
+from math import sqrt
+import matplotlib.pyplot as plt
+
+import numpy as np
+from scipy.optimize import curve_fit
+
+files = sys.argv[1:]
+
+# build yodadiff command
+yodadiff_cmd = ["yodadiff"]
+is_yoda2_or_later = int(yoda.version().split('.')[0]) >= 2
+if is_yoda2_or_later:
+    yodadiff_cmd += ["--ignore-type"]
+yodadiff_cmd += ["-d", "deviations.yoda", "-M", '/_.*,/RAW/.*'] + files
+
+popen = subprocess.Popen(yodadiff_cmd)
+popen.wait()
+
+deviations_histo = list(yoda.read("deviations.yoda").values())[0]
+
+# collect all deviations
+deviations_x = []
+deviations_y = []
+sum_of_weights = 0
+for bin in deviations_histo:
+    if bin.sumW() == 0 or np.isinf(bin.xMin()):
+        continue
+    deviations_x.append(bin.xMean())
+    deviations_y.append(bin.sumW() / bin.xWidth())
+    sum_of_weights += bin.sumW()
+
+deviations_x = np.array(deviations_x)
+deviations_y = np.array(deviations_y) / sum_of_weights
+
+plt.scatter(deviations_x, deviations_y, label="deviations")
+
+def gaussian(x, x0, sigma):
+    return np.exp(-(x - x0)**2 / (2 * sigma**2)) / (sigma * sqrt(2 * np.pi))
+
+coeff, var_matrix = curve_fit(gaussian, deviations_x, deviations_y, p0=[0, 1])
+
+x_array = np.arange(-5, 5,0.2)
+y_norm = gaussian(x_array,0,1)
+y_fit = gaussian(x_array, *coeff)
+plt.plot(x_array, y_fit, label="Gaussian fit")
+plt.plot(x_array, y_norm, label="normal distribution")
+
+mean, std = coeff
+
+plt.text(0.02, 0.98, "mean = {:.2f}\nstd = {:.2f}".format(mean, std),
+    horizontalalignment='left',
+    verticalalignment='top',
+    transform=plt.gca().transAxes)
+
+plt.legend()
+
+plt.savefig("deviations.pdf")
+
+print("The mean (standard deviation) of the bin-to-bin deviations is {:.2f} ({:.2f}) sigma.".format(mean, std))
+
+return_code = 0
+
+if abs(mean) > 0.5:
+    print("ERROR: The mean of the bin-to-bin deviations is substantially off (expect: -0.5...0.5).")
+    return_code = 1
+
+if std > 1.1:
+    print("ERROR: The standard deviation of the bin-to-bin deviations is substantially off (expect: <= 1.1).")
+    return_code = 1
+
+sys.exit(return_code)

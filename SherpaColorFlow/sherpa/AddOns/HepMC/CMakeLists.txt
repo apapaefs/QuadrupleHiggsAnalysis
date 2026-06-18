@@ -1,0 +1,13 @@
+ set(SherpaHepMC_SOURCES Output_HepMC3.C)
+ set(SherpaHepMC_HEADERS Output_HepMC3.H)
+ sherpa_create_git_info(SherpaHepMC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+
+if (HepMC3_FOUND)
+  set(SherpaHepMC3Output_SOURCES  Output_HepMC3.C)
+  list(TRANSFORM SherpaHepMC3Output_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/../HepMC/")
+  list(APPEND SherpaHepMC3Output_SOURCES ${CMAKE_CURRENT_BINARY_DIR}/Git_Info.C)
+  add_library(SherpaHepMC3Output SHARED ${SherpaHepMC3Output_SOURCES})
+  target_link_libraries(SherpaHepMC3Output PRIVATE HepMC3::HepMC3 HepMC3::search ${HepMC3_rootIO})
+  sherpa_handle_shared_library(SherpaHepMC3Output SherpaHepMC3Output)
+  add_dependencies(SherpaHepMC3Output SherpaHepMC_Git_Info)
+endif()

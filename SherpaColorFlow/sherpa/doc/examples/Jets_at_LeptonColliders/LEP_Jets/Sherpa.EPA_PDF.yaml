@@ -1,0 +1,21 @@
+BEAMS:         [11, -11]
+BEAM_ENERGIES: [500., 500.]
+BEAM_SPECTRA:  [EPA, EPA]
+
+PDF_LIBRARY: GRVSherpa
+PDF_SET: GRVLO
+ME_GENERATORS: [Comix]
+
+ALPHAS(MZ): 0.1188
+ORDER_ALPHAS: 1
+
+AMISIC:
+    nS_bins: 10
+
+PROCESSES:
+- 93 93 -> 93 93:
+    Order: {QCD: 2, EW: 0}
+
+SELECTORS:
+- [Mass, 93, 93, 10., 10000.]
+- [PT, 93, 2., 10000.]

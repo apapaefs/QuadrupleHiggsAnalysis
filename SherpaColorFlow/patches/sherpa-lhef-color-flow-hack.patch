@@ -1,0 +1,464 @@
+diff --git a/COMIX/Main/Single_Process.C b/COMIX/Main/Single_Process.C
+index 8a1f93a44..b5c675856 100644
+--- a/COMIX/Main/Single_Process.C
++++ b/COMIX/Main/Single_Process.C
+@@ -392,7 +392,9 @@ bool COMIX::Single_Process::GeneratePoint()
+   m_zero=true;
+   if (p_map!=NULL && m_lookup && p_map->m_lookup) 
+     return !(m_zero=p_map->m_zero);
+-  if (!p_int->ColorIntegrator()->GeneratePoint()) return false;
++  std::shared_ptr<PHASIC::Color_Integrator> colint(p_int->ColorIntegrator());
++  if (!colint->GeneratePoint()) return false;
++  p_int->StoreColorPoint(colint->I(),colint->J());
+   if (p_int->HelicityIntegrator()!=NULL && 
+       !p_int->HelicityIntegrator()->GeneratePoint()) return false;
+   m_zero=false;
+diff --git a/PHASIC++/Main/Process_Integrator.H b/PHASIC++/Main/Process_Integrator.H
+index ec780322c..8d3c65d11 100644
+--- a/PHASIC++/Main/Process_Integrator.H
++++ b/PHASIC++/Main/Process_Integrator.H
+@@ -8,6 +8,7 @@
+ #include "ATOOLS/Org/Terminator_Objects.H"
+ 
+ #include <string>
++#include <vector>
+ 
+ namespace ATOOLS {
+   class Blob_Data_Base;
+@@ -67,6 +68,8 @@ namespace PHASIC {
+ 
+     std::shared_ptr<Color_Integrator>    p_colint;
+     std::shared_ptr<Helicity_Integrator> p_helint;
++    std::vector<int>                     m_lastcolor_i;
++    std::vector<int>                     m_lastcolor_j;
+ 
+     double Sigma2() const;
+ 
+@@ -203,6 +206,14 @@ namespace PHASIC {
+     { return p_colint; }
+     inline std::shared_ptr<Helicity_Integrator> HelicityIntegrator() const
+     { return p_helint; }
++    inline void StoreColorPoint(const std::vector<int> &ci,
++                                const std::vector<int> &cj)
++    {
++      m_lastcolor_i=ci;
++      m_lastcolor_j=cj;
++    }
++    inline const std::vector<int> &LastColorI() const { return m_lastcolor_i; }
++    inline const std::vector<int> &LastColorJ() const { return m_lastcolor_j; }
+ 
+     inline long unsigned int ItMin() const { return m_itmin; }
+     inline long unsigned int ItMax() const { return m_itmax; }
+@@ -219,4 +230,3 @@ namespace PHASIC {
+ 
+ #endif
+ 
+-
+diff --git a/SHERPA/Single_Events/Signal_Processes.C b/SHERPA/Single_Events/Signal_Processes.C
+index 3c6aef200..1ed4d94ff 100644
+--- a/SHERPA/Single_Events/Signal_Processes.C
++++ b/SHERPA/Single_Events/Signal_Processes.C
+@@ -16,6 +16,10 @@
+ #include "ATOOLS/Phys/Weight_Info.H"
+ #include "ATOOLS/Phys/Weights.H"
+ #include "MODEL/Main/Running_AlphaS.H"
++#include <algorithm>
++#include <map>
++#include <sstream>
++#include <vector>
+ 
+ using namespace SHERPA;
+ using namespace METOOLS;
+@@ -23,6 +27,195 @@ using namespace ATOOLS;
+ using namespace PHASIC;
+ using namespace std;
+ 
++namespace {
++
++struct LHEColourFlowPlan {
++  std::vector<int> m_flow1, m_flow2;
++};
++
++void SetLHEEndpoint(LHEColourFlowPlan &flows,const size_t leg,
++                    const bool colour,const int tag)
++{
++  if (colour) flows.m_flow1[leg]=tag;
++  else flows.m_flow2[leg]=tag;
++}
++
++void RemoveEndpoint(std::vector<size_t> &ends,const size_t leg)
++{
++  std::vector<size_t>::iterator eit(std::find(ends.begin(),ends.end(),leg));
++  if (eit!=ends.end()) ends.erase(eit);
++}
++
++bool MatchEndpoints(const std::vector<size_t> &colours,
++                    const std::vector<size_t> &anticolours,
++                    std::vector<int> &used,
++                    std::vector<size_t> &match,
++                    const size_t pos)
++{
++  if (pos==colours.size()) return true;
++  for (size_t i(0);i<anticolours.size();++i) {
++    if (used[i] || anticolours[i]==colours[pos]) continue;
++    used[i]=1;
++    match[pos]=i;
++    if (MatchEndpoints(colours,anticolours,used,match,pos+1)) return true;
++    used[i]=0;
++  }
++  return false;
++}
++
++std::string LegVectorString(const std::vector<size_t> &legs)
++{
++  std::ostringstream os;
++  os<<"[";
++  for (size_t i(0);i<legs.size();++i) {
++    if (i) os<<",";
++    os<<legs[i];
++  }
++  os<<"]";
++  return os.str();
++}
++
++void PreferFirstFinalQQbarSinglet(LHEColourFlowPlan &flows,
++                                  std::map<int,std::vector<size_t> > &colours,
++                                  std::map<int,std::vector<size_t> > &anticolours,
++                                  const Flavour_Vector &flavs,
++                                  const size_t nin,
++                                  int &nexttag,
++                                  const bool debug)
++{
++  size_t q(flavs.size()), qb(flavs.size());
++  long int qkf(0);
++  for (size_t i(nin);i<flavs.size();++i) {
++    const long int kf((long int)flavs[i]);
++    const long int akf(kf<0 ? -kf : kf);
++    if (akf<1 || akf>6) continue;
++    if (kf>0 && q==flavs.size()) {
++      q=i;
++      qkf=akf;
++    }
++    else if (kf<0 && qb==flavs.size() && (qkf==0 || akf==qkf)) {
++      qb=i;
++      if (qkf==0) qkf=akf;
++    }
++    if (q!=flavs.size() && qb!=flavs.size()) break;
++  }
++  if (q==flavs.size() || qb==flavs.size()) return;
++
++  for (std::map<int,std::vector<size_t> >::iterator cit(colours.begin());
++       cit!=colours.end();++cit) {
++    const int label(cit->first);
++    std::vector<size_t> &cs(cit->second);
++    std::vector<size_t> &as(anticolours[label]);
++    if (std::find(cs.begin(),cs.end(),q)==cs.end()) continue;
++    if (std::find(as.begin(),as.end(),qb)==as.end()) continue;
++    const int tag(nexttag++);
++    SetLHEEndpoint(flows,q,true,tag);
++    SetLHEEndpoint(flows,qb,false,tag);
++    RemoveEndpoint(cs,q);
++    RemoveEndpoint(as,qb);
++    if (debug)
++      msg_Info()<<"LHE colour-flow hack: forced first final q/qbar singlet "
++                <<"legs "<<q<<","<<qb<<" from sampled colour label "
++                <<label<<" -> "<<tag<<"\n";
++    return;
++  }
++}
++
++std::string ColourVectorString(const std::vector<int> &cols)
++{
++  std::ostringstream os;
++  os<<"[";
++  for (size_t i(0);i<cols.size();++i) {
++    if (i) os<<",";
++    os<<cols[i];
++  }
++  os<<"]";
++  return os.str();
++}
++
++LHEColourFlowPlan BuildLHEColourFlows(const std::vector<int> &ci,
++                                      const std::vector<int> &cj,
++                                      const Flavour_Vector &flavs,
++                                      const size_t nin,
++                                      const bool prefer_decay_singlet,
++                                      const bool debug)
++{
++  LHEColourFlowPlan flows;
++  flows.m_flow1.assign(flavs.size(),0);
++  flows.m_flow2.assign(flavs.size(),0);
++  std::map<int,std::vector<size_t> > colours, anticolours;
++  std::map<int,int> labels;
++  for (size_t i(0);i<flavs.size();++i) {
++    if (ci[i]>0) {
++      colours[ci[i]].push_back(i);
++      labels[ci[i]]=1;
++    }
++    if (cj[i]>0) {
++      anticolours[cj[i]].push_back(i);
++      labels[cj[i]]=1;
++    }
++  }
++
++  int nexttag(501);
++  if (prefer_decay_singlet)
++    PreferFirstFinalQQbarSinglet(flows,colours,anticolours,flavs,nin,nexttag,
++                                 debug);
++
++  for (std::map<int,int>::const_iterator lit(labels.begin());
++       lit!=labels.end();++lit) {
++    const int label(lit->first);
++    std::vector<size_t> &cs(colours[label]);
++    std::vector<size_t> &as(anticolours[label]);
++    if (cs.size()!=as.size()) {
++      const std::string msg(std::string("LHE colour-flow hack found unmatched "
++            "sampled colour label ")+ToString(label)+": "
++            +ToString(cs.size())+" colour end(s) and "
++            +ToString(as.size())+" anticolour end(s).");
++      THROW(fatal_error,msg);
++    }
++    std::vector<int> used(as.size(),0);
++    std::vector<size_t> match(cs.size(),0);
++    if (!MatchEndpoints(cs,as,used,match,0)) {
++      const std::string msg(std::string("LHE colour-flow hack could not pair "
++            "sampled colour label ")+ToString(label)+" without self-connecting "
++            "a gluon. Colour legs="+LegVectorString(cs)
++            +" anticolour legs="+LegVectorString(as)+".");
++      THROW(fatal_error,msg);
++    }
++    for (size_t i(0);i<cs.size();++i) {
++      const int tag(nexttag++);
++      SetLHEEndpoint(flows,cs[i],true,tag);
++      SetLHEEndpoint(flows,as[match[i]],false,tag);
++      if (debug)
++        msg_Info()<<"LHE colour-flow hack: sampled label "<<label
++                  <<" pairs legs "<<cs[i]<<" -> "<<as[match[i]]
++                  <<" as LHE tag "<<tag<<"\n";
++    }
++  }
++
++  for (size_t i(0);i<flavs.size();++i) {
++    if (!flavs[i].Strong()) continue;
++    if (flavs[i].IsGluon() &&
++        (flows.m_flow1[i]==0 || flows.m_flow2[i]==0 ||
++         flows.m_flow1[i]==flows.m_flow2[i])) {
++      const std::string msg(std::string("LHE colour-flow hack produced an "
++            "invalid gluon flow on leg ")+ToString(i)+": "
++            +ToString(flows.m_flow1[i])+","+ToString(flows.m_flow2[i])+".");
++      THROW(fatal_error,msg);
++    }
++    if (flavs[i].IsQuark() &&
++        ((flows.m_flow1[i]!=0)==(flows.m_flow2[i]!=0))) {
++      const std::string msg(std::string("LHE colour-flow hack produced an "
++            "invalid quark flow on leg ")+ToString(i)+": "
++            +ToString(flows.m_flow1[i])+","+ToString(flows.m_flow2[i])+".");
++      THROW(fatal_error,msg);
++    }
++  }
++  return flows;
++}
++
++}
++
+ Signal_Processes::Signal_Processes(Matrix_Element_Handler* mehandler)
+     : p_mehandler(mehandler), p_remnants(mehandler->GetISR()->GetRemnants()),
+       m_overweight(0.0)
+@@ -37,6 +230,10 @@ Signal_Processes::Signal_Processes(Matrix_Element_Handler* mehandler)
+   m_cmode=mepssettings["CLUSTER_MODE"].Get<int>();
+   Scoped_Settings spsettings{ Settings::GetMainSettings()["SP"] };
+   m_setcolors = spsettings["SET_COLORS"].SetDefault(false).Get<bool>();
++  m_lhecolorhack =
++    spsettings["LHE_COLOR_FLOW_HACK"].SetDefault(false).Get<bool>();
++  m_lhecolordebug =
++    spsettings["LHE_COLOR_FLOW_DEBUG"].SetDefault(false).Get<bool>();
+   m_adddocumentation = spsettings["ADD_DOC"].SetDefault(false).Get<bool>();
+ }
+ 
+@@ -73,6 +270,30 @@ bool Signal_Processes::FillBlob(Blob_List *const bloblist,Blob *const blob)
+ {
+   DEBUG_FUNC(blob->Id());
+   PHASIC::Process_Base *proc(p_mehandler->Process());
++  LHEColourFlowPlan lheflows;
++  const std::vector<int> *stored_ci(NULL), *stored_cj(NULL);
++  const size_t expected_color_entries(proc->NIn()+proc->NOut());
++  if (m_lhecolorhack) {
++    stored_ci=&proc->Integrator()->LastColorI();
++    stored_cj=&proc->Integrator()->LastColorJ();
++    if (stored_ci->size()<expected_color_entries ||
++        stored_cj->size()<expected_color_entries) {
++      const std::string msg(std::string("LHE colour-flow hack requested, "
++            "but the sampled Comix colour point is missing or too short: I=")
++            +ToString(stored_ci->size())+" J="+ToString(stored_cj->size())
++            +" expected at least "+ToString(expected_color_entries)+".");
++      THROW(fatal_error,msg);
++    }
++    if (m_lhecolordebug)
++      msg_Info()<<"LHE colour-flow hack: I="<<ColourVectorString(*stored_ci)
++                <<" J="<<ColourVectorString(*stored_cj)<<"\n";
++    const bool prefer_decay_singlet
++      (Settings::GetMainSettings()["LHEF_ASSIGN_MISSING_QQBAR_SINGLET"]
++       .SetDefault(false).Get<bool>());
++    lheflows=BuildLHEColourFlows(*stored_ci,*stored_cj,proc->Flavours(),
++                                 proc->NIn(),prefer_decay_singlet,
++                                 m_lhecolordebug);
++  }
+   blob->SetPosition(Vec4D(0.,0.,0.,0.));
+   blob->SetTypeSpec(proc->Parent()->Name());
+   Cluster_Amplitude *ampl(NULL);
+@@ -142,7 +363,11 @@ bool Signal_Processes::FillBlob(Blob_List *const bloblist,Blob *const blob)
+     particle->SetStatus(part_status::decayed);
+     particle->SetInfo('G');
+     blob->AddToInParticles(particle);
+-    if (ampl) {
++    if (m_lhecolorhack) {
++      particle->SetFlow(1,lheflows.m_flow1[i]);
++      particle->SetFlow(2,lheflows.m_flow2[i]);
++    }
++    else if (ampl) {
+       particle->SetFlow(1,ampl->Leg(i)->Col().m_j);
+       particle->SetFlow(2,ampl->Leg(i)->Col().m_i);
+     }
+@@ -157,7 +382,11 @@ bool Signal_Processes::FillBlob(Blob_List *const bloblist,Blob *const blob)
+     particle->SetStatus(part_status::active);
+     particle->SetInfo('H');
+     blob->AddToOutParticles(particle);
+-    if (ampl) {
++    if (m_lhecolorhack) {
++      particle->SetFlow(1,lheflows.m_flow1[i]);
++      particle->SetFlow(2,lheflows.m_flow2[i]);
++    }
++    else if (ampl) {
+       particle->SetFlow(1,ampl->Leg(i)->Col().m_i);
+       particle->SetFlow(2,ampl->Leg(i)->Col().m_j);
+     }
+diff --git a/SHERPA/Single_Events/Signal_Processes.H b/SHERPA/Single_Events/Signal_Processes.H
+index c8f016d57..60453e1d1 100644
+--- a/SHERPA/Single_Events/Signal_Processes.H
++++ b/SHERPA/Single_Events/Signal_Processes.H
+@@ -21,6 +21,7 @@ namespace SHERPA {
+     double m_overweight;
+     int m_cmode;
+     bool m_setcolors, m_adddocumentation;
++    bool m_lhecolorhack, m_lhecolordebug;
+ 
+     bool FillBlob(ATOOLS::Blob_List *const bl,ATOOLS::Blob *const b);
+ 
+@@ -39,4 +40,3 @@ namespace SHERPA {
+ }
+ 
+ #endif
+-
+diff --git a/SHERPA/Tools/Output_LHEF.C b/SHERPA/Tools/Output_LHEF.C
+index c030c1b94..bacd248ac 100644
+--- a/SHERPA/Tools/Output_LHEF.C
++++ b/SHERPA/Tools/Output_LHEF.C
+@@ -12,13 +12,82 @@
+ #include "ATOOLS/Org/My_MPI.H"
+ 
+ #include <iomanip>
++#include <algorithm>
+ #include <stdio.h>
+ #include <cassert>
++#include <vector>
+ 
+ using namespace SHERPA;
+ using namespace ATOOLS;
+ using namespace std;
+ 
++namespace {
++
++bool IsFinalQuarkWithoutFlow(Particle *const p)
++{
++  const long int kf((long int)p->Flav());
++  const long int akf(kf<0 ? -kf : kf);
++  return akf>=1 && akf<=6 && p->GetFlow(1)==0 && p->GetFlow(2)==0;
++}
++
++int NextLHEColourTag(Blob_List *const blobs)
++{
++  int tag(500);
++  for (Blob_List::iterator blit(blobs->begin());blit!=blobs->end();++blit) {
++    for (int i(0);i<(*blit)->NInP();++i) {
++      tag=std::max(tag,static_cast<int>((*blit)->InParticle(i)->GetFlow(1)));
++      tag=std::max(tag,static_cast<int>((*blit)->InParticle(i)->GetFlow(2)));
++    }
++    for (int i(0);i<(*blit)->NOutP();++i) {
++      tag=std::max(tag,static_cast<int>((*blit)->OutParticle(i)->GetFlow(1)));
++      tag=std::max(tag,static_cast<int>((*blit)->OutParticle(i)->GetFlow(2)));
++    }
++  }
++  return tag<501 ? 501 : tag+1;
++}
++
++void AssignMissingQQbarSinglet(Blob_List *const blobs)
++{
++  Particle *q(NULL), *qb(NULL);
++  long int qflav(0), qbflav(0);
++  size_t nq(0), nqb(0);
++
++  for (Blob_List::iterator blit(blobs->begin());blit!=blobs->end();++blit) {
++    for (int i(0);i<(*blit)->NOutP();++i) {
++      Particle *const p((*blit)->OutParticle(i));
++      if (!IsFinalQuarkWithoutFlow(p)) continue;
++      const long int kf((long int)p->Flav());
++      const long int akf(kf<0 ? -kf : kf);
++      if (kf>0) {
++        q=p;
++        qflav=akf;
++        ++nq;
++      }
++      else {
++        qb=p;
++        qbflav=akf;
++        ++nqb;
++      }
++    }
++  }
++
++  if (nq==0 && nqb==0) return;
++
++  if (nq!=1 || nqb!=1 || qflav!=qbflav) {
++    const std::string msg(std::string("LHEF_ASSIGN_MISSING_QQBAR_SINGLET "
++          "expected exactly one same-flavour zero-flow final q/qbar pair, "
++          "but found ")+ToString(nq)+" quark(s) and "+ToString(nqb)
++          +" antiquark(s).");
++    THROW(fatal_error,msg);
++  }
++
++  const int tag(NextLHEColourTag(blobs));
++  q->SetFlow(1,tag);
++  qb->SetFlow(2,tag);
++}
++
++}
++
+ Output_LHEF::Output_LHEF(const Output_Arguments &args):
+   Output_Base{ "LHEF" },
+   m_xs(1.0), m_xserr(1.0),
+@@ -49,6 +118,7 @@ void Output_LHEF::RegisterDefaults() const
+ 
+   s["LHEF_BNTP"].SetDefault(0);
+   s["LHEF_IDWTUP"].SetDefault(0);
++  s["LHEF_ASSIGN_MISSING_QQBAR_SINGLET"].SetDefault(false);
+ 
+   int PDFSUP1_default{ rpa->gen.PDF(0)?rpa->gen.PDF(0)->LHEFNumber():-1 };
+   int PDFSUP2_default{ rpa->gen.PDF(1)?rpa->gen.PDF(1)->LHEFNumber():-1 };
+@@ -134,6 +204,11 @@ void Output_LHEF::Header()
+ 
+ void Output_LHEF::Output(Blob_List* blobs)
+ {
++  Settings& s = Settings::GetMainSettings();
++  if (s["LHEF_ASSIGN_MISSING_QQBAR_SINGLET"].Get<bool>()) {
++    AssignMissingQQbarSinglet(blobs);
++  }
++
+   const auto weight(blobs->Weight());
+   Blob *sp(blobs->FindFirst(btp::Signal_Process));
+   m_outstream<<"<event trials='"<<(int)(*sp)["Trials"]->Get<double>();
+@@ -230,4 +305,3 @@ PrintInfo(std::ostream &str,const size_t width) const
+ {
+   str<<"LHEF output";
+ }
+-

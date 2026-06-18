@@ -26,3 +26,24 @@ Backgrounds/AlpGen8Q-LHEWriter-Reweighted.lhe
 Backgrounds/events/
 Signals/events/
 HerwigSignalPoints/**/events/
+
+# Sherpa color-flow source bundle: ignore generated products, not source data.
+SherpaColorFlow/build/
+SherpaColorFlow/install/
+SherpaColorFlow/runs/
+SherpaColorFlow/**/Results*/
+SherpaColorFlow/**/Status__*/
+SherpaColorFlow/**/*.lhe
+SherpaColorFlow/**/*.lhe.gz
+SherpaColorFlow/**/*.log
+
+# Keep tiny validator fixtures and the vendored Sherpa source complete despite
+# the broad extension ignores above.
+!SherpaColorFlow/tests/fixtures/*.lhe
+!SherpaColorFlow/sherpa/**/*.dat
+!SherpaColorFlow/sherpa/**/*.tex
+!SherpaColorFlow/sherpa/**/*.log
+!SherpaColorFlow/sherpa/**/*.run
+!SherpaColorFlow/sherpa/**/*.out
+!SherpaColorFlow/sherpa/**/*.evp
+!SherpaColorFlow/sherpa/**/*.evp2

@@ -1,0 +1,5 @@
+# The Sherpa source tree is vendored from upstream and intentionally kept
+# byte-for-byte, including upstream whitespace style and documentation headings
+# that can look like conflict markers to `git diff --check`.
+SherpaColorFlow/sherpa/** -diff -whitespace
+SherpaColorFlow/patches/*.patch -whitespace
