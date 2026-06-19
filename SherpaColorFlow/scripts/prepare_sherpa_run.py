@@ -43,7 +43,8 @@ def upsert_card_value(text: str, key: str, value: str, after_key: str) -> str:
 
 def enforce_mpi_run_defaults(text: str) -> str:
     text = upsert_card_value(text, "MPI_EVENT_MODE", "1", "EVENTS")
-    text = upsert_card_value(text, "BATCH_MODE", "5", "MPI_EVENT_MODE")
+    text = upsert_card_value(text, "MPI_SEED_MODE", "1", "MPI_EVENT_MODE")
+    text = upsert_card_value(text, "BATCH_MODE", "5", "MPI_SEED_MODE")
     return upsert_card_value(text, "EVENT_DISPLAY_INTERVAL", "100", "BATCH_MODE")
 
 
@@ -102,6 +103,7 @@ def main() -> int:
     if args.total_events is not None:
         print(f"EVENTS total: {args.total_events}")
         print(f"MPI_EVENT_MODE: 1, so Sherpa distributes this total over -np {args.np}")
+    print("MPI_SEED_MODE: 1")
     print("BATCH_MODE: 5")
     print("EVENT_DISPLAY_INTERVAL: 100")
     print("Run command:")

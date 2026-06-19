@@ -29,7 +29,7 @@ export.
 - `scripts/build_sherpa_mpi.sh`: MPI build helper.
 - `scripts/prepare_sherpa_run.py`: copies an example into a run directory,
   keeps `EVENTS` as the requested total with `MPI_EVENT_MODE: 1`, and applies
-  the MPI progress settings used for long high-multiplicity runs.
+  the MPI seed/progress settings used for long high-multiplicity runs.
 
 ## Build on physres1
 
@@ -103,14 +103,17 @@ The example cards and `prepare_sherpa_run.py` set:
 
 ```yaml
 MPI_EVENT_MODE: 1
+MPI_SEED_MODE: 1
 BATCH_MODE: 5
 EVENT_DISPLAY_INTERVAL: 100
 ```
 
 With these settings `EVENTS` is the requested total over the MPI job, and
-Sherpa avoids the frequent progress-print cross-section synchronization that
-can make high-rank, low-efficiency unweighting runs wait for the slowest rank
-after every accepted event.
+Sherpa uses additive per-rank seeds instead of the default multiplicative
+seeding. This avoids rank classes with systematically poor random streams, and
+the progress settings avoid frequent cross-section synchronization that can
+make high-rank, low-efficiency unweighting runs wait for the slowest rank after
+every accepted event.
 
 For a larger 64-rank production run:
 
