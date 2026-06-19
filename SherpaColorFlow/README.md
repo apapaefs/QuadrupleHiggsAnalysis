@@ -50,15 +50,53 @@ export LD_LIBRARY_PATH=$HOME/Projects/4H/sherpa-colorflow-mpi/lib:$HOME/Projects
 
 ## Prepare and run examples
 
+The OpenMPI executable on this machine is `/usr/bin/mpirun.openmpi`. Use it
+explicitly so the run does not accidentally pick up another MPI implementation
+from the environment.
+
+Activate the local Sherpa MPI install before preparing or launching runs:
+
+```bash
+cd /mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis/SherpaColorFlow
+
+export SHERPA_PREFIX=$PWD/install/sherpa-mpi
+export PATH=$SHERPA_PREFIX/bin:$PATH
+export LD_LIBRARY_PATH=$SHERPA_PREFIX/lib/SHERPA-MC:$SHERPA_PREFIX/lib:$SHERPA_PREFIX/lib64:${LD_LIBRARY_PATH:-}
+export LHAPDF_DATA_PATH=$SHERPA_PREFIX/share/SHERPA-MC/LHAPDF
+export LHAPATH=$LHAPDF_DATA_PATH
+```
+
+For exactly 1000 total `gg -> 8b` events over 192 MPI ranks:
+
+```bash
+./scripts/prepare_sherpa_run.py gg8b runs/gg8b_1000evt_np192 \
+  --total-events 1000 \
+  --np 192 \
+  --output-prefix gg_4bbbar_1000evt_np192
+
+cd runs/gg8b_1000evt_np192
+/usr/bin/mpirun.openmpi \
+  --use-hwthread-cpus \
+  -np 192 \
+  --bind-to hwthread \
+  --map-by hwthread \
+  Sherpa
+```
+
+To save a log:
+
+```bash
+/usr/bin/mpirun.openmpi --use-hwthread-cpus -np 192 --bind-to hwthread --map-by hwthread Sherpa > sherpa_np192.log 2>&1
+```
+
 For exactly 100 total validation events over 20 MPI ranks:
 
 ```bash
-cd QuadrupleHiggsAnalysis/SherpaColorFlow
 ./scripts/prepare_sherpa_run.py z6b runs/z6b_100evt \
   --total-events 100 --np 20 \
   --output-prefix pp_z_3bb_zbb_decayos_colorhack_100evt
 cd runs/z6b_100evt
-mpirun --use-hwthread-cpus -np 20 --bind-to hwthread --map-by hwthread Sherpa
+/usr/bin/mpirun.openmpi --use-hwthread-cpus -np 20 --bind-to hwthread --map-by hwthread Sherpa
 ```
 
 The example cards and `prepare_sherpa_run.py` set:
@@ -66,7 +104,7 @@ The example cards and `prepare_sherpa_run.py` set:
 ```yaml
 MPI_EVENT_MODE: 1
 BATCH_MODE: 5
-EVENT_DISPLAY_INTERVAL: 1000000
+EVENT_DISPLAY_INTERVAL: 100
 ```
 
 With these settings `EVENTS` is the requested total over the MPI job, and
@@ -77,23 +115,31 @@ after every accepted event.
 For a larger 64-rank production run:
 
 ```bash
-cd QuadrupleHiggsAnalysis/SherpaColorFlow
 ./scripts/prepare_sherpa_run.py z6b runs/z6b_40000evt \
   --total-events 40000 --np 64 \
   --output-prefix pp_z_3bb_zbb_decayos_colorhack_40000evt
 cd runs/z6b_40000evt
-mpirun --use-hwthread-cpus -np 64 --bind-to hwthread --map-by hwthread Sherpa
+/usr/bin/mpirun.openmpi --use-hwthread-cpus -np 64 --bind-to hwthread --map-by hwthread Sherpa
 ```
 
-Available example keys:
+Monitor completed LHE events by counting closed event blocks:
 
-- `gg8b`: `gg -> 8b`
-- `gg6bcc`: `gg -> 6b + c cbar`
-- `gg6b2j`: `gg -> 6b + 2j`
-- `gg4b4c`: `gg -> 4b + 4c`
-- `gg4b2c2j`: `gg -> 4b + 2c + 2j`
-- `gg4b4j`: `gg -> 4b + 4j`
-- `z6b`: `pp -> Z + 6b`, `Z -> b bbar`
+```bash
+rg -c '^</event>' runs/gg8b_1000evt_np192/gg_4bbbar_1000evt_np192_*.lhe 2>/dev/null \
+  | awk -F: '{s += $2} END {print s+0 " / 1000 events"}'
+```
+
+Available process keys:
+
+| Key | Process | Output prefix in card |
+| --- | --- | --- |
+| `gg8b` | `g g -> b bbar b bbar b bbar b bbar` | `gg_4bbbar` |
+| `gg6bcc` | `g g -> b bbar b bbar b bbar c cbar` | `gg_3bbbar_ccbar` |
+| `gg6b2j` | `g g -> b bbar b bbar b bbar j j` | `gg_3bbbar_2j` |
+| `gg4b4c` | `g g -> b bbar b bbar c cbar c cbar` | `gg_2bbbar_2ccbar` |
+| `gg4b2c2j` | `g g -> b bbar b bbar c cbar j j` | `gg_2bbbar_ccbar_2j` |
+| `gg4b4j` | `g g -> b bbar b bbar j j j j` | `gg_2bbbar_4j` |
+| `z6b` | `p p -> Z + 6b`, `Z -> b bbar` | `pp_z_3bb_zbb_decayos_colorhack` |
 
 ## Validate LHE output
 

@@ -44,7 +44,7 @@ def upsert_card_value(text: str, key: str, value: str, after_key: str) -> str:
 def enforce_mpi_run_defaults(text: str) -> str:
     text = upsert_card_value(text, "MPI_EVENT_MODE", "1", "EVENTS")
     text = upsert_card_value(text, "BATCH_MODE", "5", "MPI_EVENT_MODE")
-    return upsert_card_value(text, "EVENT_DISPLAY_INTERVAL", "1000000", "BATCH_MODE")
+    return upsert_card_value(text, "EVENT_DISPLAY_INTERVAL", "100", "BATCH_MODE")
 
 
 def replace_event_output(text: str, prefix: str) -> str:
@@ -103,7 +103,7 @@ def main() -> int:
         print(f"EVENTS total: {args.total_events}")
         print(f"MPI_EVENT_MODE: 1, so Sherpa distributes this total over -np {args.np}")
     print("BATCH_MODE: 5")
-    print("EVENT_DISPLAY_INTERVAL: 1000000")
+    print("EVENT_DISPLAY_INTERVAL: 100")
     print("Run command:")
     print(f"  mpirun --use-hwthread-cpus -np {args.np} --bind-to hwthread --map-by hwthread Sherpa")
     return 0
