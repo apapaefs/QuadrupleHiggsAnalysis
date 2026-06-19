@@ -27,8 +27,9 @@ export.
 - `scripts/validate_lhe_color.py`: generic LHE mass-shell and colour-flow
   validator.
 - `scripts/build_sherpa_mpi.sh`: MPI build helper.
-- `scripts/prepare_sherpa_run.py`: copies an example into a run directory and
-  sets exact total event counts for MPI runs.
+- `scripts/prepare_sherpa_run.py`: copies an example into a run directory,
+  keeps `EVENTS` as the requested total with `MPI_EVENT_MODE: 1`, and applies
+  the MPI progress settings used for long high-multiplicity runs.
 
 ## Build on physres1
 
@@ -59,6 +60,19 @@ cd QuadrupleHiggsAnalysis/SherpaColorFlow
 cd runs/z6b_100evt
 mpirun --use-hwthread-cpus -np 20 --bind-to hwthread --map-by hwthread Sherpa
 ```
+
+The example cards and `prepare_sherpa_run.py` set:
+
+```yaml
+MPI_EVENT_MODE: 1
+BATCH_MODE: 5
+EVENT_DISPLAY_INTERVAL: 1000000
+```
+
+With these settings `EVENTS` is the requested total over the MPI job, and
+Sherpa avoids the frequent progress-print cross-section synchronization that
+can make high-rank, low-efficiency unweighting runs wait for the slowest rank
+after every accepted event.
 
 For a larger 64-rank production run:
 

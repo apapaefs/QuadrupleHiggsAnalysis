@@ -7,6 +7,9 @@
 # receive the same 8b-style generation cuts.
 
 EVENTS: 100
+MPI_EVENT_MODE: 1
+BATCH_MODE: 5
+EVENT_DISPLAY_INTERVAL: 1000000
 EVENT_GENERATION_MODE: PartiallyUnweighted
 EVENT_OUTPUT: LHEF[pp_z_3bb_zbb_decayos_colorhack]
 EVT_FILE_PATH: .

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Prepare a Sherpa example run directory with MPI-aware event counts."""
+"""Prepare a Sherpa example run directory with MPI-aware total event counts."""
 
 from __future__ import annotations
 
 import argparse
-import math
 import re
 import shutil
 from pathlib import Path
@@ -28,6 +27,24 @@ def replace_card_value(text: str, key: str, value: str) -> str:
     if not pattern.search(text):
         raise SystemExit(f"Could not find '{key}:' in Sherpa.yaml")
     return pattern.sub(replacement, text, count=1)
+
+
+def upsert_card_value(text: str, key: str, value: str, after_key: str) -> str:
+    pattern = re.compile(rf"^{re.escape(key)}:\s*.*$", re.MULTILINE)
+    replacement = f"{key}: {value}"
+    if pattern.search(text):
+        return pattern.sub(replacement, text, count=1)
+
+    anchor = re.compile(rf"^({re.escape(after_key)}:\s*.*)$", re.MULTILINE)
+    if not anchor.search(text):
+        raise SystemExit(f"Could not find '{after_key}:' in Sherpa.yaml")
+    return anchor.sub(rf"\1\n{replacement}", text, count=1)
+
+
+def enforce_mpi_run_defaults(text: str) -> str:
+    text = upsert_card_value(text, "MPI_EVENT_MODE", "1", "EVENTS")
+    text = upsert_card_value(text, "BATCH_MODE", "5", "MPI_EVENT_MODE")
+    return upsert_card_value(text, "EVENT_DISPLAY_INTERVAL", "1000000", "BATCH_MODE")
 
 
 def replace_event_output(text: str, prefix: str) -> str:
@@ -57,7 +74,7 @@ def main() -> int:
     parser.add_argument("--total-events", type=int, help="desired total events over all MPI ranks")
     parser.add_argument("--np", type=int, default=1, help="MPI rank count")
     parser.add_argument("--output-prefix", help="LHEF output prefix")
-    parser.add_argument("--round-up", action="store_true", help="round per-rank EVENTS up if total is not divisible by --np")
+    parser.add_argument("--round-up", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--force", action="store_true", help="overwrite Sherpa.yaml in an existing run directory")
     args = parser.parse_args()
 
@@ -71,27 +88,22 @@ def main() -> int:
 
     card = args.run_dir / "Sherpa.yaml"
     text = card.read_text()
+    text = enforce_mpi_run_defaults(text)
 
-    per_rank = None
     if args.total_events is not None:
-        if args.total_events % args.np != 0 and not args.round_up:
-            raise SystemExit(
-                f"{args.total_events} total events is not divisible by --np {args.np}; "
-                "choose a divisible total or pass --round-up"
-            )
-        per_rank = math.ceil(args.total_events / args.np)
-        text = replace_card_value(text, "EVENTS", str(per_rank))
+        text = replace_card_value(text, "EVENTS", str(args.total_events))
 
     if args.output_prefix:
         text = replace_event_output(text, args.output_prefix)
 
     card.write_text(text)
 
-    actual_total = per_rank * args.np if per_rank is not None else None
     print(f"Prepared {args.example} run in {args.run_dir}")
-    if per_rank is not None:
-        print(f"EVENTS per rank: {per_rank}")
-        print(f"Total events requested by Sherpa with -np {args.np}: {actual_total}")
+    if args.total_events is not None:
+        print(f"EVENTS total: {args.total_events}")
+        print(f"MPI_EVENT_MODE: 1, so Sherpa distributes this total over -np {args.np}")
+    print("BATCH_MODE: 5")
+    print("EVENT_DISPLAY_INTERVAL: 1000000")
     print("Run command:")
     print(f"  mpirun --use-hwthread-cpus -np {args.np} --bind-to hwthread --map-by hwthread Sherpa")
     return 0
