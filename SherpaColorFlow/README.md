@@ -125,6 +125,32 @@ cd runs/z6b_40000evt
 /usr/bin/mpirun.openmpi --use-hwthread-cpus -np 64 --bind-to hwthread --map-by hwthread Sherpa
 ```
 
+To reuse one integration for many single-rank generation shards, ask the setup
+script to write a seeded runner:
+
+```bash
+./scripts/prepare_sherpa_run.py gg8b runs/gg8b_template \
+  --total-events 10000 \
+  --np 32 \
+  --output-prefix gg_4bbbar_10k \
+  --seeded-jobs 64
+```
+
+Run the integration once in `runs/gg8b_template`. Then launch the single-rank
+event shards from the same parent run directory:
+
+```bash
+cd runs/gg8b_template
+Sherpa -I Sherpa.yaml
+mpirun --use-hwthread-cpus -np 32 --bind-to hwthread --map-by hwthread Sherpa -e 0 Sherpa.yaml
+./run_seeded_generation.sh 10000 64
+```
+
+The two trailing numbers are adjustable: total requested events first, number
+of single-rank Sherpa jobs second. Each job gets its own `events/job_XXXX`
+working directory with copied `Process/` and `Results_PartiallyUnweighted*`
+artifacts, a unique seed, and a unique LHE prefix.
+
 Monitor completed LHE events by counting closed event blocks:
 
 ```bash
