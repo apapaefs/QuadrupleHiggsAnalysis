@@ -26,6 +26,8 @@ export.
   cards inside the patched Sherpa source tree.
 - `scripts/validate_lhe_color.py`: generic LHE mass-shell and colour-flow
   validator.
+- `scripts/merge_lhe_shards.py`: combines sharded LHE output into one closed
+  LHE file while preserving the physical cross section.
 - `scripts/build_sherpa_mpi.sh`: MPI build helper.
 - `scripts/prepare_sherpa_run.py`: copies an example into a run directory,
   keeps `EVENTS` as the requested total with `MPI_EVENT_MODE: 1`, and applies
@@ -157,6 +159,44 @@ Monitor completed LHE events by counting closed event blocks:
 rg -c '^</event>' runs/gg8b_1000evt_np192/gg_4bbbar_1000evt_np192_*.lhe 2>/dev/null \
   | awk -F: '{s += $2} END {print s+0 " / 1000 events"}'
 ```
+
+## Merge sharded LHE output
+
+After all single-rank shards finish, merge them from the parent run directory:
+
+```bash
+python3 ../../scripts/merge_lhe_shards.py events \
+  --prefix gg_4bbbar_10k_ \
+  --output gg_4bbbar_10k_merged.lhe \
+  --expected-events 10000
+```
+
+The merge script writes one header, one init block, all complete event blocks,
+and one final `</LesHouchesEvents>` footer. If an input shard is missing the
+final LHE footer, the script prints a warning for that file. The merged output
+is still closed correctly, but incomplete trailing `<event>` blocks are skipped
+unless `--strict` is used.
+
+To repair unclosed input shards after the jobs have definitely stopped, add:
+
+```bash
+python3 ../../scripts/merge_lhe_shards.py events \
+  --prefix gg_4bbbar_10k_ \
+  --output gg_4bbbar_10k_merged.lhe \
+  --expected-events 10000 \
+  --fix-unclosed-inputs
+```
+
+`--fix-unclosed-inputs` truncates each affected input after its last complete
+`</event>` block and appends the final LHE footer. It creates `.bak` backups by
+default; use `--no-backup` only for disposable test data.
+
+The script validates that all shard `<init>` blocks agree. When sibling
+`sherpa_*.log` files are present, it also reads the Sherpa-reported physical
+cross section and writes that into the merged `<init>` process line. This is
+needed for the seeded single-rank workflow, where the shard LHE files may carry
+placeholder init process lines such as `1 1 1 1`. The cross section is not
+summed over shards.
 
 Available process keys:
 
