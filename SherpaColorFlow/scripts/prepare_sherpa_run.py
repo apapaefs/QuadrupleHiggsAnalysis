@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Prepare a Sherpa example run directory with MPI-aware total event counts."""
 
-from __future__ import annotations
-
 import argparse
 import re
 import shutil

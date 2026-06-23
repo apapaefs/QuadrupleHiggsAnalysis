@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Tests for the Sherpa run preparation helper."""
 
-from __future__ import annotations
-
 import os
 import subprocess
 import sys
@@ -16,6 +14,9 @@ SCRIPT = ROOT / "scripts" / "prepare_sherpa_run.py"
 
 
 class PrepareSherpaRunTests(unittest.TestCase):
+    def test_script_can_start_on_python36(self) -> None:
+        self.assertNotIn("from __future__ import annotations", SCRIPT.read_text())
+
     def test_seeded_jobs_writes_runner_and_prints_adjustable_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = Path(tmp) / "gg8b_seeded"
@@ -35,8 +36,9 @@ class PrepareSherpaRunTests(unittest.TestCase):
                     "6",
                 ],
                 check=True,
-                capture_output=True,
-                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
             )
 
             runner = run_dir / "run_seeded_generation.sh"
