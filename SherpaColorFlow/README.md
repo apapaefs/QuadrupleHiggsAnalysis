@@ -163,7 +163,12 @@ Sherpa -I Sherpa.yaml
 The two trailing numbers are adjustable: total requested events first, number
 of single-rank Sherpa jobs second. Each job gets its own `events/job_XXXX`
 working directory with copied `Process/` and `Results_PartiallyUnweighted*`
-artifacts, a unique seed, and a unique LHE prefix.
+artifacts, a unique seed, and a unique LHE prefix. The runner refuses to use a
+non-empty `OUTBASE`, so use a fresh output directory when adding more events:
+
+```bash
+OUTBASE=events_more_20k BASE_SEED=4321 ./run_seeded_generation.sh 20000 164
+```
 
 Monitor completed LHE events by counting closed event blocks:
 

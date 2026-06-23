@@ -139,6 +139,20 @@ if [ ! -e "$RESULT_DIRECTORY" ] && [ ! -e "${{RESULT_DIRECTORY}}.zip" ]; then
   exit 2
 fi
 
+if [ -e "$OUTBASE" ] && [ ! -d "$OUTBASE" ]; then
+  echo "OUTBASE '$OUTBASE' exists and is not a directory" >&2
+  exit 2
+fi
+
+if [ -d "$OUTBASE" ]; then
+  first_outbase_entry="$(find "$OUTBASE" -mindepth 1 -maxdepth 1 -print -quit)"
+  if [ -n "$first_outbase_entry" ]; then
+    echo "Refusing to use non-empty OUTBASE '$OUTBASE'" >&2
+    echo "Choose a new OUTBASE or move/remove the existing directory before rerunning." >&2
+    exit 2
+  fi
+fi
+
 mkdir -p "$OUTBASE"
 pids=()
 
