@@ -31,7 +31,10 @@ export.
 - `scripts/build_sherpa_mpi.sh`: MPI build helper.
 - `scripts/prepare_sherpa_run.py`: copies an example into a run directory,
   keeps `EVENTS` as the requested total with `MPI_EVENT_MODE: 1`, and applies
-  the MPI seed/progress settings used for long high-multiplicity runs.
+  the MPI seed/progress settings used for long high-multiplicity runs. With
+  `--seeded-jobs`, it also writes an executable
+  `<run_dir>/run_seeded_generation.sh`; this is generated per run directory and
+  is not stored under `scripts/`.
 
 ## Build on physres1
 
@@ -85,6 +88,10 @@ cd runs/gg8b_1000evt_np192
   Sherpa
 ```
 
+`prepare_sherpa_run.py` prints the follow-up commands after it writes the run
+directory. The printed MPI command uses `mpirun`; on physres1 use
+`/usr/bin/mpirun.openmpi` in its place.
+
 To save a log:
 
 ```bash
@@ -128,7 +135,8 @@ cd runs/z6b_40000evt
 ```
 
 To reuse one integration for many single-rank generation shards, ask the setup
-script to write a seeded runner:
+script to write a seeded runner. The runner is created inside the run
+directory named in the second argument:
 
 ```bash
 ./scripts/prepare_sherpa_run.py gg8b runs/gg8b_template \
@@ -138,13 +146,17 @@ script to write a seeded runner:
   --seeded-jobs 64
 ```
 
+This creates `runs/gg8b_template/run_seeded_generation.sh`. If that file is
+missing, the run directory was prepared without `--seeded-jobs` or you are not
+inside the run directory.
+
 Run the integration once in `runs/gg8b_template`. Then launch the single-rank
-event shards from the same parent run directory:
+event shards from that same run directory:
 
 ```bash
 cd runs/gg8b_template
 Sherpa -I Sherpa.yaml
-mpirun --use-hwthread-cpus -np 32 --bind-to hwthread --map-by hwthread Sherpa -e 0 Sherpa.yaml
+/usr/bin/mpirun.openmpi --use-hwthread-cpus -np 32 --bind-to hwthread --map-by hwthread Sherpa -e 0 Sherpa.yaml
 ./run_seeded_generation.sh 10000 64
 ```
 

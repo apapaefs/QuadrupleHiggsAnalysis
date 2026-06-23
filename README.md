@@ -54,6 +54,25 @@ cd runs/gg8b_1000evt_np192
 `prepare_sherpa_run.py` writes `MPI_EVENT_MODE: 1`, so `EVENTS` is the total
 requested over the MPI job, not the number per rank.
 
+For the seeded single-rank shard workflow, include `--seeded-jobs N` when
+preparing the run. That option creates an executable
+`run_seeded_generation.sh` inside the run directory, for example
+`SherpaColorFlow/runs/gg8b_template/run_seeded_generation.sh`. Run it from that
+same directory after the integration artifacts are present:
+
+```bash
+./scripts/prepare_sherpa_run.py gg8b runs/gg8b_template \
+  --total-events 10000 \
+  --np 32 \
+  --output-prefix gg_4bbbar_10k \
+  --seeded-jobs 64
+
+cd runs/gg8b_template
+Sherpa -I Sherpa.yaml
+/usr/bin/mpirun.openmpi --use-hwthread-cpus -np 32 --bind-to hwthread --map-by hwthread Sherpa -e 0 Sherpa.yaml
+./run_seeded_generation.sh 10000 64
+```
+
 Available Sherpa process keys:
 
 | Key | Process | Card |
