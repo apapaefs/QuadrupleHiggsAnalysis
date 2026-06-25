@@ -39,34 +39,103 @@ export.
 ## Build on physres1
 
 ```bash
-cd QuadrupleHiggsAnalysis/SherpaColorFlow
-MPI_HOME=/home/apapaefs/Projects/4H/sherpa-deps/openmpi-4.1.6 \
-PREFIX=$HOME/Projects/4H/sherpa-colorflow-mpi \
-BUILD_DIR=$HOME/Projects/4H/sherpa-colorflow-build \
+cd ~/Projects/QuadrupleHiggsAnalysis/SherpaColorFlow
+
+export MPI_HOME=/home/apapaefs/Projects/4H/sherpa-deps/openmpi-4.1.6
+export SHERPA_PREFIX=$HOME/Projects/4H/sherpa-colorflow-mpi
+export BUILD_DIR=$HOME/Projects/4H/sherpa-colorflow-build
+
+MPI_HOME=$MPI_HOME \
+PREFIX=$SHERPA_PREFIX \
+BUILD_DIR=$BUILD_DIR \
 ./scripts/build_sherpa_mpi.sh
 ```
 
 Then activate the installation:
 
 ```bash
-export PATH=$HOME/Projects/4H/sherpa-colorflow-mpi/bin:$PATH
-export LD_LIBRARY_PATH=$HOME/Projects/4H/sherpa-colorflow-mpi/lib:$HOME/Projects/4H/sherpa-colorflow-mpi/lib64:${LD_LIBRARY_PATH:-}
+export MPI_HOME=/home/apapaefs/Projects/4H/sherpa-deps/openmpi-4.1.6
+export SHERPA_PREFIX=$HOME/Projects/4H/sherpa-colorflow-mpi
+
+export PATH=$SHERPA_PREFIX/bin:$MPI_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$SHERPA_PREFIX/lib/SHERPA-MC:$SHERPA_PREFIX/lib:$SHERPA_PREFIX/lib64:$MPI_HOME/lib:${LD_LIBRARY_PATH:-}
+export LHAPDF_DATA_PATH=$SHERPA_PREFIX/share/SHERPA-MC/LHAPDF
+export LHAPATH=$LHAPDF_DATA_PATH
+
+Sherpa --version
+```
+
+If CMake prints `SHERPA: GIT IS NOT AVAILABLE!`, that is expected for this
+vendored source tree and does not stop the build. It only means the binary will
+not be stamped with a Git branch and revision.
+
+If configuration already succeeded and only the compile or install step needs
+to be resumed, run:
+
+```bash
+cmake --build "$BUILD_DIR" --parallel "$(getconf _NPROCESSORS_ONLN)"
+cmake --install "$BUILD_DIR"
+```
+
+## Install LHAPDF sets
+
+The example cards use Sherpa's LHAPDF interface:
+
+```yaml
+PDF_LIBRARY: LHAPDFSherpa
+PDF_SET: NNPDF23_nlo_as_0119
+MPI_PDF_LIBRARY: LHAPDFSherpa
+MPI_PDF_SET: NNPDF23_nlo_as_0119
+```
+
+If Sherpa reports that `NNPDF23_nlo_as_0119` does not exist in any loaded
+library, install the PDF grid into the Sherpa installation's LHAPDF data
+directory:
+
+```bash
+export SHERPA_PREFIX=$HOME/Projects/4H/sherpa-colorflow-mpi
+export PDFDIR=$SHERPA_PREFIX/share/SHERPA-MC/LHAPDF
+export LHAPDF=$HOME/Projects/4H/sherpa-colorflow-build/EXTERNALSRC/src/downloadedlhapdf/bin/lhapdf
+
+mkdir -p "$PDFDIR"
+"$LHAPDF" --pdfdir "$PDFDIR" install NNPDF23_nlo_as_0119
+
+test -f "$PDFDIR/NNPDF23_nlo_as_0119/NNPDF23_nlo_as_0119.info" && echo OK
+```
+
+If the LHAPDF installer cannot fetch the grid, download and unpack the set
+directly:
+
+```bash
+cd "$PDFDIR"
+curl -L -O https://lhapdfsets.web.cern.ch/lhapdfsets/current/NNPDF23_nlo_as_0119.tar.gz
+tar -xzf NNPDF23_nlo_as_0119.tar.gz
+```
+
+Before running Sherpa, point the process at the same PDF directory:
+
+```bash
+export LHAPDF_DATA_PATH=$PDFDIR
+export LHAPATH=$PDFDIR
 ```
 
 ## Prepare and run examples
 
-The OpenMPI executable on this machine is `/usr/bin/mpirun.openmpi`. Use it
+The OpenMPI executable for this bundle is
+`/home/apapaefs/Projects/4H/sherpa-deps/openmpi-4.1.6/bin/mpirun`. Use it
 explicitly so the run does not accidentally pick up another MPI implementation
 from the environment.
 
 Activate the local Sherpa MPI install before preparing or launching runs:
 
 ```bash
-cd /mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis/SherpaColorFlow
+cd ~/Projects/QuadrupleHiggsAnalysis/SherpaColorFlow
 
-export SHERPA_PREFIX=$PWD/install/sherpa-mpi
-export PATH=$SHERPA_PREFIX/bin:$PATH
-export LD_LIBRARY_PATH=$SHERPA_PREFIX/lib/SHERPA-MC:$SHERPA_PREFIX/lib:$SHERPA_PREFIX/lib64:${LD_LIBRARY_PATH:-}
+export MPI_HOME=/home/apapaefs/Projects/4H/sherpa-deps/openmpi-4.1.6
+export SHERPA_PREFIX=$HOME/Projects/4H/sherpa-colorflow-mpi
+
+export PATH=$SHERPA_PREFIX/bin:$MPI_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$SHERPA_PREFIX/lib/SHERPA-MC:$SHERPA_PREFIX/lib:$SHERPA_PREFIX/lib64:$MPI_HOME/lib:${LD_LIBRARY_PATH:-}
 export LHAPDF_DATA_PATH=$SHERPA_PREFIX/share/SHERPA-MC/LHAPDF
 export LHAPATH=$LHAPDF_DATA_PATH
 ```
@@ -80,7 +149,7 @@ For exactly 1000 total `gg -> 8b` events over 192 MPI ranks:
   --output-prefix gg_4bbbar_1000evt_np192
 
 cd runs/gg8b_1000evt_np192
-/usr/bin/mpirun.openmpi \
+$MPI_HOME/bin/mpirun \
   --use-hwthread-cpus \
   -np 192 \
   --bind-to hwthread \
@@ -90,12 +159,12 @@ cd runs/gg8b_1000evt_np192
 
 `prepare_sherpa_run.py` prints the follow-up commands after it writes the run
 directory. The printed MPI command uses `mpirun`; on physres1 use
-`/usr/bin/mpirun.openmpi` in its place.
+`$MPI_HOME/bin/mpirun` in its place.
 
 To save a log:
 
 ```bash
-/usr/bin/mpirun.openmpi --use-hwthread-cpus -np 192 --bind-to hwthread --map-by hwthread Sherpa > sherpa_np192.log 2>&1
+$MPI_HOME/bin/mpirun --use-hwthread-cpus -np 192 --bind-to hwthread --map-by hwthread Sherpa > sherpa_np192.log 2>&1
 ```
 
 For exactly 100 total validation events over 20 MPI ranks:
@@ -105,7 +174,7 @@ For exactly 100 total validation events over 20 MPI ranks:
   --total-events 100 --np 20 \
   --output-prefix pp_z_3bb_zbb_decayos_colorhack_100evt
 cd runs/z6b_100evt
-/usr/bin/mpirun.openmpi --use-hwthread-cpus -np 20 --bind-to hwthread --map-by hwthread Sherpa
+$MPI_HOME/bin/mpirun --use-hwthread-cpus -np 20 --bind-to hwthread --map-by hwthread Sherpa
 ```
 
 The example cards and `prepare_sherpa_run.py` set:
@@ -131,7 +200,7 @@ For a larger 64-rank production run:
   --total-events 40000 --np 64 \
   --output-prefix pp_z_3bb_zbb_decayos_colorhack_40000evt
 cd runs/z6b_40000evt
-/usr/bin/mpirun.openmpi --use-hwthread-cpus -np 64 --bind-to hwthread --map-by hwthread Sherpa
+$MPI_HOME/bin/mpirun --use-hwthread-cpus -np 64 --bind-to hwthread --map-by hwthread Sherpa
 ```
 
 To reuse one integration for many single-rank generation shards, ask the setup
@@ -156,7 +225,7 @@ event shards from that same run directory:
 ```bash
 cd runs/gg8b_template
 Sherpa -I Sherpa.yaml
-/usr/bin/mpirun.openmpi --use-hwthread-cpus -np 32 --bind-to hwthread --map-by hwthread Sherpa -e 0 Sherpa.yaml
+$MPI_HOME/bin/mpirun --use-hwthread-cpus -np 32 --bind-to hwthread --map-by hwthread Sherpa -e 0 Sherpa.yaml
 ./run_seeded_generation.sh 10000 64
 ```
 
