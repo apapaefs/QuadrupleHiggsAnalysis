@@ -58,18 +58,19 @@ diff --git a/SHERPA/Single_Events/Signal_Processes.C b/SHERPA/Single_Events/Sign
 index 3c6aef2..2b6e376 100644
 --- a/SHERPA/Single_Events/Signal_Processes.C
 +++ b/SHERPA/Single_Events/Signal_Processes.C
-@@ -16,6 +16,10 @@
+@@ -16,6 +16,11 @@
  #include "ATOOLS/Phys/Weight_Info.H"
  #include "ATOOLS/Phys/Weights.H"
  #include "MODEL/Main/Running_AlphaS.H"
 +#include <algorithm>
 +#include <map>
 +#include <sstream>
++#include <string>
 +#include <vector>
  
  using namespace SHERPA;
  using namespace METOOLS;
-@@ -23,6 +27,210 @@ using namespace ATOOLS;
+@@ -23,6 +27,220 @@ using namespace ATOOLS;
  using namespace PHASIC;
  using namespace std;
  
@@ -77,6 +78,16 @@ index 3c6aef2..2b6e376 100644
 +
 +struct LHEColourFlowPlan {
 +  std::vector<int> m_flow1, m_flow2;
++};
++
++class LHEColourFlowRetry {
++public:
++  explicit LHEColourFlowRetry(const std::string &msg): m_msg(msg) {}
++
++  const std::string &Message() const { return m_msg; }
++
++private:
++  std::string m_msg;
 +};
 +
 +void SetLHEEndpoint(LHEColourFlowPlan &flows,const size_t leg,
@@ -232,7 +243,7 @@ index 3c6aef2..2b6e376 100644
 +            "sampled colour label ")+ToString(label)+": "
 +            +ToString(cs.size())+" colour end(s) and "
 +            +ToString(as.size())+" anticolour end(s).");
-+      THROW(fatal_error,msg);
++      throw LHEColourFlowRetry(msg);
 +    }
 +    std::vector<int> used(as.size(),0);
 +    std::vector<size_t> match(cs.size(),0);
@@ -241,7 +252,7 @@ index 3c6aef2..2b6e376 100644
 +            "sampled colour label ")+ToString(label)+" without self-connecting "
 +            "a gluon. Colour legs="+LegVectorString(cs)
 +            +" anticolour legs="+LegVectorString(as)+".");
-+      THROW(fatal_error,msg);
++      throw LHEColourFlowRetry(msg);
 +    }
 +    for (size_t i(0);i<cs.size();++i) {
 +      const int tag(nexttag++);
@@ -262,14 +273,14 @@ index 3c6aef2..2b6e376 100644
 +      const std::string msg(std::string("LHE colour-flow hack produced an "
 +            "invalid gluon flow on leg ")+ToString(i)+": "
 +            +ToString(flows.m_flow1[i])+","+ToString(flows.m_flow2[i])+".");
-+      THROW(fatal_error,msg);
++      throw LHEColourFlowRetry(msg);
 +    }
 +    if (flavs[i].IsQuark() &&
 +        ((flows.m_flow1[i]!=0)==(flows.m_flow2[i]!=0))) {
 +      const std::string msg(std::string("LHE colour-flow hack produced an "
 +            "invalid quark flow on leg ")+ToString(i)+": "
 +            +ToString(flows.m_flow1[i])+","+ToString(flows.m_flow2[i])+".");
-+      THROW(fatal_error,msg);
++      throw LHEColourFlowRetry(msg);
 +    }
 +  }
 +  return flows;
@@ -291,7 +302,7 @@ index 3c6aef2..2b6e376 100644
    m_adddocumentation = spsettings["ADD_DOC"].SetDefault(false).Get<bool>();
  }
  
-@@ -73,6 +285,30 @@ bool Signal_Processes::FillBlob(Blob_List *const bloblist,Blob *const blob)
+@@ -73,6 +285,36 @@ bool Signal_Processes::FillBlob(Blob_List *const bloblist,Blob *const blob)
  {
    DEBUG_FUNC(blob->Id());
    PHASIC::Process_Base *proc(p_mehandler->Process());
@@ -315,9 +326,15 @@ index 3c6aef2..2b6e376 100644
 +    const bool prefer_decay_singlet
 +      (Settings::GetMainSettings()["LHEF_ASSIGN_MISSING_QQBAR_SINGLET"]
 +       .SetDefault(false).Get<bool>());
-+    lheflows=BuildLHEColourFlows(*stored_ci,*stored_cj,proc->Flavours(),
-+                                 proc->NIn(),prefer_decay_singlet,
-+                                 m_lhecolordebug);
++    try {
++      lheflows=BuildLHEColourFlows(*stored_ci,*stored_cj,proc->Flavours(),
++                                   proc->NIn(),prefer_decay_singlet,
++                                   m_lhecolordebug);
++    }
++    catch (const LHEColourFlowRetry &retry) {
++      msg_Info()<<retry.Message()<<" Retrying event.\n";
++      return false;
++    }
 +  }
    blob->SetPosition(Vec4D(0.,0.,0.,0.));
    blob->SetTypeSpec(proc->Parent()->Name());
