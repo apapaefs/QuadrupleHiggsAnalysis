@@ -19,6 +19,88 @@ and c3/d4 limit plotting.
 files and cross sections. The generated `HW-*.in` files are included for the
 current background samples.
 
+## Herwig and Limit Analysis Pipeline
+
+Start from the repository root and load the Herwig environment used for the
+HwSim plugin:
+
+```bash
+cd /mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis
+module load herwig/stable-full-py3-rivet4
+```
+
+The c3/d4 signal grid is driven by
+`HerwigSignalPoints/c3d4_10k/herwig_inputs_to_run.txt`. If the corresponding
+ROOT files are missing or need to be regenerated, launch the prepared signal
+inputs with:
+
+```bash
+python3 run_herwig_signal_inputs.py \
+  --list HerwigSignalPoints/c3d4_10k/herwig_inputs_to_run.txt \
+  --jobs 57
+```
+
+The SM signal is trained separately by the analyzer. If its Herwig ROOT file is
+missing, run:
+
+```bash
+printf '%s\n' "$PWD/Signals/HW-gg_hhhh_SM.in" > /tmp/herwig_sm_signal_inputs.txt
+
+python3 run_herwig_signal_inputs.py \
+  --list /tmp/herwig_sm_signal_inputs.txt \
+  --jobs 1
+```
+
+For the current single-background workflow, use the local deduplicated
+`g g -> 8b` LHE file as the input to `Backgrounds/HW-gg_to_8b.in`:
+
+```text
+Backgrounds/merged_gg8b_colorflow_sherpa_runs_plus_gilberto_20260626_dedup.lhe
+```
+
+Large LHE inputs are local campaign products and should not be committed to git.
+Keep `Backgrounds/processes.csv` aligned with the local LHE filename and cross
+section, then regenerate the background Herwig manifest:
+
+```bash
+python3 4h_analyzer.py \
+  --prepare-background-herwig-inputs \
+  --background-csv Backgrounds/processes.csv
+```
+
+Run Herwig over the selected background inputs:
+
+```bash
+python3 run_herwig_signal_inputs.py \
+  --list Backgrounds/herwig_background_inputs_to_run.txt \
+  --jobs 1
+```
+
+Finally run the SM-trained XGBoost optimization, score the c3/d4 signal grid,
+run any missing C++ `*_var.smearCMS.root` analysis outputs, compute efficiencies,
+and write the cross-section and 95% CL limit plots:
+
+```bash
+python3 4h_analyzer.py --run-c3d4-limit-scan \
+  --background-csv Backgrounds/processes.csv \
+  --analysis-jobs 6
+```
+
+The main physics defaults are:
+
+```text
+L = 3000 fb^-1
+signal K-factor = 2
+background K-factor = 2
+b-tag efficiency = 0.85
+c -> b mistag rate = 0.1
+j -> b mistag rate = 0.01
+```
+
+Override them with `--luminosity`, `--signal-k-factor`,
+`--background-k-factor`, `--btagging-rate`, `--c-mistag-rate`, and
+`--light-mistag-rate` as needed.
+
 ## Sherpa Colour-Flow OpenMPI Runs
 
 `SherpaColorFlow/` contains a vendored patched Sherpa source tree, corrected
