@@ -28,6 +28,9 @@ export.
   validator.
 - `scripts/merge_lhe_shards.py`: combines sharded LHE output into one closed
   LHE file while preserving the physical cross section.
+- `scripts/merge_lhe_normalized_weights.py`: combines independently produced
+  LHE source groups and rescales partially-unweighted `XWGTUP` values to a
+  requested total cross section.
 - `scripts/build_sherpa_mpi.sh`: MPI build helper.
 - `scripts/prepare_sherpa_run.py`: copies an example into a run directory,
   keeps `EVENTS` as the requested total with `MPI_EVENT_MODE: 1`, and applies
@@ -283,6 +286,47 @@ cross section and writes that into the merged `<init>` process line. This is
 needed for the seeded single-rank workflow, where the shard LHE files may carry
 placeholder init process lines such as `1 1 1 1`. The cross section is not
 summed over shards.
+
+## Merge independent weighted samples
+
+Use `merge_lhe_shards.py` for shards from one homogeneous production. If the
+final sample combines separate productions whose raw partially-unweighted
+`XWGTUP` values are on different scales, use
+`merge_lhe_normalized_weights.py` instead and pass the trusted total cross
+section explicitly.
+
+Each positional input is treated as one normalization source group. The script
+rescales events inside each group as
+
+```text
+new XWGTUP_i = sigma_total * f_source * old XWGTUP_i / sum_source(old XWGTUP)
+```
+
+with `sum_source(f_source) = 1`. By default
+`f_source = N_source / N_total`, so the merged file satisfies
+`sum_i XWGTUP_i = sigma_total`.
+
+Example for the `gg -> 8b` sample normalized to the shared integration result:
+
+```bash
+cd /mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis/SherpaColorFlow
+
+scripts/merge_lhe_normalized_weights.py \
+  runs/gg8b_template/events_from_shared_integration_3 \
+  runs/gg8b_template/events_from_shared_integration_3_topup_6352 \
+  runs/gg8b_template/events_from_shared_integration_4_10k \
+  /path/to/gilberto_extracted_lhe_files \
+  --total-xsec 0.00106993 \
+  --total-xerr 3.10012e-05 \
+  --output /path/to/merged_gg8b_colorflow_normalized.lhe
+```
+
+Do not feed an already-merged file back into this script unless it is meant to
+be a single source group. To apportion the cross section by weighted effective
+statistics instead of raw event counts, add
+`--fraction-mode effective-events`. The script writes a JSON manifest next to
+the output by default, including the event counts, raw weight sums, source
+fractions, and scale factors used for each group.
 
 Available process keys:
 
