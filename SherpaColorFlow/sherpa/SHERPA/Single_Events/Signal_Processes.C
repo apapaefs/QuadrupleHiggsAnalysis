@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <map>
 #include <sstream>
+#include <string>
 #include <vector>
 
 using namespace SHERPA;
@@ -31,6 +32,16 @@ namespace {
 
 struct LHEColourFlowPlan {
   std::vector<int> m_flow1, m_flow2;
+};
+
+class LHEColourFlowRetry {
+public:
+  explicit LHEColourFlowRetry(const std::string &msg): m_msg(msg) {}
+
+  const std::string &Message() const { return m_msg; }
+
+private:
+  std::string m_msg;
 };
 
 void SetLHEEndpoint(LHEColourFlowPlan &flows,const size_t leg,
@@ -186,7 +197,7 @@ LHEColourFlowPlan BuildLHEColourFlows(const std::vector<int> &ci,
             "sampled colour label ")+ToString(label)+": "
             +ToString(cs.size())+" colour end(s) and "
             +ToString(as.size())+" anticolour end(s).");
-      THROW(fatal_error,msg);
+      throw LHEColourFlowRetry(msg);
     }
     std::vector<int> used(as.size(),0);
     std::vector<size_t> match(cs.size(),0);
@@ -195,7 +206,7 @@ LHEColourFlowPlan BuildLHEColourFlows(const std::vector<int> &ci,
             "sampled colour label ")+ToString(label)+" without self-connecting "
             "a gluon. Colour legs="+LegVectorString(cs)
             +" anticolour legs="+LegVectorString(as)+".");
-      THROW(fatal_error,msg);
+      throw LHEColourFlowRetry(msg);
     }
     for (size_t i(0);i<cs.size();++i) {
       const int tag(nexttag++);
@@ -216,14 +227,14 @@ LHEColourFlowPlan BuildLHEColourFlows(const std::vector<int> &ci,
       const std::string msg(std::string("LHE colour-flow hack produced an "
             "invalid gluon flow on leg ")+ToString(i)+": "
             +ToString(flows.m_flow1[i])+","+ToString(flows.m_flow2[i])+".");
-      THROW(fatal_error,msg);
+      throw LHEColourFlowRetry(msg);
     }
     if (flavs[i].IsQuark() &&
         ((flows.m_flow1[i]!=0)==(flows.m_flow2[i]!=0))) {
       const std::string msg(std::string("LHE colour-flow hack produced an "
             "invalid quark flow on leg ")+ToString(i)+": "
             +ToString(flows.m_flow1[i])+","+ToString(flows.m_flow2[i])+".");
-      THROW(fatal_error,msg);
+      throw LHEColourFlowRetry(msg);
     }
   }
   return flows;
@@ -305,9 +316,15 @@ bool Signal_Processes::FillBlob(Blob_List *const bloblist,Blob *const blob)
     const bool prefer_decay_singlet
       (Settings::GetMainSettings()["LHEF_ASSIGN_MISSING_QQBAR_SINGLET"]
        .SetDefault(false).Get<bool>());
-    lheflows=BuildLHEColourFlows(*stored_ci,*stored_cj,proc->Flavours(),
-                                 proc->NIn(),prefer_decay_singlet,
-                                 m_lhecolordebug);
+    try {
+      lheflows=BuildLHEColourFlows(*stored_ci,*stored_cj,proc->Flavours(),
+                                   proc->NIn(),prefer_decay_singlet,
+                                   m_lhecolordebug);
+    }
+    catch (const LHEColourFlowRetry &retry) {
+      msg_Info()<<retry.Message()<<" Retrying event.\n";
+      return false;
+    }
   }
   blob->SetPosition(Vec4D(0.,0.,0.,0.));
   blob->SetTypeSpec(proc->Parent()->Name());
