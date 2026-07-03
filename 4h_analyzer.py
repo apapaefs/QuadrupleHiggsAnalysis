@@ -15,6 +15,7 @@ from sample_report import (
     background_tag_rate_factor,
     signal_generation_rate_factor,
     signal_tag_rate_factor,
+    terminal_xgboost_mc_table,
 )
 
 DEFAULT_HBB_BRANCHING_RATIO = 0.5824
@@ -1298,6 +1299,22 @@ def _print_xgboost_threshold_summary(threshold, sm_signal_rows, background_rows,
     print(f"  Background analysis efficiency = {background_summary['analysis_efficiency']}")
     print(f"  Background XGBoost efficiency = {background_summary['xgboost_efficiency']}")
     print(f"  Background final efficiency = {background_summary['final_efficiency']}")
+    print()
+    print(
+        terminal_xgboost_mc_table(
+            sm_signal_rows,
+            title="Per-sample SM XGBoost MC event counts",
+            threshold=threshold,
+        )
+    )
+    print()
+    print(
+        terminal_xgboost_mc_table(
+            background_rows,
+            title="Per-sample background XGBoost MC event counts",
+            threshold=threshold,
+        )
+    )
 
 
 def _physics_rate_factor(hbb_branching_ratio, hbb_power, btagging_rate, btag_power):

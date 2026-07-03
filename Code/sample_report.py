@@ -212,6 +212,47 @@ def terminal_cutflow_table(rows, luminosity, threshold):
     return "\n".join(lines)
 
 
+def _score_row_label(row):
+    row = row or {}
+    label = row.get("label") or row.get("description") or row.get("process_id") or row.get("file") or "sample"
+    return terminal_label(label)
+
+
+def _expected_with_error(row):
+    value = row.get("expected_selected_events")
+    if value is None:
+        value = row.get("xgboost_events")
+    if value is None:
+        return "--"
+    error = row.get("expected_selected_error")
+    if error is None:
+        error = row.get("xgboost_events_error")
+    if error is None:
+        return terminal_number(value)
+    return f"{terminal_number(value)} +/- {terminal_number(error)}"
+
+
+def terminal_xgboost_mc_table(rows, title="Per-sample XGBoost MC event counts", threshold=None):
+    rows = list(rows or [])
+    headers = ["Sample", "MC selected / input", "N_XGB"]
+    table_rows = [
+        [
+            _score_row_label(row),
+            f"{int(row.get('selected_entries', 0))} / {int(row.get('entries', 0))}",
+            _expected_with_error(row),
+        ]
+        for row in rows
+    ]
+    if not table_rows:
+        table_rows = [["(no samples)", "0 / 0", "--"]]
+    lines = [str(title)]
+    if threshold is not None:
+        lines.append(f"XGBoost threshold = {float(threshold):g}")
+    lines.append("MC selected/input entries are raw classifier entries after the threshold; N_XGB is luminosity-normalized.")
+    lines.append(_terminal_table(headers, table_rows, right_aligned={1, 2}))
+    return "\n".join(lines)
+
+
 def sample_latex_label(metadata, is_signal=False):
     metadata = metadata or {}
     if is_signal:

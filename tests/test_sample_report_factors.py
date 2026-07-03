@@ -15,6 +15,7 @@ from sample_report import (  # noqa: E402
     signal_generation_rate_factor,
     signal_tag_rate_factor,
     terminal_cutflow_table,
+    terminal_xgboost_mc_table,
 )
 
 
@@ -127,6 +128,41 @@ class SampleReportFactorTests(unittest.TestCase):
         self.assertIn("pp->Z+6b, Z->b bbar", table)
         self.assertNotIn("$", table)
         self.assertIn("+", table)
+
+    def test_terminal_xgboost_mc_table_renders_per_sample_counts(self):
+        rows = [
+            {
+                "process_id": "sm_4h",
+                "description": r"SM $gg\to hhhh\to 8b$",
+                "entries": 120,
+                "selected_entries": 7,
+                "expected_selected_events": 0.42,
+                "expected_selected_error": 0.08,
+            },
+            {
+                "process_id": "gg_to_6b_2c",
+                "description": r"$gg\to 6b+c\bar{c}$",
+                "entries": 50000,
+                "selected_entries": 31,
+                "expected_selected_events": 1.25,
+                "expected_selected_error": 0.2,
+            },
+        ]
+
+        table = terminal_xgboost_mc_table(
+            rows,
+            title="Per-sample XGBoost MC event counts",
+            threshold=0.904,
+        )
+
+        self.assertIn("Per-sample XGBoost MC event counts", table)
+        self.assertIn("MC selected", table)
+        self.assertIn("7 / 120", table)
+        self.assertIn("31 / 50000", table)
+        self.assertIn("N_XGB", table)
+        self.assertIn("SM gg->hhhh->8b", table)
+        self.assertIn("gg->6b+c cbar", table)
+        self.assertNotIn("$", table)
 
 
 if __name__ == "__main__":
