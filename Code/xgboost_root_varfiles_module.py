@@ -25,7 +25,7 @@ from tqdm.auto import tqdm
 
 # functions to load root varfiles from HwSim
 from read_root_varfiles import *
-from sample_report import html_escape, latex_number, safe_feature_filename, sample_latex_label, terminal_cutflow_table
+from sample_report import cutflow_rates, html_escape, latex_number, safe_feature_filename, sample_latex_label, terminal_cutflow_table
     
 ###############
 # FUNCTIONS   #
@@ -566,8 +566,8 @@ def _write_cutflow_latex_table(path, rows, luminosity, threshold):
     lines = [
         rf"% Luminosity: {luminosity:g} fb^{{-1}}",
         rf"% XGBoost threshold: {threshold:g}",
-        "% Generation and input-selection columns include K-factors and decay branching ratios.",
-        "% XGBoost columns additionally include b-tag and mistag factors.",
+        "% Generation columns include K-factors and decay branching ratios.",
+        "% Input-selection and XGBoost columns additionally include b-tag and mistag factors.",
         r"\begin{tabular}{lrrrrrr}",
         r"\hline",
         (
@@ -714,9 +714,7 @@ def write_sample_report(
                 raw_weights,
                 normalisation_weight,
             )
-            generation_xsec = float(xsec_fb) * float(generation_factor)
             input_weight_sum = float(np.sum(raw_weights))
-            input_xsec = generation_xsec * input_weight_sum / normalisation if normalisation else 0.0
 
             if features.shape[0] > 0:
                 scores = model.predict_proba(features)[:, 1]
@@ -727,11 +725,17 @@ def write_sample_report(
 
             selected_weight_sum = float(np.sum(raw_weights[selected])) if raw_weights.size else 0.0
             selected_weight_sum_sq = float(np.sum(np.square(raw_weights[selected]))) if raw_weights.size else 0.0
-            xgboost_xsec = (
-                generation_xsec * float(tag_factor) * selected_weight_sum / normalisation
-                if normalisation
-                else 0.0
+            rates = cutflow_rates(
+                raw_xsec_fb=xsec_fb,
+                generation_rate_factor=generation_factor,
+                tag_rate_factor=tag_factor,
+                normalisation_weight=normalisation,
+                input_weight_sum=input_weight_sum,
+                selected_weight_sum=selected_weight_sum,
             )
+            generation_xsec = rates["generation_xsec_fb"]
+            input_xsec = rates["input_xsec_fb"]
+            xgboost_xsec = rates["xgboost_xsec_fb"]
             xgboost_error_events = (
                 luminosity * generation_xsec * float(tag_factor) * math.sqrt(selected_weight_sum_sq) / normalisation
                 if normalisation
@@ -837,8 +841,8 @@ def write_sample_report(
         "plots": plot_rows,
         "samples": rows,
         "normalisation": {
-            "generation_and_input_columns": "K-factors and decay branching ratios",
-            "xgboost_columns": "K-factors, decay branching ratios, and b-tag/mistag factors",
+            "generation_columns": "K-factors and decay branching ratios",
+            "input_and_xgboost_columns": "K-factors, decay branching ratios, and b-tag/mistag factors",
         },
     }
     _write_report_index(index_path, plot_rows, table_path, metadata)

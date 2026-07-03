@@ -69,6 +69,33 @@ def background_tag_rate_factor(metadata, btagging_rate, c_mistag_rate, light_mis
     )
 
 
+def cutflow_rates(
+    raw_xsec_fb,
+    generation_rate_factor,
+    tag_rate_factor,
+    normalisation_weight,
+    input_weight_sum,
+    selected_weight_sum,
+):
+    """Cross sections for the generation, input-selection, and XGBoost stages."""
+
+    generation_xsec = float(raw_xsec_fb) * float(generation_rate_factor)
+    normalisation = float(normalisation_weight or 0.0)
+    if normalisation == 0.0:
+        return {
+            "generation_xsec_fb": generation_xsec,
+            "input_xsec_fb": 0.0,
+            "xgboost_xsec_fb": 0.0,
+        }
+
+    tagged_generation_xsec = generation_xsec * float(tag_rate_factor)
+    return {
+        "generation_xsec_fb": generation_xsec,
+        "input_xsec_fb": tagged_generation_xsec * float(input_weight_sum) / normalisation,
+        "xgboost_xsec_fb": tagged_generation_xsec * float(selected_weight_sum) / normalisation,
+    }
+
+
 def safe_feature_filename(name):
     stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(name)).strip("_")
     return stem or "feature"
@@ -179,7 +206,7 @@ def terminal_cutflow_table(rows, luminosity, threshold):
     ]
     lines = [
         f"4H sample cutflow / rates (L = {float(luminosity):g} fb^-1, XGBoost threshold = {float(threshold):g})",
-        "Generation/input columns include K-factors and decay BRs; XGBoost columns also include b-tag/mistag factors.",
+        "Generation columns include K-factors and decay BRs; input/XGBoost columns also include b-tag/mistag factors.",
         _terminal_table(headers, table_rows, right_aligned=set(range(1, len(headers)))),
     ]
     return "\n".join(lines)

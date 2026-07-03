@@ -11,6 +11,7 @@ sys.path.insert(0, str(CODE_DIR))
 from sample_report import (  # noqa: E402
     background_generation_rate_factor,
     background_tag_rate_factor,
+    cutflow_rates,
     signal_generation_rate_factor,
     signal_tag_rate_factor,
     terminal_cutflow_table,
@@ -80,6 +81,20 @@ class SampleReportFactorTests(unittest.TestCase):
                 0.85**4 * 0.1**2 * 0.01**2,
             )
         )
+
+    def test_input_rate_includes_tag_factor(self):
+        rates = cutflow_rates(
+            raw_xsec_fb=10.0,
+            generation_rate_factor=2.0,
+            tag_rate_factor=0.25,
+            normalisation_weight=100.0,
+            input_weight_sum=50.0,
+            selected_weight_sum=10.0,
+        )
+
+        self.assertTrue(math.isclose(rates["generation_xsec_fb"], 20.0))
+        self.assertTrue(math.isclose(rates["input_xsec_fb"], 2.5))
+        self.assertTrue(math.isclose(rates["xgboost_xsec_fb"], 0.5))
 
     def test_terminal_cutflow_table_renders_plain_aligned_columns(self):
         rows = [
