@@ -165,6 +165,9 @@ Available Sherpa process keys:
 | `gg4b4c` | `g g -> b bbar b bbar c cbar c cbar` | `SherpaColorFlow/Examples/GluonFusion_GG_2bbbar_2ccbar_LHE/Sherpa.yaml` |
 | `gg4b2c2j` | `g g -> b bbar b bbar c cbar j j` | `SherpaColorFlow/Examples/GluonFusion_GG_2bbbar_ccbar_2j_LHE/Sherpa.yaml` |
 | `gg4b4j` | `g g -> b bbar b bbar j j j j` | `SherpaColorFlow/Examples/GluonFusion_GG_2bbbar_4j_LHE/Sherpa.yaml` |
+| `ttbar4b_0c4j` | `g g -> ttbar + 4b`, all-hadronic, 0 W-charm | `SherpaColorFlow/Examples/GluonFusion_GG_TTbar_4b_AllHad_0c4j_DecayOS_LHE/Sherpa.yaml` |
+| `ttbar4b_1c3j` | `g g -> ttbar + 4b`, all-hadronic, 1 W-charm | `SherpaColorFlow/Examples/GluonFusion_GG_TTbar_4b_AllHad_1c3j_DecayOS_LHE/Sherpa.yaml` |
+| `ttbar4b_2c2j` | `g g -> ttbar + 4b`, all-hadronic, 2 W-charm | `SherpaColorFlow/Examples/GluonFusion_GG_TTbar_4b_AllHad_2c2j_DecayOS_LHE/Sherpa.yaml` |
 | `z6b` | `p p -> Z + 6b`, `Z -> b bbar` | `SherpaColorFlow/Examples/PP_Z_6bbbar_Zbb_DecayOS_LHE/Sherpa.yaml` |
 
 See `SherpaColorFlow/README.md` for build commands, validation commands, and

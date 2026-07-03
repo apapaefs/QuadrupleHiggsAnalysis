@@ -15,6 +15,9 @@ EXAMPLES = {
     "gg6b2j": ROOT / "Examples" / "GluonFusion_GG_3bbbar_2j_LHE",
     "gg6bcc": ROOT / "Examples" / "GluonFusion_GG_3bbbar_ccbar_LHE",
     "gg8b": ROOT / "Examples" / "GluonFusion_GG_4bbbar_LHE",
+    "ttbar4b_0c4j": ROOT / "Examples" / "GluonFusion_GG_TTbar_4b_AllHad_0c4j_DecayOS_LHE",
+    "ttbar4b_1c3j": ROOT / "Examples" / "GluonFusion_GG_TTbar_4b_AllHad_1c3j_DecayOS_LHE",
+    "ttbar4b_2c2j": ROOT / "Examples" / "GluonFusion_GG_TTbar_4b_AllHad_2c2j_DecayOS_LHE",
     "z6b": ROOT / "Examples" / "PP_Z_6bbbar_Zbb_DecayOS_LHE",
 }
 

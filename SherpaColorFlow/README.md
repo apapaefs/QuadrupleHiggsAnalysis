@@ -22,6 +22,12 @@ export.
 - `Examples/GluonFusion_GG_2bbbar_4j_LHE/Sherpa.yaml`: `gg -> 4b + 4j`.
 - `Examples/PP_Z_6bbbar_Zbb_DecayOS_LHE/Sherpa.yaml`: corrected
   `p p -> Z + 6b`, `Z -> b bbar` card.
+- `Examples/GluonFusion_GG_TTbar_4b_AllHad_0c4j_DecayOS_LHE/Sherpa.yaml`: `gg -> ttbar + 4b`
+  with all-hadronic top decays and no W-decay charm quarks.
+- `Examples/GluonFusion_GG_TTbar_4b_AllHad_1c3j_DecayOS_LHE/Sherpa.yaml`: `gg -> ttbar + 4b`
+  with all-hadronic top decays and exactly one W-decay charm quark.
+- `Examples/GluonFusion_GG_TTbar_4b_AllHad_2c2j_DecayOS_LHE/Sherpa.yaml`: `gg -> ttbar + 4b`
+  with all-hadronic top decays and two W-decay charm quarks.
 - `sherpa/Examples/QuadrupleHiggs/`: mirrored copies of the `gg` example
   cards inside the patched Sherpa source tree.
 - `scripts/validate_lhe_color.py`: generic LHE mass-shell and colour-flow
@@ -338,6 +344,9 @@ Available process keys:
 | `gg4b4c` | `g g -> b bbar b bbar c cbar c cbar` | `gg_2bbbar_2ccbar` |
 | `gg4b2c2j` | `g g -> b bbar b bbar c cbar j j` | `gg_2bbbar_ccbar_2j` |
 | `gg4b4j` | `g g -> b bbar b bbar j j j j` | `gg_2bbbar_4j` |
+| `ttbar4b_0c4j` | `g g -> ttbar + 4b`, all-hadronic, 0 W-charm | `ttbar_4b_allhad_0c4j_decayos` |
+| `ttbar4b_1c3j` | `g g -> ttbar + 4b`, all-hadronic, 1 W-charm | `ttbar_4b_allhad_1c3j_decayos` |
+| `ttbar4b_2c2j` | `g g -> ttbar + 4b`, all-hadronic, 2 W-charm | `ttbar_4b_allhad_2c2j_decayos` |
 | `z6b` | `p p -> Z + 6b`, `Z -> b bbar` | `pp_z_3bb_zbb_decayos_colorhack` |
 
 ## Validate LHE output
