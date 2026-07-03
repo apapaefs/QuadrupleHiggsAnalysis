@@ -94,6 +94,97 @@ def latex_number(value, precision=3):
     return rf"{mantissa_text}\times 10^{{{exponent}}}"
 
 
+def terminal_number(value, precision=4):
+    value = float(value)
+    if not math.isfinite(value):
+        return "--"
+    if value == 0.0:
+        return "0"
+    return f"{value:.{precision}g}"
+
+
+def terminal_label(label):
+    label = str(label)
+    replacements = (
+        (r"\bar{b}", "bbar"),
+        (r"\bar{c}", "cbar"),
+        (r"\to", "->"),
+        (r"\,", " "),
+        ("\\ ", " "),
+        ("$", ""),
+        ("{", ""),
+        ("}", ""),
+    )
+    for old, new in replacements:
+        label = label.replace(old, new)
+    label = re.sub(r"\\mathrm\s*([^ ]+)", r"\1", label)
+    label = re.sub(r"\\[A-Za-z]+", "", label)
+    label = label.replace("bbbar", "b bbar").replace("ccbar", "c cbar")
+    label = re.sub(r"\s+", " ", label).strip()
+    label = label.replace(" ->", "->").replace("-> ", "->")
+    label = label.replace(" ,", ",")
+    return label
+
+
+def _terminal_separator(widths):
+    return "+" + "+".join("-" * (width + 2) for width in widths) + "+"
+
+
+def _terminal_table(headers, rows, right_aligned=None):
+    right_aligned = set(right_aligned or [])
+    text_rows = [[str(value) for value in row] for row in rows]
+    widths = [
+        max(len(str(header)), *(len(row[index]) for row in text_rows))
+        for index, header in enumerate(headers)
+    ]
+    separator = _terminal_separator(widths)
+
+    def fmt_row(row):
+        cells = []
+        for index, value in enumerate(row):
+            value = str(value)
+            if index in right_aligned:
+                cells.append(" " + value.rjust(widths[index]) + " ")
+            else:
+                cells.append(" " + value.ljust(widths[index]) + " ")
+        return "|" + "|".join(cells) + "|"
+
+    lines = [separator, fmt_row(headers), separator]
+    lines.extend(fmt_row(row) for row in text_rows)
+    lines.append(separator)
+    return "\n".join(lines)
+
+
+def terminal_cutflow_table(rows, luminosity, threshold):
+    headers = [
+        "Sample",
+        "sigma_gen [fb]",
+        "N_gen",
+        "sigma_input [fb]",
+        "N_input",
+        "sigma_XGB [fb]",
+        "N_XGB",
+    ]
+    table_rows = [
+        [
+            terminal_label(row["label"]),
+            terminal_number(row["generation_xsec_fb"]),
+            terminal_number(row["generation_events"]),
+            terminal_number(row["input_xsec_fb"]),
+            terminal_number(row["input_events"]),
+            terminal_number(row["xgboost_xsec_fb"]),
+            terminal_number(row["xgboost_events"]),
+        ]
+        for row in rows
+    ]
+    lines = [
+        f"4H sample cutflow / rates (L = {float(luminosity):g} fb^-1, XGBoost threshold = {float(threshold):g})",
+        "Generation/input columns include K-factors and decay BRs; XGBoost columns also include b-tag/mistag factors.",
+        _terminal_table(headers, table_rows, right_aligned=set(range(1, len(headers)))),
+    ]
+    return "\n".join(lines)
+
+
 def sample_latex_label(metadata, is_signal=False):
     metadata = metadata or {}
     if is_signal:

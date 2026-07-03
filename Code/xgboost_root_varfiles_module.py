@@ -25,7 +25,7 @@ from tqdm.auto import tqdm
 
 # functions to load root varfiles from HwSim
 from read_root_varfiles import *
-from sample_report import html_escape, latex_number, safe_feature_filename, sample_latex_label
+from sample_report import html_escape, latex_number, safe_feature_filename, sample_latex_label, terminal_cutflow_table
     
 ###############
 # FUNCTIONS   #
@@ -847,6 +847,8 @@ def write_sample_report(
 
     print("Wrote sample report table:", table_path)
     print("Wrote sample report index:", index_path)
+    print()
+    print(terminal_cutflow_table(rows, luminosity, threshold))
     return metadata
 
 

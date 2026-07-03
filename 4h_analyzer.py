@@ -2047,28 +2047,6 @@ def _run_local_xgboost_cli():
             background_scores["backgrounds"],
             args.luminosity,
         )
-        if not args.no_sample_report:
-            write_sample_report(
-                signal_files=signal_files,
-                background_files=background_files,
-                output_dir=_sample_report_dir(args, args.c3d4_scan_outdir),
-                model_file=model_file,
-                threshold=threshold,
-                signal_xsecs_fb=signal_xsecs,
-                background_xsecs_fb=background_xsecs,
-                signal_generation_rate_factors=signal_generation_factor,
-                background_generation_rate_factors=background_generation_factor,
-                signal_tag_rate_factors=signal_tag_factor,
-                background_tag_rate_factors=background_tag_factor,
-                signal_generated_events=signal_generated,
-                background_generated_events=background_generated,
-                signal_normalisation_weights=signal_normalisation_weights,
-                background_normalisation_weights=background_normalisation_weights,
-                signal_metadata=signal_metadata,
-                background_metadata=background_metadata,
-                luminosity=args.luminosity,
-                max_events=args.max_events,
-            )
         background_events = background_scores["metadata"]["expected_selected_events_total"]
         if background_events <= 0.0:
             background_events = metrics["expected_preselected_background_events"] * best_threshold["background_efficiency"]
@@ -2156,6 +2134,28 @@ def _run_local_xgboost_cli():
             rate_metadata=rate_metadata,
         )
         _print_sm_background_mc_counts(metrics)
+        if not args.no_sample_report:
+            write_sample_report(
+                signal_files=signal_files,
+                background_files=background_files,
+                output_dir=_sample_report_dir(args, args.c3d4_scan_outdir),
+                model_file=model_file,
+                threshold=threshold,
+                signal_xsecs_fb=signal_xsecs,
+                background_xsecs_fb=background_xsecs,
+                signal_generation_rate_factors=signal_generation_factor,
+                background_generation_rate_factors=background_generation_factor,
+                signal_tag_rate_factors=signal_tag_factor,
+                background_tag_rate_factors=background_tag_factor,
+                signal_generated_events=signal_generated,
+                background_generated_events=background_generated,
+                signal_normalisation_weights=signal_normalisation_weights,
+                background_normalisation_weights=background_normalisation_weights,
+                signal_metadata=signal_metadata,
+                background_metadata=background_metadata,
+                luminosity=args.luminosity,
+                max_events=args.max_events,
+            )
         return 0
 
     score_inputs = []
