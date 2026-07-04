@@ -1,5 +1,6 @@
 import math
 import csv
+import json
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,7 @@ from ForcedSplitting.lhe_validation import (  # noqa: E402
     parse_lhe_events,
 )
 from ForcedSplitting.lhe_weights import apply_weights  # noqa: E402
+from ForcedSplitting.run_chain import ChainConfig, run_chain  # noqa: E402
 from ForcedSplitting.signal_pipeline import prepare_forced_splitting_inputs  # noqa: E402
 
 
@@ -352,6 +354,78 @@ class ForcedSplittingTests(unittest.TestCase):
             self.assertTrue(math.isclose(weights[0], 1.25, rel_tol=0.0, abs_tol=1e-12))
             self.assertTrue(math.isclose(weights[1], 7.5, rel_tol=0.0, abs_tol=1e-12))
             self.assertTrue(math.isclose(sum(weights) / len(weights), 4.375, rel_tol=0.0, abs_tol=1e-12))
+
+    def test_single_command_chain_applies_trial_weights_before_stage2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            input_lhe = tmpdir / "unweighted_events.lhe.gz"
+            input_lhe.write_text("placeholder\n")
+            workdir = tmpdir / "work"
+            commands = []
+
+            def fake_runner(command, cwd):
+                commands.append((tuple(command), Path(cwd)))
+                run_name = Path(command[-1]).stem
+                if command[:2] == ["Herwig", "read"]:
+                    (Path(cwd) / ("%s.run" % run_name)).write_text("run\n")
+                if command[:2] == ["Herwig", "run"] and run_name.endswith("_stage1"):
+                    (Path(cwd) / ("%s.lhe" % run_name)).write_text(
+                        """<LesHouchesEvents version=\"1.0\">
+<init>
+     2212     2212           7000           7000  999  999  999  999    0    1
+   1.000000e+01   1.000000e+00            100      0
+</init>
+<event>
+    2      1              1        581.354    0.007546771     0.09944864
+        25  1    0    0  0  0  0.0  0.0  0.0  125.0  125.0  0.0  9.0
+        21  1    0    0  501  502  0.0  0.0  0.0  10.0  0.0  0.0  9.0
+</event>
+<event>
+    2      1              3        581.354    0.007546771     0.09944864
+        25  1    0    0  0  0  0.0  0.0  0.0  125.0  125.0  0.0  9.0
+        21  1    0    0  501  502  0.0  0.0  0.0  10.0  0.0  0.0  9.0
+</event>
+</LesHouchesEvents>
+"""
+                    )
+                    (Path(cwd) / ("%s.force_split.weights" % run_name)).write_text(
+                        "# accepted_event probe_trials probe_successes p_hat total_attempts post_probe_attempts\n"
+                        "1 20 5 0.25 23 3\n"
+                        "2 20 10 0.5 21 1\n"
+                    )
+                if command[:2] == ["Herwig", "run"] and run_name.endswith("_stage2"):
+                    events_dir = Path(cwd) / "events"
+                    events_dir.mkdir(exist_ok=True)
+                    (events_dir / ("%s.root" % run_name)).write_text("root\n")
+
+            summary = run_chain(
+                ChainConfig(
+                    process="gg_hhhg",
+                    input_lhe=input_lhe,
+                    workdir=workdir,
+                    events=2,
+                    probe_trials=20,
+                    run_name="pilot",
+                ),
+                runner=fake_runner,
+            )
+
+            self.assertEqual(
+                [command for command, _ in commands],
+                [
+                    ("Herwig", "read", "pilot_stage1.in"),
+                    ("Herwig", "run", "pilot_stage1.run"),
+                    ("Herwig", "read", "pilot_stage2.in"),
+                    ("Herwig", "run", "pilot_stage2.run"),
+                ],
+            )
+            self.assertEqual(summary["stage2_lhe"], "pilot_stage1.weighted.lhe")
+            self.assertEqual(summary["weight_check"]["correction_rows"], 2)
+            self.assertEqual(summary["weight_check"]["zero_success_rows"], 0)
+            self.assertTrue(math.isclose(summary["weight_check"]["mean_p_hat"], 0.375))
+            self.assertTrue(math.isclose(summary["weight_check"]["weighted_mean_xwgtup"], 4.375))
+            self.assertIn("set theLHReader:FileName pilot_stage1.weighted.lhe", (workdir / "pilot_stage2.in").read_text())
+            self.assertEqual(json.loads((workdir / "pilot_summary.json").read_text())["stage2_lhe"], "pilot_stage1.weighted.lhe")
 
 
 if __name__ == "__main__":
