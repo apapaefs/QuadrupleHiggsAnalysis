@@ -126,6 +126,7 @@ def prepare_forced_splitting_inputs(
     stage1_inputs = []
     stage1_outputs = []
     stage2_inputs = []
+    stage1_reweight_inputs = []
 
     for run_dir in _run_dirs(mg5_dir):
         c3, d4 = parse_c3d4(run_dir)
@@ -136,7 +137,9 @@ def prepare_forced_splitting_inputs(
         stage1_input = output_dir / ("%s.in" % stage1_run_name)
         stage2_input = output_dir / ("%s.in" % stage2_run_name)
         stage1_output_lhe = "%s.lhe" % stage1_run_name
+        stage1_weighted_lhe = "%s.weighted.lhe" % stage1_run_name
         stage1_correction = "%s.force_split.weights" % stage1_run_name
+        stage2_lhe_file = stage1_weighted_lhe if probe_trials > 0 else stage1_output_lhe
         seed_stage1 = _stable_seed(stage1_run_name)
         seed_stage2 = _stable_seed(stage2_run_name)
         stage2_root = output_dir / output_location / ("%s.root" % stage2_run_name)
@@ -152,8 +155,10 @@ def prepare_forced_splitting_inputs(
             "stage1_input": str(stage1_input),
             "stage1_run": str(output_dir / ("%s.run" % stage1_run_name)),
             "stage1_output_lhe": str(output_dir / stage1_output_lhe),
+            "stage1_weighted_lhe": str(output_dir / stage1_weighted_lhe) if probe_trials > 0 else "",
             "stage1_correction_file": str(output_dir / stage1_correction),
             "stage2_run_name": stage2_run_name,
+            "stage2_lhe_file": str(output_dir / stage2_lhe_file),
             "stage2_input": str(stage2_input),
             "stage2_run": str(output_dir / ("%s.run" % stage2_run_name)),
             "stage2_output_root": str(stage2_root),
@@ -183,6 +188,8 @@ def prepare_forced_splitting_inputs(
             rows.append(row)
             stage1_inputs.append(stage1_input.name)
             stage1_outputs.append(stage1_output_lhe)
+            if probe_trials > 0:
+                stage1_reweight_inputs.append("%s %s %s" % (stage1_output_lhe, stage1_correction, stage1_weighted_lhe))
             stage2_inputs.append(stage2_input.name)
             continue
 
@@ -196,7 +203,7 @@ def prepare_forced_splitting_inputs(
             correction_file=stage1_correction,
         )
         stage2_text = stage2_hwsim_card(
-            input_lhe=stage1_output_lhe,
+            input_lhe=stage2_lhe_file,
             output_location=output_location,
             events=events,
             run_name=stage2_run_name,
@@ -208,6 +215,8 @@ def prepare_forced_splitting_inputs(
         rows.append(row)
         stage1_inputs.append(stage1_input.name)
         stage1_outputs.append(stage1_output_lhe)
+        if probe_trials > 0:
+            stage1_reweight_inputs.append("%s %s %s" % (stage1_output_lhe, stage1_correction, stage1_weighted_lhe))
         stage2_inputs.append(stage2_input.name)
 
     fieldnames = [
@@ -221,8 +230,10 @@ def prepare_forced_splitting_inputs(
         "stage1_input",
         "stage1_run",
         "stage1_output_lhe",
+        "stage1_weighted_lhe",
         "stage1_correction_file",
         "stage2_run_name",
+        "stage2_lhe_file",
         "stage2_input",
         "stage2_run",
         "stage2_output_root",
@@ -239,6 +250,7 @@ def prepare_forced_splitting_inputs(
 
     _write_input_list(output_dir / "stage1_inputs_to_run.txt", stage1_inputs)
     _write_input_list(output_dir / "stage1_outputs_to_normalize.txt", stage1_outputs)
+    _write_input_list(output_dir / "stage1_outputs_to_reweight.txt", stage1_reweight_inputs)
     _write_input_list(output_dir / "stage2_inputs_to_run.txt", stage2_inputs)
 
     return manifest_file
@@ -273,6 +285,7 @@ def main(argv=None):
     print("Prepared forced-splitting manifest:", manifest)
     print("Stage-1 input list:", Path(args.outdir) / "stage1_inputs_to_run.txt")
     print("Stage-1 split-LHE normalization list:", Path(args.outdir) / "stage1_outputs_to_normalize.txt")
+    print("Stage-1 split-LHE reweighting list:", Path(args.outdir) / "stage1_outputs_to_reweight.txt")
     print("Stage-2 input list:", Path(args.outdir) / "stage2_inputs_to_run.txt")
 
 

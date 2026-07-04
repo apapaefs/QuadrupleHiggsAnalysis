@@ -54,6 +54,21 @@ before Stage 2 to avoid the Herwig `found undeclared processes` warning:
 python3 -m ForcedSplitting.lhe_validation normalize-process-ids toy_hhgg_stage1.lhe
 ```
 
+For final production with nonzero `ProbeTrials`, apply the forced-splitting
+acceptance sidecar before Stage 2:
+
+```sh
+python3 -m ForcedSplitting.lhe_weights \
+  toy_hhgg_stage1.lhe \
+  toy_hhgg_stage1.force_split.weights \
+  toy_hhgg_stage1.weighted.lhe
+```
+
+This multiplies each event weight by the event's `p_hat` estimate from the
+sidecar and updates the LHE `<init>` cross section.  With equal unit input
+event weights, the weighted LHE satisfies
+`mean(XWGTUP) = XSECUP * mean(p_hat)`.
+
 Create the `HwSim:OutputLocation` directory before running Stage 2.  For
 nested sample-specific directories, use the exact directory name produced by
 the card or keep `--output-location events/` and separate outputs by run name.
@@ -86,6 +101,7 @@ The pipeline writes:
 - `forced_splitting_manifest.csv`;
 - `stage1_inputs_to_run.txt`;
 - `stage1_outputs_to_normalize.txt`;
+- `stage1_outputs_to_reweight.txt`;
 - `stage2_inputs_to_run.txt`;
 - one Stage-1 LHEWriter card and one Stage-2 HwSim card per selected MG5 run.
 
@@ -106,6 +122,23 @@ Normalize the Stage-1 split LHE process ids:
 while read lhe; do python3 -m ForcedSplitting.lhe_validation normalize-process-ids "$lhe"; done < stage1_outputs_to_normalize.txt
 ```
 
+For final production runs prepared with nonzero `--probe-trials`, apply the
+sidecar acceptance factors:
+
+```sh
+while read inlhe weights outlhe; do python3 -m ForcedSplitting.lhe_weights "$inlhe" "$weights" "$outlhe"; done < stage1_outputs_to_reweight.txt
+```
+
+Check the sidecars before Stage 2:
+
+```sh
+awk 'NF && $1 !~ /^#/ {n++; if ($3 == 0) z++; sum += $4} END {print "rows", n, "zero_success_rows", z+0, "mean_p_hat", sum/n}' *.force_split.weights
+```
+
+Rows with `probe_successes = 0` become zero-weight events in the weighted LHE.
+Herwig skips zero-weight LHE events under `VarNegWeight`, so final production
+should use enough `ProbeTrials` that zero-success rows are absent or negligible.
+
 Then run Stage 2 after the split LHE files exist:
 
 ```sh
@@ -113,5 +146,5 @@ while read card; do Herwig read "$card"; Herwig run "${card%.in}.run"; done < st
 ```
 
 For final production with split-filter corrections, repeat the preparation with
-a nonzero `--probe-trials` value and apply the veto sidecar weights before using
-the split LHE rates.
+a nonzero `--probe-trials` value.  In that mode the pipeline writes Stage-2
+cards that read the `.weighted.lhe` files.
