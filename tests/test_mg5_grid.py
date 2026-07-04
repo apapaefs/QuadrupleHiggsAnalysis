@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 
-from ForcedSplitting.mg5_grid import prepare_mg5_grid
+from ForcedSplitting.mg5_grid import MG5_PROCESS_CONFIGS, prepare_mg5_grid
 
 
 def write_manifest(path):
@@ -156,6 +156,31 @@ class MG5GridTests(unittest.TestCase):
             self.assertEqual(cwd, process_dir)
             self.assertTrue(str(log_path).endswith("mg5_grid.log"))
             self.assertEqual(summary["run_status"], "complete")
+
+    def test_mg5_grid_supports_hggg_process_directory_and_run_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            process_dir = tmpdir / "gg_hggg"
+            process_dir.mkdir()
+            manifest = tmpdir / "signal_manifest.csv"
+            run_card = tmpdir / "run_card.dat"
+            write_manifest(manifest)
+            write_signal_run_card(run_card)
+
+            summary = prepare_mg5_grid(
+                process="gg_hggg",
+                process_dir=process_dir,
+                reference_grid_manifest=manifest,
+                events=1000,
+                signal_run_card=run_card,
+                dry_run=True,
+            )
+
+            deck_text = Path(summary["deck"]).read_text()
+            self.assertIn("generate g g > h g g g [noborn=QCD]", MG5_PROCESS_CONFIGS["gg_hggg"].process_card_line)
+            self.assertIn("launch run_gg_hggg_4_0.0_0.0", deck_text)
+            self.assertIn("launch run_gg_hggg_4_1.0_100.0", deck_text)
+            self.assertEqual(MG5_PROCESS_CONFIGS["gg_hggg"].default_process_dir, "gg_hggg")
 
 
 if __name__ == "__main__":

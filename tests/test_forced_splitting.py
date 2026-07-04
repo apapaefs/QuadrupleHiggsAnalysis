@@ -139,6 +139,25 @@ class ForcedSplittingTests(unittest.TestCase):
         self.assertIn("set ShowerHandler:LimitEmissions NoLimit", card)
         self.assertIn("set ForceSplitVeto:ProbeTrials 10", card)
 
+    def test_hggg_stage1_card_requires_three_distinct_split_pairs(self):
+        card = stage1_lhewriter_card(
+            PROCESS_CONFIGS["gg_hggg"],
+            input_lhe="gg_hggg.lhe",
+            output_prefix="gg_hggg_split",
+            events=3,
+            probe_trials=30,
+            correction_file="gg_hggg_split.weights",
+        )
+
+        self.assertIn("set ForceSplitVeto:MinB 6", card)
+        self.assertIn("set ForceSplitVeto:MinSplitPairs 3", card)
+        self.assertIn("set ForceSplitVeto:RequireDistinctHardGluons Yes", card)
+        self.assertIn("set ForceSplitVeto:SplitMinBPt 15*GeV", card)
+        self.assertIn("set ForceSplitVeto:SplitMaxBEta 3.0", card)
+        self.assertIn("set ShowerHandler:LimitEmissions NoLimit", card)
+        self.assertIn("erase ShowerHandler:DecayInShower 3", card)
+        self.assertNotIn("SelectDecayModes h0->b,bbar", card)
+
     def test_stage2_card_forces_higgs_decays_and_runs_hwsim(self):
         card = stage2_hwsim_card(
             input_lhe="gg_hhhg_split.lhe",
@@ -299,6 +318,29 @@ class ForcedSplittingTests(unittest.TestCase):
 
             stage2_card = Path(rows[0]["stage2_input"]).read_text()
             self.assertIn("set theLHReader:FileName %s" % fields[2], stage2_card)
+
+    def test_forced_splitting_pipeline_accepts_hggg_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            run_dir = tmpdir / "mg5" / "Events" / "run_gg_hggg_4_1.0_100.0"
+            run_dir.mkdir(parents=True)
+            (run_dir / "unweighted_events.lhe.gz").write_text("placeholder\n")
+
+            manifest = prepare_forced_splitting_inputs(
+                process="gg_hggg",
+                mg5_dir=tmpdir / "mg5",
+                output_dir=tmpdir / "forced",
+                events=1000,
+                probe_trials=25,
+            )
+
+            with manifest.open() as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["process"], "gg_hggg")
+            stage1_card = Path(rows[0]["stage1_input"]).read_text()
+            self.assertIn("set ForceSplitVeto:MinB 6", stage1_card)
+            self.assertIn("set ForceSplitVeto:MinSplitPairs 3", stage1_card)
 
     def test_lhe_process_id_normalizer_repairs_herwig_lhewriter_mismatch(self):
         lhe_text = """<LesHouchesEvents version=\"1.0\">

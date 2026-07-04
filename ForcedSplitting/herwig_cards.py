@@ -35,6 +35,14 @@ PROCESS_CONFIGS = {
         limit_emissions="NoLimit",
         description="gg -> hh + gg with two distinct forced final-state g -> b bbar splits",
     ),
+    "gg_hggg": ProcessConfig(
+        process_id="gg_hggg",
+        min_b=6,
+        min_split_pairs=3,
+        require_distinct_hard_gluons=True,
+        limit_emissions="NoLimit",
+        description="gg -> h + ggg with three distinct forced final-state g -> b bbar splits",
+    ),
 }
 
 

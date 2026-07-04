@@ -1,13 +1,14 @@
 # Forced g -> b bbar Splitting Smoke Tests
 
 This directory contains the local steering helpers for the approximate
-`gg -> hhh + 2b` and `gg -> hh + 4b` samples.
+`gg -> hhh + 2b`, `gg -> hh + 4b`, and `gg -> h + 6b` samples.
 
 Stage 1 reads the full-loop MG5 hard process and writes an intermediate LHE
 after showering only final-state `g -> b,bbar`:
 
 - `gg_hhhg`: `MinB = 2`, `MinSplitPairs = 1`, `LimitEmissions = OneFinalStateEmission`.
 - `gg_hhgg`: `MinB = 4`, `MinSplitPairs = 2`, `RequireDistinctHardGluons = Yes`, `LimitEmissions = NoLimit`.
+- `gg_hggg`: `MinB = 6`, `MinSplitPairs = 3`, `RequireDistinctHardGluons = Yes`, `LimitEmissions = NoLimit`.
 
 Both cards set `SplitMinBPt = 15*GeV`, `SplitMaxBEta = 3.0`,
 `SplitMinDeltaR = 0.3`, and `SplitMinDeltaRToOtherB = 0.3`.  Higgs decays
@@ -37,6 +38,12 @@ python3 -m ForcedSplitting.herwig_cards stage1 gg_hhgg \
   --output-prefix toy_hhgg_stage1 \
   --events 2 \
   --card-out toy_hhgg_stage1.in
+
+python3 -m ForcedSplitting.herwig_cards stage1 gg_hggg \
+  --input-lhe /mnt/ssd2/Projects/4H/MG5_aMC_v3_5_15/gg_hggg/Events/run_01/unweighted_events.lhe.gz \
+  --output-prefix gg_hggg_stage1 \
+  --events 100 \
+  --card-out gg_hggg_stage1.in
 
 python3 -m ForcedSplitting.herwig_cards stage2 \
   --input-lhe toy_hhgg_stage1.lhe \
@@ -87,8 +94,8 @@ python3 -m ForcedSplitting.run_chain gg_hhhg \
   --probe-trials 90000
 ```
 
-For `hh+gg`, replace `gg_hhhg` with `gg_hhgg` and choose a matching workdir
-and run name.  The command writes Stage-1 and Stage-2 Herwig cards, runs
+For `hh+gg` or `h+ggg`, replace `gg_hhhg` with `gg_hhgg` or `gg_hggg` and
+choose a matching workdir and run name.  The command writes Stage-1 and Stage-2 Herwig cards, runs
 `Herwig read/run` for both stages, normalizes the Stage-1 LHE process ids,
 applies the sidecar `p_hat` weights when `--probe-trials` is nonzero, verifies
 the weighted LHE, and writes a JSON summary such as
@@ -125,9 +132,11 @@ python3 -m ForcedSplitting.mg5_grid gg_hhhg \
   --dry-run
 ```
 
-Then launch the missing MG5 points by dropping `--dry-run`.  For `hh+gg`,
-replace `gg_hhhg` with `gg_hhgg`.  The generated runs are named like
-`Events/run_gg_hhhg_4_<c3>_<d4>/` or `Events/run_gg_hhgg_4_<c3>_<d4>/`.
+Then launch the missing MG5 points by dropping `--dry-run`.  For `hh+gg` or
+`h+ggg`, replace `gg_hhhg` with `gg_hhgg` or `gg_hggg`.  The generated runs are
+named like `Events/run_gg_hhhg_4_<c3>_<d4>/`,
+`Events/run_gg_hhgg_4_<c3>_<d4>/`, or
+`Events/run_gg_hggg_4_<c3>_<d4>/`.
 
 For an MG5 process directory with an `Events/` subdirectory, prepare the paired
 Stage-1 and Stage-2 Herwig cards with:
@@ -146,6 +155,16 @@ For `hh+gg`, use:
 python3 -m ForcedSplitting.signal_pipeline gg_hhgg \
   --mg5-dir /mnt/ssd2/Projects/4H/MG5_aMC_v3_5_15/gg_hhgg_c3d4 \
   --outdir HerwigForcedSplitting/gg_hhgg_c3d4_1k \
+  --events 1000 \
+  --reference-grid-manifest HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv
+```
+
+For `h+ggg`, use:
+
+```sh
+python3 -m ForcedSplitting.signal_pipeline gg_hggg \
+  --mg5-dir /mnt/ssd2/Projects/4H/MG5_aMC_v3_5_15/gg_hggg \
+  --outdir HerwigForcedSplitting/gg_hggg_c3d4_1k \
   --events 1000 \
   --reference-grid-manifest HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv
 ```

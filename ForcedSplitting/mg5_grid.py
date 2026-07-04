@@ -31,6 +31,12 @@ MG5_PROCESS_CONFIGS = {
         default_process_dir="gg_hhgg",
         process_card_line="generate g g > h h g g [noborn=QCD]",
     ),
+    "gg_hggg": MG5ProcessConfig(
+        process="gg_hggg",
+        run_prefix="run_gg_hggg",
+        default_process_dir="gg_hggg",
+        process_card_line="generate g g > h g g g [noborn=QCD]",
+    ),
 }
 
 
