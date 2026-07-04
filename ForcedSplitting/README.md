@@ -46,6 +46,14 @@ python3 -m ForcedSplitting.herwig_cards stage2 \
   --card-out toy_hhgg_stage2.in
 ```
 
+Herwig's LHEWriter may write a single-process split LHE with `LPRUP = 0` in
+the `<init>` block while the events use `IDPRUP = 1`.  Normalize the split LHE
+before Stage 2 to avoid the Herwig `found undeclared processes` warning:
+
+```sh
+python3 -m ForcedSplitting.lhe_validation normalize-process-ids toy_hhgg_stage1.lhe
+```
+
 Create the `HwSim:OutputLocation` directory before running Stage 2.  For
 nested sample-specific directories, use the exact directory name produced by
 the card or keep `--output-location events/` and separate outputs by run name.
@@ -77,6 +85,7 @@ The pipeline writes:
 
 - `forced_splitting_manifest.csv`;
 - `stage1_inputs_to_run.txt`;
+- `stage1_outputs_to_normalize.txt`;
 - `stage2_inputs_to_run.txt`;
 - one Stage-1 LHEWriter card and one Stage-2 HwSim card per selected MG5 run.
 
@@ -89,6 +98,12 @@ Run Stage 1 first:
 ```sh
 cd HerwigForcedSplitting/gg_hhhg_c3d4_1k
 while read card; do Herwig read "$card"; Herwig run "${card%.in}.run"; done < stage1_inputs_to_run.txt
+```
+
+Normalize the Stage-1 split LHE process ids:
+
+```sh
+while read lhe; do python3 -m ForcedSplitting.lhe_validation normalize-process-ids "$lhe"; done < stage1_outputs_to_normalize.txt
 ```
 
 Then run Stage 2 after the split LHE files exist:

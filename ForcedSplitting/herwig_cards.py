@@ -61,6 +61,13 @@ def _default_correction_file(output_prefix):
     return "%s.force_split.weights" % output_prefix
 
 
+def _output_location_for_hwsim(output_location):
+    output_location = str(output_location)
+    if output_location.endswith("/"):
+        return output_location
+    return output_location + "/"
+
+
 def stage1_lhewriter_card(
     config,
     input_lhe,
@@ -198,6 +205,7 @@ saverun {output_prefix} theGenerator
 
 def stage2_hwsim_card(input_lhe, output_location, events, run_name, seed=89968250):
     """Return a Herwig Stage-2 card that decays Higgs bosons and runs HwSim."""
+    output_location = _output_location_for_hwsim(output_location)
     return """\
 ##############################################################
 # Stage 2 forced h0 -> b,bbar decay and HwSim analysis.
