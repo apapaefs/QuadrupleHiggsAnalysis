@@ -1,4 +1,5 @@
 import math
+import csv
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,7 @@ from ForcedSplitting.herwig_cards import (  # noqa: E402
     stage2_hwsim_card,
 )
 from ForcedSplitting.lhe_validation import parse_lhe_events  # noqa: E402
+from ForcedSplitting.signal_pipeline import prepare_forced_splitting_inputs  # noqa: E402
 
 
 TOY_FIXTURE = REPO_DIR / "ForcedSplitting" / "fixtures" / "toy_hhgg.lhe"
@@ -155,6 +157,77 @@ class ForcedSplittingTests(unittest.TestCase):
 
             self.assertTrue(card_path.exists())
             self.assertIn("set ForceSplitVeto:MinB 2", card_path.read_text())
+
+    def test_forced_splitting_pipeline_prepares_stage_cards_and_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            run_dir = tmpdir / "mg5" / "Events" / "run_gg_hhhg_4_0.0_0.0"
+            run_dir.mkdir(parents=True)
+            (run_dir / "unweighted_events.lhe.gz").write_text("placeholder\n")
+
+            manifest = prepare_forced_splitting_inputs(
+                process="gg_hhhg",
+                mg5_dir=tmpdir / "mg5",
+                output_dir=tmpdir / "forced",
+                events=1000,
+                probe_trials=0,
+            )
+
+            with manifest.open() as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["status"], "written")
+            self.assertEqual(rows[0]["c3"], "0.0")
+            self.assertEqual(rows[0]["d4"], "0.0")
+
+            stage1_card = Path(rows[0]["stage1_input"])
+            stage2_card = Path(rows[0]["stage2_input"])
+            self.assertTrue(stage1_card.exists())
+            self.assertTrue(stage2_card.exists())
+            self.assertIn("set ForceSplitVeto:MinB 2", stage1_card.read_text())
+            self.assertIn("set theLHReader:FileName %s" % (run_dir / "unweighted_events.lhe.gz"), stage1_card.read_text())
+            self.assertIn("set theLHReader:FileName %s.lhe" % rows[0]["stage1_run_name"], stage2_card.read_text())
+            self.assertTrue((tmpdir / "forced" / "stage1_inputs_to_run.txt").exists())
+            self.assertTrue((tmpdir / "forced" / "stage2_inputs_to_run.txt").exists())
+            self.assertEqual(
+                (tmpdir / "forced" / "stage1_inputs_to_run.txt").read_text().strip(),
+                stage1_card.name,
+            )
+            self.assertEqual(
+                (tmpdir / "forced" / "stage2_inputs_to_run.txt").read_text().strip(),
+                stage2_card.name,
+            )
+
+    def test_forced_splitting_pipeline_can_filter_to_reference_grid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            events = tmpdir / "mg5" / "Events"
+            good = events / "run_gg_hhgg_4_0.0_0.0"
+            skipped = events / "run_gg_hhgg_4_1.0_100.0"
+            good.mkdir(parents=True)
+            skipped.mkdir(parents=True)
+            (good / "unweighted_events.lhe.gz").write_text("placeholder\n")
+            (skipped / "unweighted_events.lhe.gz").write_text("placeholder\n")
+
+            reference_manifest = tmpdir / "hhhh_manifest.csv"
+            reference_manifest.write_text(
+                "status,c3,d4\n"
+                "skipped_existing,0.0,0.0\n"
+            )
+
+            manifest = prepare_forced_splitting_inputs(
+                process="gg_hhgg",
+                mg5_dir=tmpdir / "mg5",
+                output_dir=tmpdir / "forced",
+                events=1000,
+                reference_grid_manifest=reference_manifest,
+            )
+
+            with manifest.open() as handle:
+                rows = list(csv.DictReader(handle))
+            statuses = {row["run_dir"]: row["status"] for row in rows}
+            self.assertEqual(statuses[str(good)], "written")
+            self.assertEqual(statuses[str(skipped)], "skipped_not_in_reference_grid")
 
 
 if __name__ == "__main__":
