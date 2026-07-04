@@ -73,6 +73,31 @@ Create the `HwSim:OutputLocation` directory before running Stage 2.  For
 nested sample-specific directories, use the exact directory name produced by
 the card or keep `--output-location events/` and separate outputs by run name.
 
+## Single-Command Chain
+
+From the directory containing the MG LHE file, run the full chain with:
+
+```sh
+PYTHONPATH=/mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis \
+python3 -m ForcedSplitting.run_chain gg_hhhg \
+  --input-lhe unweighted_events.lhe.gz \
+  --workdir /mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis/HerwigForcedSplitting/gg_hhhg_run01_p90k \
+  --run-name gg_hhhg_run01 \
+  --events 1000 \
+  --probe-trials 90000
+```
+
+For `hh+gg`, replace `gg_hhhg` with `gg_hhgg` and choose a matching workdir
+and run name.  The command writes Stage-1 and Stage-2 Herwig cards, runs
+`Herwig read/run` for both stages, normalizes the Stage-1 LHE process ids,
+applies the sidecar `p_hat` weights when `--probe-trials` is nonzero, verifies
+the weighted LHE, and writes a JSON summary such as
+`gg_hhhg_run01_summary.json`.
+
+By default the command aborts if any sidecar row has `probe_successes = 0`,
+because Herwig skips zero-weight LHE events under `VarNegWeight`.  For tiny
+diagnostic runs only, pass `--allow-zero-probe-successes`.
+
 ## MG5 Signal-Point Pipeline
 
 For an MG5 process directory with an `Events/` subdirectory, prepare the paired

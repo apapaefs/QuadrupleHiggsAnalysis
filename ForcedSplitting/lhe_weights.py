@@ -69,6 +69,94 @@ def read_corrections(path):
     return corrections
 
 
+def _read_init_and_event_headers(path):
+    process_lines = None
+    event_headers = []
+    with Path(path).open() as src:
+        line_iter = iter(src)
+        for line in line_iter:
+            stripped = line.strip()
+            if stripped == "<init>":
+                beam_fields = next(line_iter).split()
+                if len(beam_fields) < 10:
+                    raise ValueError("Malformed LHE init beam line")
+                nprup = int(beam_fields[-1])
+                process_lines = [next(line_iter).split() for _ in range(nprup)]
+                continue
+            if stripped == "<event>":
+                header = next(line_iter).split()
+                if len(header) < 3:
+                    raise ValueError("Malformed LHE event header: %r" % " ".join(header))
+                event_headers.append(header)
+    if process_lines is None:
+        raise ValueError("LHE file does not contain an init block")
+    return process_lines, event_headers
+
+
+def verify_weighted_lhe(input_lhe, corrections, output_lhe, tolerance=1.0e-9):
+    """Check that a weighted LHE reflects the forced-splitting sidecar factors."""
+    correction_rows = read_corrections(corrections)
+    process_lines, process_stats, process_ids, _ = scan_lhe(input_lhe, correction_rows)
+    _, init_updates = update_process_lines(
+        process_lines,
+        process_stats,
+        process_ids,
+        input_xsec_error=None,
+        update_init=True,
+    )
+    if not init_updates:
+        raise ValueError("Cannot verify weighted LHE without init updates")
+
+    _, raw_headers = _read_init_and_event_headers(input_lhe)
+    weighted_process_lines, weighted_headers = _read_init_and_event_headers(output_lhe)
+    if len(raw_headers) != len(weighted_headers):
+        raise ValueError(
+            "Raw LHE has %d events but weighted LHE has %d events"
+            % (len(raw_headers), len(weighted_headers))
+        )
+    if len(raw_headers) != len(correction_rows):
+        raise ValueError(
+            "Correction file has %d rows but LHE has %d events"
+            % (len(correction_rows), len(raw_headers))
+        )
+
+    max_event_weight_delta = 0.0
+    for index, raw_header in enumerate(raw_headers):
+        idprup = int(raw_header[1])
+        process = process_index(process_lines, idprup)
+        expected = (
+            float(raw_header[2])
+            * correction_rows[index].factor
+            * init_updates[process].event_weight_norm
+        )
+        observed = float(weighted_headers[index][2])
+        max_event_weight_delta = max(max_event_weight_delta, abs(observed - expected))
+
+    weighted_weights = [float(header[2]) for header in weighted_headers]
+    weighted_mean = sum(weighted_weights) / len(weighted_weights) if weighted_weights else 0.0
+    weighted_init_xsec = sum(float(fields[0]) for fields in weighted_process_lines)
+    zero_success_rows = sum(1 for row in correction_rows if row.probe_successes == 0)
+    mean_p_hat = (
+        sum(row.factor for row in correction_rows) / len(correction_rows)
+        if correction_rows
+        else 0.0
+    )
+    init_mean_delta = abs(weighted_mean - weighted_init_xsec)
+    ok = max_event_weight_delta <= tolerance and init_mean_delta <= tolerance
+
+    return {
+        "ok": ok,
+        "correction_rows": len(correction_rows),
+        "zero_success_rows": zero_success_rows,
+        "nonzero_weight_rows": sum(1 for weight in weighted_weights if weight != 0.0),
+        "mean_p_hat": mean_p_hat,
+        "weighted_mean_xwgtup": weighted_mean,
+        "weighted_init_xsec": weighted_init_xsec,
+        "max_event_weight_delta": max_event_weight_delta,
+        "init_mean_delta": init_mean_delta,
+    }
+
+
 def process_index(process_lines, idprup):
     if len(process_lines) == 1:
         return 0
