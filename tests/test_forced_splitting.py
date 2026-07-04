@@ -1,6 +1,7 @@
 import math
 import csv
 import json
+import gzip
 import subprocess
 import sys
 import tempfile
@@ -24,11 +25,27 @@ from ForcedSplitting.lhe_validation import (  # noqa: E402
     parse_lhe_events,
 )
 from ForcedSplitting.lhe_weights import apply_weights  # noqa: E402
-from ForcedSplitting.run_chain import ChainConfig, run_chain  # noqa: E402
+from ForcedSplitting.run_chain import ChainConfig, count_lhe_events, run_chain  # noqa: E402
 from ForcedSplitting.signal_pipeline import prepare_forced_splitting_inputs  # noqa: E402
 
 
 TOY_FIXTURE = REPO_DIR / "ForcedSplitting" / "fixtures" / "toy_hhgg.lhe"
+
+
+def minimal_lhe_text(event_count=1):
+    event = """<event>
+    2      1              1        581.354    0.007546771     0.09944864
+        25  1    0    0  0  0  0.0  0.0  0.0  125.0  125.0  0.0  9.0
+        21  1    0    0  501  502  0.0  0.0  0.0  10.0  0.0  0.0  9.0
+</event>
+"""
+    return """<LesHouchesEvents version=\"1.0\">
+<init>
+     2212     2212           7000           7000  999  999  999  999    0    1
+   1.000000e+01   1.000000e+00            100      0
+</init>
+%s</LesHouchesEvents>
+""" % (event * event_count)
 
 
 class ForcedSplittingTests(unittest.TestCase):
@@ -358,8 +375,8 @@ class ForcedSplittingTests(unittest.TestCase):
     def test_single_command_chain_applies_trial_weights_before_stage2(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
-            input_lhe = tmpdir / "unweighted_events.lhe.gz"
-            input_lhe.write_text("placeholder\n")
+            input_lhe = tmpdir / "unweighted_events.lhe"
+            input_lhe.write_text(minimal_lhe_text(event_count=2))
             workdir = tmpdir / "work"
             commands = []
 
@@ -426,6 +443,36 @@ class ForcedSplittingTests(unittest.TestCase):
             self.assertTrue(math.isclose(summary["weight_check"]["weighted_mean_xwgtup"], 4.375))
             self.assertIn("set theLHReader:FileName pilot_stage1.weighted.lhe", (workdir / "pilot_stage2.in").read_text())
             self.assertEqual(json.loads((workdir / "pilot_summary.json").read_text())["stage2_lhe"], "pilot_stage1.weighted.lhe")
+
+    def test_single_command_chain_refuses_more_events_than_input_lhe_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            input_lhe = tmpdir / "unweighted_events.lhe"
+            input_lhe.write_text(minimal_lhe_text(event_count=1))
+            commands = []
+
+            with self.assertRaisesRegex(RuntimeError, "only contains 1 event"):
+                run_chain(
+                    ChainConfig(
+                        process="gg_hhhg",
+                        input_lhe=input_lhe,
+                        workdir=tmpdir / "work",
+                        events=2,
+                        probe_trials=0,
+                        run_name="oversample",
+                    ),
+                    runner=lambda command, cwd: commands.append((command, cwd)),
+                )
+
+            self.assertEqual(commands, [])
+
+    def test_lhe_event_counter_supports_gzipped_lhe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "unweighted_events.lhe.gz"
+            with gzip.open(path, "wt") as handle:
+                handle.write(minimal_lhe_text(event_count=3))
+
+            self.assertEqual(count_lhe_events(path), 3)
 
 
 if __name__ == "__main__":
