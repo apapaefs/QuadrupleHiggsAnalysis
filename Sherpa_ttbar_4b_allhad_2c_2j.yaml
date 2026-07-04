@@ -62,6 +62,7 @@ PARTICLE_DATA:
   24:
     Narrow: 1
 
+# The EW order counts the t -> bW and W -> qq DecayOS vertices.
 PROCESSES:
 - 21 21 -> 6[a] -6[b] 5 -5 5 -5:
     DecayOS:
@@ -69,7 +70,7 @@ PROCESSES:
     - -6[b] -> -5 -24[d]
     - 24[c] -> 4 -3
     - -24[d] -> -4 3
-    Order: {QCD: 6, EW: 0}
+    Order: {QCD: 6, EW: 4}
     ME_Generator: Comix
     Integration_Error: 0.05
 
