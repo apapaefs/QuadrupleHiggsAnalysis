@@ -16,7 +16,12 @@ from ForcedSplitting.herwig_cards import (  # noqa: E402
     stage1_lhewriter_card,
     stage2_hwsim_card,
 )
-from ForcedSplitting.lhe_validation import parse_lhe_events  # noqa: E402
+from ForcedSplitting.lhe_validation import (  # noqa: E402
+    declared_process_ids,
+    event_process_ids,
+    normalize_single_process_lprup,
+    parse_lhe_events,
+)
 from ForcedSplitting.signal_pipeline import prepare_forced_splitting_inputs  # noqa: E402
 
 
@@ -126,8 +131,18 @@ class ForcedSplittingTests(unittest.TestCase):
         self.assertIn("do /Herwig/Particles/h0:SelectDecayModes h0->b,bbar;", card)
         self.assertIn("library HwSim.so", card)
         self.assertIn("create Herwig::HwSim /Herwig/Analysis/HwSim", card)
-        self.assertIn("set /Herwig/Analysis/HwSim:OutputLocation events/gg_hhhg_split_hdecay", card)
+        self.assertIn("set /Herwig/Analysis/HwSim:OutputLocation events/gg_hhhg_split_hdecay/", card)
         self.assertNotIn("ForceSplitVeto", card)
+
+    def test_stage2_card_adds_hwsim_output_location_slash(self):
+        card = stage2_hwsim_card(
+            input_lhe="gg_hhhg_split.lhe",
+            output_location="events",
+            events=100,
+            run_name="gg_hhhg_split_hdecay",
+        )
+
+        self.assertIn("set /Herwig/Analysis/HwSim:OutputLocation events/", card)
 
     def test_card_cli_writes_stage1_card(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -188,10 +203,15 @@ class ForcedSplittingTests(unittest.TestCase):
             self.assertIn("set theLHReader:FileName %s" % (run_dir / "unweighted_events.lhe.gz"), stage1_card.read_text())
             self.assertIn("set theLHReader:FileName %s.lhe" % rows[0]["stage1_run_name"], stage2_card.read_text())
             self.assertTrue((tmpdir / "forced" / "stage1_inputs_to_run.txt").exists())
+            self.assertTrue((tmpdir / "forced" / "stage1_outputs_to_normalize.txt").exists())
             self.assertTrue((tmpdir / "forced" / "stage2_inputs_to_run.txt").exists())
             self.assertEqual(
                 (tmpdir / "forced" / "stage1_inputs_to_run.txt").read_text().strip(),
                 stage1_card.name,
+            )
+            self.assertEqual(
+                (tmpdir / "forced" / "stage1_outputs_to_normalize.txt").read_text().strip(),
+                rows[0]["stage1_run_name"] + ".lhe",
             )
             self.assertEqual(
                 (tmpdir / "forced" / "stage2_inputs_to_run.txt").read_text().strip(),
@@ -228,6 +248,30 @@ class ForcedSplittingTests(unittest.TestCase):
             statuses = {row["run_dir"]: row["status"] for row in rows}
             self.assertEqual(statuses[str(good)], "written")
             self.assertEqual(statuses[str(skipped)], "skipped_not_in_reference_grid")
+
+    def test_lhe_process_id_normalizer_repairs_herwig_lhewriter_mismatch(self):
+        lhe_text = """<LesHouchesEvents version=\"1.0\">
+<init>
+     2212     2212           7000           7000  999  999  999  999    0    1
+   4.690073e-05   4.690073e-05            100      0
+</init>
+<event>
+    2      1              1        581.354    0.007546771     0.09944864
+        25  1    0    0  0  0  0.0  0.0  0.0  125.0  125.0  0.0  9.0
+        21  1    0    0  501  502  0.0  0.0  0.0  10.0  0.0  0.0  9.0
+</event>
+</LesHouchesEvents>
+"""
+
+        self.assertEqual(declared_process_ids(lhe_text), [0])
+        self.assertEqual(event_process_ids(lhe_text), [1])
+
+        normalized, changed, message = normalize_single_process_lprup(lhe_text)
+
+        self.assertTrue(changed)
+        self.assertIn("declared process id 0 -> 1", message)
+        self.assertEqual(declared_process_ids(normalized), [1])
+        self.assertEqual(event_process_ids(normalized), [1])
 
 
 if __name__ == "__main__":

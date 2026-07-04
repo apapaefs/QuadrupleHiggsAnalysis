@@ -124,6 +124,7 @@ def prepare_forced_splitting_inputs(
     reference_grid = load_reference_grid(reference_grid_manifest)
     rows = []
     stage1_inputs = []
+    stage1_outputs = []
     stage2_inputs = []
 
     for run_dir in _run_dirs(mg5_dir):
@@ -181,6 +182,7 @@ def prepare_forced_splitting_inputs(
             row["reason"] = "existing target(s): " + ";".join(str(path) for path in existing)
             rows.append(row)
             stage1_inputs.append(stage1_input.name)
+            stage1_outputs.append(stage1_output_lhe)
             stage2_inputs.append(stage2_input.name)
             continue
 
@@ -205,6 +207,7 @@ def prepare_forced_splitting_inputs(
         row["status"] = "overwritten" if existing else "written"
         rows.append(row)
         stage1_inputs.append(stage1_input.name)
+        stage1_outputs.append(stage1_output_lhe)
         stage2_inputs.append(stage2_input.name)
 
     fieldnames = [
@@ -235,6 +238,7 @@ def prepare_forced_splitting_inputs(
         writer.writerows(rows)
 
     _write_input_list(output_dir / "stage1_inputs_to_run.txt", stage1_inputs)
+    _write_input_list(output_dir / "stage1_outputs_to_normalize.txt", stage1_outputs)
     _write_input_list(output_dir / "stage2_inputs_to_run.txt", stage2_inputs)
 
     return manifest_file
@@ -268,6 +272,7 @@ def main(argv=None):
     )
     print("Prepared forced-splitting manifest:", manifest)
     print("Stage-1 input list:", Path(args.outdir) / "stage1_inputs_to_run.txt")
+    print("Stage-1 split-LHE normalization list:", Path(args.outdir) / "stage1_outputs_to_normalize.txt")
     print("Stage-2 input list:", Path(args.outdir) / "stage2_inputs_to_run.txt")
 
 
