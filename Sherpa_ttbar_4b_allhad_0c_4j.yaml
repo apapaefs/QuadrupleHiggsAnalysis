@@ -54,10 +54,11 @@ PARTICLE_DATA:
   5:
     Massive: true
     Mass: 4.75
+# DecayOS uses these finite widths in the narrow-width normalization.
   6:
-    Narrow: 1
+    Width: 1.32
   24:
-    Narrow: 1
+    Width: 2.085
 
 # Keep Order unset for these DecayOS blocks; Sherpa 3.1.x applies fixed
 # order filters before accepting the cascade and can drop the process.
