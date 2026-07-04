@@ -1,6 +1,7 @@
 """Run the full forced-splitting Herwig chain from one MG LHE file."""
 
 import argparse
+import gzip
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ class ChainConfig(object):
     seed_stage2: int = 89968250
     input_xsec_error: float = None
     allow_zero_probe_successes: bool = False
+    allow_input_oversampling: bool = False
     overwrite: bool = False
     dry_run: bool = False
 
@@ -39,6 +41,23 @@ def _write_text(path, text, overwrite):
     if path.exists() and not overwrite:
         raise FileExistsError("%s already exists; pass --overwrite to replace it" % path)
     path.write_text(text)
+
+
+def _open_lhe_text(path):
+    path = Path(path)
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt")
+    return path.open()
+
+
+def count_lhe_events(path):
+    """Count LHE <event> blocks in a plain or gzipped file."""
+    count = 0
+    with _open_lhe_text(path) as handle:
+        for line in handle:
+            if line.strip() == "<event>":
+                count += 1
+    return count
 
 
 def _run_herwig(herwig, subcommand, filename, cwd, runner, dry_run):
@@ -65,6 +84,20 @@ def run_chain(config, runner=None):
     if not input_lhe.exists():
         raise FileNotFoundError("Input LHE file does not exist: %s" % input_lhe)
     input_lhe = input_lhe.resolve()
+    input_event_count = count_lhe_events(input_lhe)
+    if input_event_count == 0:
+        raise RuntimeError("Input LHE contains no <event> blocks: %s" % input_lhe)
+    if config.events > input_event_count and not config.allow_input_oversampling:
+        raise RuntimeError(
+            "Requested %d Stage-1 events but input LHE only contains %d event%s. "
+            "Herwig can reopen and reuse hard events; generate more MG events, lower "
+            "--events, or pass --allow-input-oversampling for diagnostics."
+            % (
+                config.events,
+                input_event_count,
+                "" if input_event_count == 1 else "s",
+            )
+        )
 
     run_name = config.run_name or config.process
     workdir = Path(config.workdir)
@@ -149,6 +182,8 @@ def run_chain(config, runner=None):
     summary = {
         "process": config.process,
         "input_lhe": str(input_lhe),
+        "input_event_count": int(input_event_count),
+        "allow_input_oversampling": bool(config.allow_input_oversampling),
         "workdir": str(workdir),
         "events": int(config.events),
         "stage2_events": int(stage2_events),
@@ -191,6 +226,11 @@ def main(argv=None):
     parser.add_argument("--seed-stage2", type=int, default=89968250)
     parser.add_argument("--input-xsec-error", type=float)
     parser.add_argument("--allow-zero-probe-successes", action="store_true")
+    parser.add_argument(
+        "--allow-input-oversampling",
+        action="store_true",
+        help="Allow Herwig to request more Stage-1 events than the input LHE contains; diagnostics only.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
@@ -212,6 +252,7 @@ def main(argv=None):
             seed_stage2=args.seed_stage2,
             input_xsec_error=args.input_xsec_error,
             allow_zero_probe_successes=args.allow_zero_probe_successes,
+            allow_input_oversampling=args.allow_input_oversampling,
             overwrite=args.overwrite,
             dry_run=args.dry_run,
         )

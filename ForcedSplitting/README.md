@@ -94,6 +94,13 @@ applies the sidecar `p_hat` weights when `--probe-trials` is nonzero, verifies
 the weighted LHE, and writes a JSON summary such as
 `gg_hhhg_run01_summary.json`.
 
+The runner counts `<event>` blocks in the input LHE first.  By default it
+aborts if `--events` is larger than the input event count, because Herwig can
+reopen the Les Houches file and reuse hard events.  For production, generate
+at least as many MG hard events as the requested Stage-1 events, or lower
+`--events`.  For diagnostic plumbing tests only, pass
+`--allow-input-oversampling`.
+
 By default the command aborts if any sidecar row has `probe_successes = 0`,
 because Herwig skips zero-weight LHE events under `VarNegWeight`.  For tiny
 diagnostic runs only, pass `--allow-zero-probe-successes`.
