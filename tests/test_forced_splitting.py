@@ -22,6 +22,7 @@ from ForcedSplitting.lhe_validation import (  # noqa: E402
     normalize_single_process_lprup,
     parse_lhe_events,
 )
+from ForcedSplitting.lhe_weights import apply_weights  # noqa: E402
 from ForcedSplitting.signal_pipeline import prepare_forced_splitting_inputs  # noqa: E402
 
 
@@ -249,6 +250,37 @@ class ForcedSplittingTests(unittest.TestCase):
             self.assertEqual(statuses[str(good)], "written")
             self.assertEqual(statuses[str(skipped)], "skipped_not_in_reference_grid")
 
+    def test_forced_splitting_pipeline_uses_weighted_lhe_when_probe_trials_are_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            run_dir = tmpdir / "mg5" / "Events" / "run_gg_hhhg_4_0.0_0.0"
+            run_dir.mkdir(parents=True)
+            (run_dir / "unweighted_events.lhe.gz").write_text("placeholder\n")
+
+            manifest = prepare_forced_splitting_inputs(
+                process="gg_hhhg",
+                mg5_dir=tmpdir / "mg5",
+                output_dir=tmpdir / "forced",
+                events=1000,
+                probe_trials=25,
+            )
+
+            with manifest.open() as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 1)
+            self.assertTrue(rows[0]["stage1_weighted_lhe"].endswith(".weighted.lhe"))
+            self.assertTrue(rows[0]["stage2_lhe_file"].endswith(".weighted.lhe"))
+
+            reweight_line = (tmpdir / "forced" / "stage1_outputs_to_reweight.txt").read_text().strip()
+            fields = reweight_line.split()
+            self.assertEqual(len(fields), 3)
+            self.assertTrue(fields[0].endswith(".lhe"))
+            self.assertTrue(fields[1].endswith(".force_split.weights"))
+            self.assertTrue(fields[2].endswith(".weighted.lhe"))
+
+            stage2_card = Path(rows[0]["stage2_input"]).read_text()
+            self.assertIn("set theLHReader:FileName %s" % fields[2], stage2_card)
+
     def test_lhe_process_id_normalizer_repairs_herwig_lhewriter_mismatch(self):
         lhe_text = """<LesHouchesEvents version=\"1.0\">
 <init>
@@ -272,6 +304,54 @@ class ForcedSplittingTests(unittest.TestCase):
         self.assertIn("declared process id 0 -> 1", message)
         self.assertEqual(declared_process_ids(normalized), [1])
         self.assertEqual(event_process_ids(normalized), [1])
+
+    def test_lhe_prob_weight_application_updates_event_weights_and_init(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            input_lhe = tmpdir / "input.lhe"
+            corrections = tmpdir / "split.weights"
+            output_lhe = tmpdir / "weighted.lhe"
+            input_lhe.write_text(
+                """<LesHouchesEvents version=\"1.0\">
+<init>
+     2212     2212           7000           7000  999  999  999  999    0    1
+   1.000000e+01   1.000000e+00            100      0
+</init>
+<event>
+    2      1              1        581.354    0.007546771     0.09944864
+        25  1    0    0  0  0  0.0  0.0  0.0  125.0  125.0  0.0  9.0
+        21  1    0    0  501  502  0.0  0.0  0.0  10.0  0.0  0.0  9.0
+</event>
+<event>
+    2      1              3        581.354    0.007546771     0.09944864
+        25  1    0    0  0  0  0.0  0.0  0.0  125.0  125.0  0.0  9.0
+        21  1    0    0  501  502  0.0  0.0  0.0  10.0  0.0  0.0  9.0
+</event>
+</LesHouchesEvents>
+"""
+            )
+            corrections.write_text(
+                "# accepted_event probe_trials probe_successes p_hat total_attempts post_probe_attempts\n"
+                "1 20 5 0.25 23 3\n"
+                "2 20 10 0.5 21 1\n"
+            )
+
+            apply_weights(input_lhe, corrections, output_lhe)
+
+            weighted_text = output_lhe.read_text()
+            self.assertIn("4.375000000e+00", weighted_text)
+            self.assertEqual(declared_process_ids(weighted_text), [1])
+            event_headers = []
+            lines = weighted_text.splitlines()
+            for index, line in enumerate(lines):
+                if line.strip() == "<event>":
+                    event_headers.append(lines[index + 1].split())
+
+            weights = [float(header[2]) for header in event_headers]
+            self.assertEqual(len(weights), 2)
+            self.assertTrue(math.isclose(weights[0], 1.25, rel_tol=0.0, abs_tol=1e-12))
+            self.assertTrue(math.isclose(weights[1], 7.5, rel_tol=0.0, abs_tol=1e-12))
+            self.assertTrue(math.isclose(sum(weights) / len(weights), 4.375, rel_tol=0.0, abs_tol=1e-12))
 
 
 if __name__ == "__main__":
