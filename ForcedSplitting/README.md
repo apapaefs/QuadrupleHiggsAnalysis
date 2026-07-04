@@ -107,6 +107,28 @@ diagnostic runs only, pass `--allow-zero-probe-successes`.
 
 ## MG5 Signal-Point Pipeline
 
+First generate the MG5 hard samples on the same production `(c3,d4)` points
+as the `hhhh` signal manifest.  The MG5 launcher reads the signal run-card
+settings from `gg_4h_c3d4/Cards/run_card.dat`, keeps only production manifest
+rows (`written` or `skipped_existing`), writes a MadEvent command deck, skips
+points with an existing `unweighted_events.lhe(.gz)`, and launches
+`bin/madevent` unless `--dry-run` is passed.
+
+Dry-run the deck first:
+
+```sh
+PYTHONPATH=/mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis \
+python3 -m ForcedSplitting.mg5_grid gg_hhhg \
+  --mg5-root /mnt/ssd2/Projects/4H/MG5_aMC_v3_5_15 \
+  --reference-grid-manifest /mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis/HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv \
+  --events 1000 \
+  --dry-run
+```
+
+Then launch the missing MG5 points by dropping `--dry-run`.  For `hh+gg`,
+replace `gg_hhhg` with `gg_hhgg`.  The generated runs are named like
+`Events/run_gg_hhhg_4_<c3>_<d4>/` or `Events/run_gg_hhgg_4_<c3>_<d4>/`.
+
 For an MG5 process directory with an `Events/` subdirectory, prepare the paired
 Stage-1 and Stage-2 Herwig cards with:
 
