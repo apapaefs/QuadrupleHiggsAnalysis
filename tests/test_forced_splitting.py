@@ -119,6 +119,24 @@ class ForcedSplittingTests(unittest.TestCase):
         self.assertIn("do SplittingGenerator:DeleteFinalSplitting g->c,cbar", card)
         self.assertNotIn("SelectDecayModes h0->b,bbar", card)
 
+    def test_hg_stage1_card_has_one_forced_split_pair_for_4b_validation(self):
+        card = stage1_lhewriter_card(
+            PROCESS_CONFIGS["gg_hg"],
+            input_lhe="/data/gg_hg/unweighted_events.lhe.gz",
+            output_prefix="gg_hg_split",
+            events=1000,
+            probe_trials=25,
+            correction_file="gg_hg_split.weights",
+        )
+
+        self.assertIn("set ForceSplitVeto:MinB 2", card)
+        self.assertIn("set ForceSplitVeto:MinSplitPairs 1", card)
+        self.assertIn("set ForceSplitVeto:RequireDistinctHardGluons No", card)
+        self.assertIn("set ShowerHandler:LimitEmissions OneFinalStateEmission", card)
+        self.assertIn("set ForceSplitVeto:SplitMinBPt 15*GeV", card)
+        self.assertIn("set ForceSplitVeto:SplitMaxBEta 3.0", card)
+        self.assertIn("set ForceSplitVeto:ProbeTrials 25", card)
+
     def test_hhgg_stage1_card_requires_two_distinct_split_pairs(self):
         card = stage1_lhewriter_card(
             PROCESS_CONFIGS["gg_hhgg"],
