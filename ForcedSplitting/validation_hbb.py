@@ -953,6 +953,15 @@ def _run_herwig(herwig, subcommand, filename, cwd, runner, dry_run):
 
 
 def _validate_input_events(path, events, allow_input_oversampling):
+    path = Path(path)
+    if path.is_dir():
+        raise RuntimeError(
+            "Input LHE expected an LHE file but got a directory: %s. "
+            "Check that the corresponding shell variable is set, e.g. echo \"$SPLIT_LHE\"."
+            % path
+        )
+    if not path.exists():
+        raise FileNotFoundError("Input LHE does not exist: %s" % path)
     event_count = count_lhe_events(path)
     if event_count == 0:
         raise RuntimeError("Input LHE contains no <event> blocks: %s" % path)

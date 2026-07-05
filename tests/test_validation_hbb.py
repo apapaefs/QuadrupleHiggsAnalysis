@@ -454,6 +454,23 @@ class HbbValidationTests(unittest.TestCase):
             self.assertEqual(len(summary["commands"]), 6)
             self.assertTrue(Path(summary["summary"]).exists())
 
+    def test_validation_chain_rejects_directory_lhe_input_with_clear_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            direct_input = tmpdir / "gg_hbb.lhe"
+            direct_input.write_text(validation_lhe_text(weight=1.0, xsec_pb=2.0))
+
+            with self.assertRaisesRegex(RuntimeError, "expected an LHE file but got a directory"):
+                run_validation_chain(
+                    ValidationRunConfig(
+                        split_input_lhe=tmpdir,
+                        direct_input_lhe=direct_input,
+                        workdir=tmpdir / "validation",
+                        events=1,
+                        dry_run=True,
+                    )
+                )
+
     def test_validation_scan_dry_run_writes_mode_cards_and_sequence(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
