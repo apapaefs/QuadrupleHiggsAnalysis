@@ -19,6 +19,14 @@ ProcessConfig = namedtuple(
 
 
 PROCESS_CONFIGS = {
+    "gg_hg": ProcessConfig(
+        process_id="gg_hg",
+        min_b=2,
+        min_split_pairs=1,
+        require_distinct_hard_gluons=False,
+        limit_emissions="OneFinalStateEmission",
+        description="gg -> h + g with one forced final-state g -> b bbar split for hbb validation",
+    ),
     "gg_hhhg": ProcessConfig(
         process_id="gg_hhhg",
         min_b=2,
@@ -301,6 +309,89 @@ saverun {run_name} theGenerator
     )
 
 
+def higgs_decay_lhewriter_card(input_lhe, output_prefix, events, seed=44071981):
+    """Return a validation card that forces h0 -> b,bbar and writes LHE."""
+    return """\
+##############################################################
+# Validation-only forced h0 -> b,bbar decay and LHE writing.
+# No hadronization, MPI, or shower emissions are intended here.
+##############################################################
+cd /Herwig/EventHandlers
+create ThePEG::Cuts /Herwig/Cuts/NoCuts
+
+mkdir LesHouches
+cd LesHouches
+library LesHouches.so
+cd /Herwig/EventHandlers
+create ThePEG::LesHouchesFileReader theLHReader LesHouches.so
+
+cd /Herwig/Partons
+create ThePEG::LHAPDF thePDFset ThePEGLHAPDF.so
+
+cd /Herwig/EventHandlers
+create ThePEG::LesHouchesEventHandler LesHouchesHandler
+insert LesHouchesHandler:LesHouchesReaders[0] theLHReader
+set LesHouchesHandler:PartonExtractor /Herwig/Partons/PPExtractor
+set theLHReader:WeightWarnings false
+set LesHouchesHandler:WeightOption VarNegWeight
+set LesHouchesHandler:CascadeHandler /Herwig/Shower/ShowerHandler
+set LesHouchesHandler:HadronizationHandler NULL
+set LesHouchesHandler:DecayHandler /Herwig/Decays/DecayHandler
+set theLHReader:FileName {input_lhe}
+
+cd /Herwig/Partons
+set /Herwig/Partons/thePDFset:PDFName NNPDF23_nlo_as_0119
+set /Herwig/Partons/RemnantDecayer:AllowTop Yes
+set /Herwig/EventHandlers/theLHReader:PDFA /Herwig/Partons/thePDFset
+set /Herwig/EventHandlers/theLHReader:PDFB /Herwig/Partons/thePDFset
+set /Herwig/Shower/ShowerHandler:PDFA /Herwig/Partons/thePDFset
+set /Herwig/Shower/ShowerHandler:PDFB /Herwig/Partons/thePDFset
+set /Herwig/Partons/MPIExtractor:FirstPDF /Herwig/Partons/thePDFset
+set /Herwig/Partons/MPIExtractor:SecondPDF /Herwig/Partons/thePDFset
+set /Herwig/Partons/thePDFset:RemnantHandler /Herwig/Partons/HadronRemnants
+
+cd /Herwig/Generators
+create ThePEG::EventGenerator theGenerator
+set theGenerator:RandomNumberGenerator /Herwig/Random
+set theGenerator:StandardModelParameters /Herwig/Model
+set theGenerator:EventHandler /Herwig/EventHandlers/LesHouchesHandler
+set theGenerator:EventHandler:Cuts /Herwig/Cuts/NoCuts
+set theGenerator:NumberOfEvents {events}
+set theGenerator:RandomNumberGenerator:Seed {seed}
+set theGenerator:DebugLevel 0
+set theGenerator:PrintEvent 100
+set theGenerator:MaxErrors 10000
+
+cd /Herwig/Shower
+set ShowerHandler:DoISR No
+set ShowerHandler:DoFSR No
+set ShowerHandler:MPIHandler NULL
+
+cd /Herwig/EventHandlers
+set LesHouchesHandler:HadronizationHandler NULL
+set /Herwig/Analysis/Basics:CheckQuark false
+set /Herwig/Shower/ShowerHandler:MPIHandler NULL
+
+cd /Herwig/Analysis
+library LHEWriter.so
+create Herwig::LHEWriter /Herwig/Analysis/LHEWriter
+set /Herwig/Analysis/LHEWriter:SkipBeamRemnants Yes
+insert /Herwig/Generators/theGenerator:AnalysisHandlers 0 /Herwig/Analysis/LHEWriter
+
+decaymode h0->b,bbar; 1.0 1 /Herwig/Decays/Hff
+do /Herwig/Particles/h0:SelectDecayModes h0->b,bbar;
+do /Herwig/Particles/h0:PrintDecayModes
+
+cd /Herwig/Generators
+saverun {output_prefix} theGenerator
+""".format(
+        input_lhe=input_lhe,
+        output_prefix=output_prefix,
+        events=int(events),
+        seed=int(seed),
+    )
+
+
 def _write_or_print(card, card_out):
     if card_out:
         Path(card_out).write_text(card)
@@ -330,6 +421,13 @@ def main(argv=None):
     stage2.add_argument("--seed", type=int, default=89968250)
     stage2.add_argument("--card-out")
 
+    hdecay = subparsers.add_parser("hdecay-lhe", help="write a validation h0 -> b,bbar LHEWriter card")
+    hdecay.add_argument("--input-lhe", required=True)
+    hdecay.add_argument("--output-prefix", required=True)
+    hdecay.add_argument("--events", type=int, required=True)
+    hdecay.add_argument("--seed", type=int, default=44071981)
+    hdecay.add_argument("--card-out")
+
     args = parser.parse_args(argv)
     if args.command == "stage1":
         card = stage1_lhewriter_card(
@@ -351,8 +449,16 @@ def main(argv=None):
             seed=args.seed,
         )
         _write_or_print(card, args.card_out)
+    elif args.command == "hdecay-lhe":
+        card = higgs_decay_lhewriter_card(
+            input_lhe=args.input_lhe,
+            output_prefix=args.output_prefix,
+            events=args.events,
+            seed=args.seed,
+        )
+        _write_or_print(card, args.card_out)
     else:
-        parser.error("choose a command: stage1 or stage2")
+        parser.error("choose a command: stage1, stage2, or hdecay-lhe")
 
 
 if __name__ == "__main__":

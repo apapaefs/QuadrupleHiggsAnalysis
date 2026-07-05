@@ -9,6 +9,7 @@ from __future__ import annotations
 import html
 import math
 import re
+from pathlib import Path
 
 
 def signal_generation_rate_factor(hbb_branching_ratio, hbb_power, k_factor):
@@ -103,6 +104,271 @@ def safe_feature_filename(name):
 
 def html_escape(value):
     return html.escape(str(value), quote=True)
+
+
+def observable_axis_label(name):
+    """Axis labels shared by XGBoost and LHE validation shape reports."""
+
+    name = str(name)
+    validation_labels = {
+        "b_pt_all": r"$p_T(b)$ [GeV]",
+        "b1_pt": r"$p_T(b_1)$ [GeV]",
+        "b2_pt": r"$p_T(b_2)$ [GeV]",
+        "b3_pt": r"$p_T(b_3)$ [GeV]",
+        "b4_pt": r"$p_T(b_4)$ [GeV]",
+        "dr_bb_all": r"$\Delta R(b,b)$",
+        "m_bb_all": r"$m(b,b)$ [GeV]",
+        "m_4b": r"$m(4b)$ [GeV]",
+    }
+    if name in validation_labels:
+        return validation_labels[name]
+    if name.startswith("bjet") and name.endswith("_pt"):
+        index = name.removeprefix("bjet").removesuffix("_pt")
+        return rf"$p_T(b_{index})$ [GeV]"
+    if name == "m8b":
+        return r"$m_{8b}$ [GeV]"
+    if name == "chi8":
+        return r"$\chi^2_{8b}$"
+    if name.startswith("delta_m_"):
+        label = name.removeprefix("delta_m_").replace("_", r"\,")
+        return rf"$\Delta m_{{{label}}}$ [GeV]"
+    if name.startswith("higgs") and name.endswith("_pt"):
+        index = name.removeprefix("higgs").removesuffix("_pt")
+        return rf"$p_T(h_{index})$ [GeV]"
+    if name.startswith("dr_hh_"):
+        indices = name.removeprefix("dr_hh_").split("_")
+        if len(indices) == 2:
+            return rf"$\Delta R(h_{indices[0]},h_{indices[1]})$"
+    if name.startswith("dr_bb_h"):
+        index = name.removeprefix("dr_bb_h")
+        return rf"$\Delta R(b,b)_{{h_{index}}}$"
+    return name.replace("_", r"\_")
+
+
+def _effective_entries(weights):
+    import numpy as np
+
+    weights = np.asarray(weights, dtype=float)
+    weights = weights[np.isfinite(weights)]
+    if weights.size == 0:
+        return 0.0
+    sum_abs = float(np.sum(np.abs(weights)))
+    sum_sq = float(np.sum(np.square(weights)))
+    if sum_sq <= 0.0:
+        return float(weights.size)
+    return sum_abs * sum_abs / sum_sq
+
+
+def feature_bin_edges(values, sample_weights, min_bins=5, max_bins=60, entries_per_bin=10.0):
+    import numpy as np
+
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return np.linspace(0.0, 1.0, min_bins + 1)
+
+    low = float(np.min(values))
+    high = float(np.max(values))
+    if not math.isfinite(low) or not math.isfinite(high) or low == high:
+        center = low if math.isfinite(low) else 0.0
+        width = abs(center) * 0.05 if center != 0.0 else 1.0
+        return np.linspace(center - width, center + width, min_bins + 1)
+
+    q25, q75 = np.percentile(values, [25.0, 75.0])
+    iqr = float(q75 - q25)
+    if iqr > 0.0:
+        fd_width = 2.0 * iqr / float(values.size) ** (1.0 / 3.0)
+        fd_bins = int(math.ceil((high - low) / fd_width)) if fd_width > 0.0 else max_bins
+    else:
+        fd_bins = int(math.ceil(math.sqrt(values.size)))
+
+    effective_counts = [_effective_entries(weights) for weights in sample_weights if len(weights) > 0]
+    if effective_counts:
+        stats_cap = int(max(min_bins, math.floor(min(effective_counts) / float(entries_per_bin))))
+    else:
+        stats_cap = max_bins
+    bins = max(min_bins, min(max_bins, fd_bins, max(min_bins, stats_cap)))
+    return np.linspace(low, high, bins + 1)
+
+
+def normalised_histogram(values, weights, edges):
+    import numpy as np
+
+    values = np.asarray(values, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    mask = np.isfinite(values) & np.isfinite(weights)
+    values = values[mask]
+    weights = weights[mask]
+    if values.size == 0:
+        zeros = np.zeros(len(edges) - 1, dtype=float)
+        return zeros, zeros
+
+    counts, _ = np.histogram(values, bins=edges, weights=weights)
+    sumw2, _ = np.histogram(values, bins=edges, weights=np.square(weights))
+    norm = float(np.sum(counts))
+    if norm == 0.0:
+        norm = float(np.sum(np.abs(weights)))
+    if norm == 0.0:
+        zeros = np.zeros(len(edges) - 1, dtype=float)
+        return zeros, zeros
+    return counts / norm, np.sqrt(sumw2) / abs(norm)
+
+
+def sample_style(index):
+    colors = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E9", "#000000", "#F0E442"]
+    linestyles = ["-", "--", "-.", ":", (0, (5, 1)), (0, (3, 1, 1, 1)), (0, (1, 1)), (0, (5, 2, 1, 2))]
+    markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
+    return {
+        "color": colors[index % len(colors)],
+        "linestyle": linestyles[index % len(linestyles)],
+        "marker": markers[index % len(markers)],
+    }
+
+
+def write_observable_shape_plot(path, observable_name, samples):
+    """Write a normalized observable-shape plot in the sample-report style."""
+
+    import os
+
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    pooled_values = []
+    sample_weights = []
+    prepared_samples = []
+    for sample in samples:
+        values = np.asarray(sample.get("values", []), dtype=float)
+        weights = np.asarray(sample.get("weights", []), dtype=float)
+        mask = np.isfinite(values) & np.isfinite(weights)
+        values = values[mask]
+        weights = weights[mask]
+        if values.size:
+            pooled_values.append(values)
+        sample_weights.append(weights)
+        prepared = dict(sample)
+        prepared["values"] = values
+        prepared["weights"] = weights
+        prepared.setdefault("style", sample_style(len(prepared_samples)))
+        prepared_samples.append(prepared)
+
+    pooled = np.concatenate(pooled_values) if pooled_values else np.asarray([])
+    edges = feature_bin_edges(pooled, sample_weights)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+
+    fig, ax = plt.subplots(figsize=(7.2, 5.2))
+    plotted = False
+    for sample in prepared_samples:
+        values = sample["values"]
+        weights = sample["weights"]
+        if values.size == 0:
+            continue
+        y, yerr = normalised_histogram(values, weights, edges)
+        if not np.any(np.isfinite(y)):
+            continue
+        style = sample["style"]
+        ax.stairs(
+            y,
+            edges,
+            label=sample["label"],
+            color=style["color"],
+            linestyle=style["linestyle"],
+            linewidth=1.7,
+        )
+        ax.errorbar(
+            centers,
+            y,
+            yerr=yerr,
+            fmt=style["marker"],
+            markersize=3.0,
+            color=style["color"],
+            linestyle="none",
+            linewidth=0.9,
+            capsize=1.8,
+        )
+        plotted = True
+
+    ax.set_xlabel(observable_axis_label(observable_name))
+    ax.set_ylabel("Normalized events / bin")
+    ax.grid(True, which="major", linewidth=0.4, alpha=0.35)
+    if plotted:
+        ax.legend(frameon=False, fontsize=8)
+    else:
+        ax.text(0.5, 0.5, "No finite entries", transform=ax.transAxes, ha="center", va="center")
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def write_report_index(path, plot_rows, table_path, metadata, title="4H XGBoost Input Observables", table_label="Cutflow table"):
+    """Write the card-gallery report index used before XGBoost training."""
+
+    table_rel = Path(table_path).name
+    cards = []
+    for row in plot_rows:
+        plot_rel = Path("plots") / Path(row["path"]).name
+        if "importance" in row:
+            detail = "importance = %.6g" % row["importance"]
+        elif "entries" in row:
+            detail = "entries = %s" % row["entries"]
+        else:
+            detail = row.get("detail", "")
+        detail_html = f"<p>{html_escape(detail)}</p>" if detail else ""
+        cards.append(
+            "<article>"
+            f"<a href=\"{html_escape(plot_rel)}\"><img src=\"{html_escape(plot_rel)}\" alt=\"{html_escape(row['feature'])}\"></a>"
+            f"<h2>{html_escape(row['feature'])}</h2>"
+            f"{detail_html}"
+            "</article>"
+        )
+
+    sample_items = "".join(
+        f"<li>{html_escape(row['label'])}: {html_escape(row['file'])}</li>"
+        for row in metadata.get("samples", [])
+    )
+    report_line = metadata.get("report_line")
+    if report_line is None and "luminosity_fb_inverse" in metadata:
+        report_line = (
+            "Luminosity: {luminosity:g} fb<sup>-1</sup>; XGBoost threshold: {threshold:g}".format(
+                luminosity=metadata.get("luminosity_fb_inverse", 0),
+                threshold=metadata.get("threshold", 0),
+            )
+        )
+    report_line_html = f"    <p>{report_line}</p>\n" if report_line else ""
+    html_text = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{html_escape(title)}</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #1d1d1f; }}
+    header {{ max-width: 1100px; margin-bottom: 1.5rem; }}
+    a {{ color: #005ea8; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.1rem; }}
+    article {{ border: 1px solid #ddd; border-radius: 6px; padding: 0.75rem; background: #fff; }}
+    img {{ width: 100%; height: auto; display: block; }}
+    h1 {{ margin-bottom: 0.25rem; }}
+    h2 {{ font-size: 1rem; margin: 0.65rem 0 0.2rem; }}
+    p, li {{ line-height: 1.4; }}
+    code {{ background: #f4f4f4; padding: 0.12rem 0.25rem; border-radius: 3px; }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>{html_escape(title)}</h1>
+    <p>{html_escape(table_label)}: <a href="{html_escape(table_rel)}"><code>{html_escape(table_rel)}</code></a></p>
+{report_line_html}    <ul>{sample_items}</ul>
+  </header>
+  <main class="grid">
+    {''.join(cards)}
+  </main>
+</body>
+</html>
+"""
+    Path(path).write_text(html_text)
 
 
 def latex_number(value, precision=3):
