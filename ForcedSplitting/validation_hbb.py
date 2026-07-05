@@ -60,6 +60,9 @@ OBSERVABLE_TITLES = {
 }
 
 
+SOURCE_MATCH_MAX_SCORE = 1.0e-3
+
+
 @dataclass
 class ValidationRunConfig(object):
     split_input_lhe: Path
@@ -231,7 +234,7 @@ def _four_momentum_match_score(source, candidate):
     return sum((component / scale) ** 2 for component in components)
 
 
-def _match_source_b_indices(source_b_quarks, final_b_quarks, max_score=1.0e-8):
+def _match_source_b_indices_with_score(source_b_quarks, final_b_quarks):
     if len(source_b_quarks) != 2 or len(final_b_quarks) != 4:
         return None
 
@@ -250,17 +253,72 @@ def _match_source_b_indices(source_b_quarks, final_b_quarks, max_score=1.0e-8):
             best_score = score
             best_indices = set(candidate_indices)
 
-    if best_indices is None or best_score is None or best_score > max_score:
+    if best_indices is None or best_score is None:
+        return None
+    return best_indices, best_score
+
+
+def _match_source_b_indices(source_b_quarks, final_b_quarks, max_score=SOURCE_MATCH_MAX_SCORE):
+    match = _match_source_b_indices_with_score(source_b_quarks, final_b_quarks)
+    if match is None:
+        return None
+    best_indices, best_score = match
+    if best_score > max_score:
         return None
     return best_indices
 
 
-def _higgs_and_associated_index_sets(event, b_quarks, source_event=None, higgs_mass=125.0):
-    if source_event is not None:
-        associated_indices = _match_source_b_indices(_source_associated_b_quarks(source_event), b_quarks)
-        if associated_indices is not None:
-            return set(range(len(b_quarks))) - associated_indices, associated_indices, "source_lhe_match"
+def _source_pair_lookup_key(b_quarks):
+    return tuple(sorted((particle.pid, round(particle.px, 6), round(particle.py, 6)) for particle in b_quarks))
 
+
+def _build_source_pair_lookup(source_pairs):
+    lookup = {}
+    for source_pair in source_pairs:
+        if len(source_pair) == 2:
+            lookup.setdefault(_source_pair_lookup_key(source_pair), []).append(source_pair)
+    return lookup
+
+
+def _find_source_associated_indices(
+    source_pairs,
+    final_b_quarks,
+    preferred_index=None,
+    source_pair_lookup=None,
+    max_score=SOURCE_MATCH_MAX_SCORE,
+):
+    if not source_pairs:
+        return None
+
+    if preferred_index is not None and preferred_index < len(source_pairs):
+        associated_indices = _match_source_b_indices(source_pairs[preferred_index], final_b_quarks, max_score=max_score)
+        if associated_indices is not None:
+            return associated_indices
+
+    if source_pair_lookup:
+        for first_index, second_index in combinations(range(len(final_b_quarks)), 2):
+            key = _source_pair_lookup_key([final_b_quarks[first_index], final_b_quarks[second_index]])
+            for source_pair in source_pair_lookup.get(key, []):
+                associated_indices = _match_source_b_indices(source_pair, final_b_quarks, max_score=max_score)
+                if associated_indices is not None:
+                    return associated_indices
+
+    best_match = None
+    for source_index, source_pair in enumerate(source_pairs):
+        if source_index == preferred_index:
+            continue
+        match = _match_source_b_indices_with_score(source_pair, final_b_quarks)
+        if match is None:
+            continue
+        associated_indices, score = match
+        if score <= max_score and (best_match is None or score < best_match[1]):
+            best_match = associated_indices, score
+    if best_match is None:
+        return None
+    return best_match[0]
+
+
+def _higgs_and_associated_index_sets(event, b_quarks, higgs_mass=125.0):
     from_higgs = [_has_ancestor_pid(event, b_quark, 25) for b_quark in b_quarks]
     if sum(1 for value in from_higgs if value) == 2:
         higgs_indices = {index for index, value in enumerate(from_higgs) if value}
@@ -297,6 +355,8 @@ def extract_lhe_4b_sample(path, label=None, source_lhe=None):
     events = parse_lhe_events(text)
     source_lhe = Path(source_lhe) if source_lhe is not None else None
     source_events = parse_lhe_events(_read_lhe_text(source_lhe)) if source_lhe is not None else []
+    source_pairs = [_source_associated_b_quarks(event) for event in source_events]
+    source_pair_lookup = _build_source_pair_lookup(source_pairs)
     observables = _empty_observables()
     accepted = 0
     skipped = 0
@@ -323,12 +383,17 @@ def extract_lhe_4b_sample(path, label=None, source_lhe=None):
             _append(observables, "b_pt_all", _pt(b_quark), weight)
         for index, b_quark in enumerate(ranked, start=1):
             _append(observables, "b%d_pt" % index, _pt(b_quark), weight)
-        source_event = source_events[event_index] if event_index < len(source_events) else None
-        higgs_indices, associated_indices, classification_method = _higgs_and_associated_index_sets(
-            event,
+        associated_indices = _find_source_associated_indices(
+            source_pairs,
             b_quarks,
-            source_event=source_event,
+            preferred_index=event_index,
+            source_pair_lookup=source_pair_lookup,
         )
+        if associated_indices is not None:
+            higgs_indices = set(range(len(b_quarks))) - associated_indices
+            classification_method = "source_lhe_match"
+        else:
+            higgs_indices, associated_indices, classification_method = _higgs_and_associated_index_sets(event, b_quarks)
         pair_classification[classification_method] += 1
         if source_lhe is not None and classification_method != "source_lhe_match":
             pair_classification["source_lhe_unmatched"] += 1

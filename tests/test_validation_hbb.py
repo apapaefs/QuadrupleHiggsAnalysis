@@ -123,6 +123,60 @@ def validation_source_lhe_text_associated_high_mass_pair(weight=2.0, xsec_pb=5.0
 """.format(weight=weight, xsec=xsec_pb)
 
 
+def validation_source_lhe_text_two_events_for_global_matching(weight=2.0, xsec_pb=5.0):
+    return """<LesHouchesEvents version="1.0">
+<init>
+     2212     2212           7000           7000  999  999  999  999    0    1
+   {xsec:.9e}   5.000000000e-01            100      1
+</init>
+<event>
+    5      1     {weight:.9e}        200.0    0.007546771     0.09944864
+        21 -1    0    0  501  0  0.0  0.0  200.0  200.0  0.0  0.0  9.0
+        21 -1    0    0  0  501  0.0  0.0 -200.0  200.0  0.0  0.0  9.0
+        25  1    1    2  0  0  0.0  0.0  0.0  125.0  125.0  0.0  9.0
+         5  1    1    2  0  0  62.29979936  0.0  0.0  62.5  5.0  0.0  9.0
+        -5  1    1    2  0  0 -62.29979936  0.0  0.0  62.5  5.0  0.0  9.0
+</event>
+<event>
+    5      1     {weight:.9e}        200.0    0.007546771     0.09944864
+        21 -1    0    0  501  0  0.0  0.0  200.0  200.0  0.0  0.0  9.0
+        21 -1    0    0  0  501  0.0  0.0 -200.0  200.0  0.0  0.0  9.0
+        25  1    1    2  0  0  0.0  0.0  0.0  125.0  125.0  0.0  9.0
+         5  1    1    2  0  0  30.0  5.0  10.0  32.01562119  5.0  0.0  9.0
+        -5  1    1    2  0  0 -12.0  24.0 -8.0  28.46049894  5.0  0.0  9.0
+</event>
+</LesHouchesEvents>
+""".format(weight=weight, xsec=xsec_pb)
+
+
+def validation_final_lhe_text_reversed_source_events(weight=2.0, xsec_pb=5.0):
+    return """<LesHouchesEvents version="1.0">
+<init>
+     2212     2212           7000           7000  999  999  999  999    0    1
+   {xsec:.9e}   5.000000000e-01            100      1
+</init>
+<event>
+    6      1     {weight:.9e}        200.0    0.007546771     0.09944864
+        21 -1    0    0  501  0  0.0  0.0  200.0  200.0  0.0  0.0  9.0
+        21 -1    0    0  0  501  0.0  0.0 -200.0  200.0  0.0  0.0  9.0
+         5  1    1    2  0  0  30.0  5.0  10.0  32.01562119  5.0  0.0  9.0
+        -5  1    1    2  0  0 -12.0  24.0 -8.0  28.46049894  5.0  0.0  9.0
+         5  1    1    2  0  0  18.0  0.0  0.0  18.68154169  5.0  0.0  9.0
+        -5  1    1    2  0  0  20.0  1.0  0.0  20.63976744  5.0  0.0  9.0
+</event>
+<event>
+    6      1     {weight:.9e}        200.0    0.007546771     0.09944864
+        21 -1    0    0  501  0  0.0  0.0  200.0  200.0  0.0  0.0  9.0
+        21 -1    0    0  0  501  0.0  0.0 -200.0  200.0  0.0  0.0  9.0
+         5  1    1    2  0  0  62.29979936  0.0  0.0  62.5  5.0  0.0  9.0
+        -5  1    1    2  0  0 -62.29979936  0.0  0.0  62.5  5.0  0.0  9.0
+         5  1    1    2  0  0  18.0  0.0  0.0  18.68154169  5.0  0.0  9.0
+        -5  1    1    2  0  0  20.0  1.0  0.0  20.63976744  5.0  0.0  9.0
+</event>
+</LesHouchesEvents>
+""".format(weight=weight, xsec=xsec_pb)
+
+
 class HbbValidationTests(unittest.TestCase):
     def test_extract_lhe_4b_sample_builds_weighted_validation_observables(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -211,6 +265,20 @@ class HbbValidationTests(unittest.TestCase):
         self.assertTrue(math.isclose(observables["dr_associated_bb"]["values"][0], math.pi))
         self.assertLess(observables["dr_higgs_bb"]["values"][0], 0.1)
         self.assertEqual(sample["summary"]["pair_classification"]["source_lhe_match"], 1)
+        self.assertEqual(sample["summary"]["pair_classification"]["higgs_mass_fallback"], 0)
+
+    def test_extract_lhe_4b_sample_globally_matches_source_events_when_order_differs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            final_path = tmpdir / "final4b_reordered.lhe"
+            source_path = tmpdir / "pre_decay_source.lhe"
+            final_path.write_text(validation_final_lhe_text_reversed_source_events(weight=4.0, xsec_pb=5.0))
+            source_path.write_text(validation_source_lhe_text_two_events_for_global_matching(weight=4.0, xsec_pb=5.0))
+
+            sample = extract_lhe_4b_sample(final_path, label="gg_hg_forced_split", source_lhe=source_path)
+
+        self.assertEqual(sample["summary"]["pair_classification"]["source_lhe_match"], 2)
+        self.assertEqual(sample["summary"]["pair_classification"]["source_lhe_unmatched"], 0)
         self.assertEqual(sample["summary"]["pair_classification"]["higgs_mass_fallback"], 0)
 
     def test_write_lhe_validation_report_uses_sample_report_webpage_shape(self):
