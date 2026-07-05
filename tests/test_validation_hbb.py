@@ -114,9 +114,13 @@ class HbbValidationTests(unittest.TestCase):
 
         self.assertIn("generate g g > h g [noborn=QCD]", split_text)
         self.assertIn("output /mg5/gg_hg", split_text)
+        self.assertIn("set ebeam1 7000", split_text)
+        self.assertIn("set ebeam2 7000", split_text)
         self.assertIn("set nevents 123", split_text)
         self.assertIn("generate g g > h b b~", direct_text)
         self.assertIn("output /mg5/gg_hbb", direct_text)
+        self.assertIn("set ebeam1 7000", direct_text)
+        self.assertIn("set ebeam2 7000", direct_text)
         self.assertIn("set ptb 15", direct_text)
         self.assertIn("set etab 3.0", direct_text)
         self.assertIn("set drbb 0.3", direct_text)

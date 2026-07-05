@@ -384,8 +384,10 @@ def write_lhe_validation_report(
     return metadata
 
 
-def _mg5_deck(process, process_dir, events, extra_run_settings=None):
+def _mg5_deck(process, process_dir, events, ebeam1=7000.0, ebeam2=7000.0, extra_run_settings=None):
     settings = [
+        "set ebeam1 %g" % float(ebeam1),
+        "set ebeam2 %g" % float(ebeam2),
         "set nevents %d" % int(events),
     ]
     settings.extend(extra_run_settings or [])
@@ -410,6 +412,8 @@ def prepare_mg5_decks(
     ptb=15,
     etab=3.0,
     drbb=0.3,
+    ebeam1=7000.0,
+    ebeam2=7000.0,
     overwrite=False,
 ):
     """Write MG5 command decks for the split/direct hbb validation samples."""
@@ -425,11 +429,15 @@ def prepare_mg5_decks(
         "g g > h g [noborn=QCD]",
         mg5_root / split_process_dir,
         events,
+        ebeam1=ebeam1,
+        ebeam2=ebeam2,
     )
     direct_text = _mg5_deck(
         "g g > h b b~",
         mg5_root / direct_process_dir,
         events,
+        ebeam1=ebeam1,
+        ebeam2=ebeam2,
         extra_run_settings=[
             "set ptb %g" % float(ptb),
             "set etab %s" % float(etab),
@@ -636,6 +644,8 @@ def main(argv=None):
     prepare.add_argument("--ptb", type=float, default=15.0)
     prepare.add_argument("--etab", type=float, default=3.0)
     prepare.add_argument("--drbb", type=float, default=0.3)
+    prepare.add_argument("--ebeam1", type=float, default=7000.0)
+    prepare.add_argument("--ebeam2", type=float, default=7000.0)
     prepare.add_argument("--overwrite", action="store_true")
 
     run = subparsers.add_parser("run", help="run split/direct Herwig validation and write a report")
@@ -671,6 +681,8 @@ def main(argv=None):
             ptb=args.ptb,
             etab=args.etab,
             drbb=args.drbb,
+            ebeam1=args.ebeam1,
+            ebeam2=args.ebeam2,
             overwrite=args.overwrite,
         )
         print("MG5 validation decks:")
