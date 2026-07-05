@@ -117,6 +117,10 @@ def observable_axis_label(name):
         "b3_pt": r"$p_T(b_3)$ [GeV]",
         "b4_pt": r"$p_T(b_4)$ [GeV]",
         "dr_bb_all": r"$\Delta R(b,b)$",
+        "dr_associated_bb": r"$\Delta R(b,b)_{\mathrm{assoc}}$",
+        "dr_higgs_bb": r"$\Delta R(b,b)_{h}$",
+        "dr_cross_bb": r"$\Delta R(b_{\mathrm{assoc}},b_h)$",
+        "dr_min_bb": r"$\min\,\Delta R(b,b)$",
         "m_bb_all": r"$m(b,b)$ [GeV]",
         "m_4b": r"$m(4b)$ [GeV]",
     }

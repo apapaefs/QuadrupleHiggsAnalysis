@@ -47,6 +47,26 @@ def validation_lhe_text(weight=2.0, xsec_pb=5.0, include_bad_event=False):
 """.format(xsec=xsec_pb, events=events)
 
 
+def validation_lhe_text_with_higgs_mothers(weight=2.0, xsec_pb=5.0):
+    return """<LesHouchesEvents version="1.0">
+<init>
+     2212     2212           7000           7000  999  999  999  999    0    1
+   {xsec:.9e}   5.000000000e-01            100      1
+</init>
+<event>
+    7      1     {weight:.9e}        200.0    0.007546771     0.09944864
+        21 -1    0    0  501  0  0.0  0.0  68.071  68.071  0.0  0.0  9.0
+        21 -1    0    0  0  501  0.0  0.0 -68.071  68.071  0.0  0.0  9.0
+        25  2    0    0  0  0  0.0  0.0  0.0  64.03124238  64.03124238  0.0  9.0
+         5  1    0    0  0  0  20.0  0.0  30.0  36.05551275  0.0  0.0  9.0
+        -5  1    0    0  0  0 -20.0  0.0 -30.0  36.05551275  0.0  0.0  9.0
+         5  1    3    3  0  0  0.0  25.0  20.0  32.01562119  0.0  0.0  9.0
+        -5  1    3    3  0  0  0.0 -25.0 -20.0  32.01562119  0.0  0.0  9.0
+</event>
+</LesHouchesEvents>
+""".format(weight=weight, xsec=xsec_pb)
+
+
 class HbbValidationTests(unittest.TestCase):
     def test_extract_lhe_4b_sample_builds_weighted_validation_observables(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -63,7 +83,23 @@ class HbbValidationTests(unittest.TestCase):
         self.assertTrue(math.isclose(sample["summary"]["weighted_event_sum"], 2.0))
 
         observables = sample["observables"]
-        self.assertEqual(sorted(observables), ["b1_pt", "b2_pt", "b3_pt", "b4_pt", "b_pt_all", "dr_bb_all", "m_4b", "m_bb_all"])
+        self.assertEqual(
+            sorted(observables),
+            [
+                "b1_pt",
+                "b2_pt",
+                "b3_pt",
+                "b4_pt",
+                "b_pt_all",
+                "dr_associated_bb",
+                "dr_bb_all",
+                "dr_cross_bb",
+                "dr_higgs_bb",
+                "dr_min_bb",
+                "m_4b",
+                "m_bb_all",
+            ],
+        )
         self.assertEqual(len(observables["b_pt_all"]["values"]), 4)
         self.assertEqual(len(observables["dr_bb_all"]["values"]), 6)
         self.assertEqual(len(observables["m_bb_all"]["values"]), 6)
@@ -71,13 +107,33 @@ class HbbValidationTests(unittest.TestCase):
         self.assertEqual(observables["b1_pt"]["values"][0], 25.0)
         self.assertTrue(all(weight == 2.0 for weight in observables["b_pt_all"]["weights"]))
 
+    def test_extract_lhe_4b_sample_splits_delta_r_by_higgs_ancestry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "final4b_with_mothers.lhe"
+            path.write_text(validation_lhe_text_with_higgs_mothers(weight=3.0, xsec_pb=5.0))
+
+            sample = extract_lhe_4b_sample(path, label="gg_hg_forced_split")
+
+        observables = sample["observables"]
+        self.assertEqual(len(observables["dr_associated_bb"]["values"]), 1)
+        self.assertEqual(len(observables["dr_higgs_bb"]["values"]), 1)
+        self.assertEqual(len(observables["dr_cross_bb"]["values"]), 4)
+        self.assertEqual(len(observables["dr_min_bb"]["values"]), 1)
+        self.assertTrue(all(weight == 3.0 for weight in observables["dr_cross_bb"]["weights"]))
+        self.assertTrue(
+            math.isclose(
+                observables["dr_min_bb"]["values"][0],
+                min(observables["dr_bb_all"]["values"]),
+            )
+        )
+
     def test_write_lhe_validation_report_uses_sample_report_webpage_shape(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
             split_lhe = tmpdir / "gg_hg_forced_split.final4b.lhe"
             direct_lhe = tmpdir / "gg_hbb_direct.final4b.lhe"
-            split_lhe.write_text(validation_lhe_text(weight=1.5, xsec_pb=3.0))
-            direct_lhe.write_text(validation_lhe_text(weight=2.0, xsec_pb=5.0))
+            split_lhe.write_text(validation_lhe_text_with_higgs_mothers(weight=1.5, xsec_pb=3.0))
+            direct_lhe.write_text(validation_lhe_text_with_higgs_mothers(weight=2.0, xsec_pb=5.0))
 
             metadata = write_lhe_validation_report(
                 split_lhe=split_lhe,
@@ -96,7 +152,11 @@ class HbbValidationTests(unittest.TestCase):
             self.assertIn("class=\"grid\"", index.read_text())
             self.assertIn("gg_hg_forced_split", table.read_text())
             self.assertIn("gg_hbb_direct", table.read_text())
-            self.assertEqual(len(metadata["plots"]), 8)
+            self.assertEqual(len(metadata["plots"]), 12)
+            self.assertIn("associated_pair_deltaR_bb", index.read_text())
+            self.assertIn("higgs_decay_deltaR_bb", index.read_text())
+            self.assertIn("cross_pair_deltaR_bb", index.read_text())
+            self.assertIn("min_deltaR_bb", index.read_text())
             self.assertTrue(all(Path(row["path"]).exists() for row in metadata["plots"]))
             self.assertTrue(json.loads(metadata_path.read_text())["validation_only"])
 

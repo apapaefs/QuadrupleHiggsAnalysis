@@ -36,6 +36,10 @@ OBSERVABLE_ORDER = [
     "b3_pt",
     "b4_pt",
     "dr_bb_all",
+    "dr_associated_bb",
+    "dr_higgs_bb",
+    "dr_cross_bb",
+    "dr_min_bb",
     "m_bb_all",
     "m_4b",
 ]
@@ -47,6 +51,10 @@ OBSERVABLE_TITLES = {
     "b3_pt": "b3_pt",
     "b4_pt": "b4_pt",
     "dr_bb_all": "all_pair_deltaR_bb",
+    "dr_associated_bb": "associated_pair_deltaR_bb",
+    "dr_higgs_bb": "higgs_decay_deltaR_bb",
+    "dr_cross_bb": "cross_pair_deltaR_bb",
+    "dr_min_bb": "min_deltaR_bb",
     "m_bb_all": "all_pair_m_bb",
     "m_4b": "m_4b",
 }
@@ -173,6 +181,31 @@ def _invariant_mass(particles):
     return math.sqrt(max(0.0, mass2))
 
 
+def _mother_indices(particle):
+    indices = []
+    for index in (particle.mother1, particle.mother2):
+        if index > 0 and index not in indices:
+            indices.append(index)
+    return indices
+
+
+def _has_ancestor_pid(event, particle, target_pid, seen=None):
+    if seen is None:
+        seen = set()
+    for mother_index in _mother_indices(particle):
+        if mother_index in seen:
+            continue
+        if mother_index < 1 or mother_index > len(event.particles):
+            continue
+        seen.add(mother_index)
+        mother = event.particles[mother_index - 1]
+        if abs(mother.pid) == abs(target_pid):
+            return True
+        if _has_ancestor_pid(event, mother, target_pid, seen=seen):
+            return True
+    return False
+
+
 def _empty_observables():
     return {
         name: {
@@ -214,9 +247,25 @@ def extract_lhe_4b_sample(path, label=None):
             _append(observables, "b_pt_all", _pt(b_quark), weight)
         for index, b_quark in enumerate(ranked, start=1):
             _append(observables, "b%d_pt" % index, _pt(b_quark), weight)
-        for first, second in combinations(b_quarks, 2):
-            _append(observables, "dr_bb_all", _delta_r(first, second), weight)
+        from_higgs = [_has_ancestor_pid(event, b_quark, 25) for b_quark in b_quarks]
+        pair_delta_rs = []
+        for first_index, second_index in combinations(range(len(b_quarks)), 2):
+            first = b_quarks[first_index]
+            second = b_quarks[second_index]
+            delta_r = _delta_r(first, second)
+            pair_delta_rs.append(delta_r)
+            _append(observables, "dr_bb_all", delta_r, weight)
             _append(observables, "m_bb_all", _invariant_mass([first, second]), weight)
+            first_from_higgs = from_higgs[first_index]
+            second_from_higgs = from_higgs[second_index]
+            if first_from_higgs and second_from_higgs:
+                _append(observables, "dr_higgs_bb", delta_r, weight)
+            elif not first_from_higgs and not second_from_higgs:
+                _append(observables, "dr_associated_bb", delta_r, weight)
+            else:
+                _append(observables, "dr_cross_bb", delta_r, weight)
+        if pair_delta_rs:
+            _append(observables, "dr_min_bb", min(pair_delta_rs), weight)
         _append(observables, "m_4b", _invariant_mass(b_quarks), weight)
 
     xsec_pb, xsec_error_pb = _init_xsec(path)
