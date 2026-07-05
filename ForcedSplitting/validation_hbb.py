@@ -206,6 +206,20 @@ def _has_ancestor_pid(event, particle, target_pid, seen=None):
     return False
 
 
+def _higgs_and_associated_index_sets(event, b_quarks, higgs_mass=125.0):
+    from_higgs = [_has_ancestor_pid(event, b_quark, 25) for b_quark in b_quarks]
+    if sum(1 for value in from_higgs if value) == 2:
+        higgs_indices = {index for index, value in enumerate(from_higgs) if value}
+        return higgs_indices, set(range(len(b_quarks))) - higgs_indices
+
+    best_pair = min(
+        combinations(range(len(b_quarks)), 2),
+        key=lambda pair: abs(_invariant_mass([b_quarks[pair[0]], b_quarks[pair[1]]]) - float(higgs_mass)),
+    )
+    higgs_indices = set(best_pair)
+    return higgs_indices, set(range(len(b_quarks))) - higgs_indices
+
+
 def _empty_observables():
     return {
         name: {
@@ -247,7 +261,7 @@ def extract_lhe_4b_sample(path, label=None):
             _append(observables, "b_pt_all", _pt(b_quark), weight)
         for index, b_quark in enumerate(ranked, start=1):
             _append(observables, "b%d_pt" % index, _pt(b_quark), weight)
-        from_higgs = [_has_ancestor_pid(event, b_quark, 25) for b_quark in b_quarks]
+        higgs_indices, associated_indices = _higgs_and_associated_index_sets(event, b_quarks)
         pair_delta_rs = []
         for first_index, second_index in combinations(range(len(b_quarks)), 2):
             first = b_quarks[first_index]
@@ -256,11 +270,9 @@ def extract_lhe_4b_sample(path, label=None):
             pair_delta_rs.append(delta_r)
             _append(observables, "dr_bb_all", delta_r, weight)
             _append(observables, "m_bb_all", _invariant_mass([first, second]), weight)
-            first_from_higgs = from_higgs[first_index]
-            second_from_higgs = from_higgs[second_index]
-            if first_from_higgs and second_from_higgs:
+            if first_index in higgs_indices and second_index in higgs_indices:
                 _append(observables, "dr_higgs_bb", delta_r, weight)
-            elif not first_from_higgs and not second_from_higgs:
+            elif first_index in associated_indices and second_index in associated_indices:
                 _append(observables, "dr_associated_bb", delta_r, weight)
             else:
                 _append(observables, "dr_cross_bb", delta_r, weight)

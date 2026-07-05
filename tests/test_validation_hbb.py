@@ -67,6 +67,25 @@ def validation_lhe_text_with_higgs_mothers(weight=2.0, xsec_pb=5.0):
 """.format(weight=weight, xsec=xsec_pb)
 
 
+def validation_lhe_text_without_mothers_higgs_mass_pair(weight=2.0, xsec_pb=5.0):
+    return """<LesHouchesEvents version="1.0">
+<init>
+     2212     2212           7000           7000  999  999  999  999    0    1
+   {xsec:.9e}   5.000000000e-01            100      1
+</init>
+<event>
+    6      1     {weight:.9e}        200.0    0.007546771     0.09944864
+        21 -1    0    0  501  0  0.0  0.0  200.0  200.0  0.0  0.0  9.0
+        21 -1    0    0  0  501  0.0  0.0 -200.0  200.0  0.0  0.0  9.0
+         5  1    1    2  0  0  18.0  0.0  0.0  18.68154169  5.0  0.0  9.0
+        -5  1    1    2  0  0  20.0  1.0  0.0  20.63976744  5.0  0.0  9.0
+         5  1    1    2  0  0  62.29979936  0.0  0.0  62.5  5.0  0.0  9.0
+        -5  1    1    2  0  0 -62.29979936  0.0  0.0  62.5  5.0  0.0  9.0
+</event>
+</LesHouchesEvents>
+""".format(weight=weight, xsec=xsec_pb)
+
+
 class HbbValidationTests(unittest.TestCase):
     def test_extract_lhe_4b_sample_builds_weighted_validation_observables(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -126,6 +145,19 @@ class HbbValidationTests(unittest.TestCase):
                 min(observables["dr_bb_all"]["values"]),
             )
         )
+
+    def test_extract_lhe_4b_sample_falls_back_to_higgs_mass_pair_without_mothers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "final4b_no_higgs_mothers.lhe"
+            path.write_text(validation_lhe_text_without_mothers_higgs_mass_pair(weight=4.0, xsec_pb=5.0))
+
+            sample = extract_lhe_4b_sample(path, label="gg_hg_forced_split")
+
+        observables = sample["observables"]
+        self.assertEqual(len(observables["dr_associated_bb"]["values"]), 1)
+        self.assertEqual(len(observables["dr_higgs_bb"]["values"]), 1)
+        self.assertEqual(len(observables["dr_cross_bb"]["values"]), 4)
+        self.assertTrue(all(weight == 4.0 for weight in observables["dr_higgs_bb"]["weights"]))
 
     def test_write_lhe_validation_report_uses_sample_report_webpage_shape(self):
         with tempfile.TemporaryDirectory() as tmp:
