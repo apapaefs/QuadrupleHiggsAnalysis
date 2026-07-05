@@ -11,9 +11,11 @@ sys.path.insert(0, str(REPO_DIR))
 sys.path.insert(0, str(REPO_DIR / "Code"))
 
 from ForcedSplitting.validation_hbb import (  # noqa: E402
+    OBSERVABLE_ORDER,
     ValidationRunConfig,
     extract_lhe_4b_sample,
     prepare_mg5_decks,
+    run_validation_scan,
     run_validation_chain,
     write_lhe_validation_report,
 )
@@ -149,6 +151,43 @@ def validation_source_lhe_text_two_events_for_global_matching(weight=2.0, xsec_p
 """.format(weight=weight, xsec=xsec_pb)
 
 
+def validation_source_lhe_text_boosted_higgs(weight=2.0, xsec_pb=5.0):
+    return """<LesHouchesEvents version="1.0">
+<init>
+     2212     2212           7000           7000  999  999  999  999    0    1
+   {xsec:.9e}   5.000000000e-01            100      1
+</init>
+<event>
+    5      1     {weight:.9e}        200.0    0.007546771     0.09944864
+        21 -1    0    0  501  0  0.0  0.0  500.0  500.0  0.0  0.0  9.0
+        21 -1    0    0  0  501  0.0  0.0 -500.0  500.0  0.0  0.0  9.0
+        25  1    1    2  0  0  200.0  0.0  0.0  235.8495283  125.0  0.0  9.0
+         5  1    1    2  0  0  40.0  0.0  0.0  40.31128874  5.0  0.0  9.0
+        -5  1    1    2  0  0  20.0  30.0  0.0  36.40054945  5.0  0.0  9.0
+</event>
+</LesHouchesEvents>
+""".format(weight=weight, xsec=xsec_pb)
+
+
+def validation_final_lhe_text_boosted_higgs_truth(weight=2.0, xsec_pb=5.0):
+    return """<LesHouchesEvents version="1.0">
+<init>
+     2212     2212           7000           7000  999  999  999  999    0    1
+   {xsec:.9e}   5.000000000e-01            100      1
+</init>
+<event>
+    6      1     {weight:.9e}        200.0    0.007546771     0.09944864
+        21 -1    0    0  501  0  0.0  0.0  500.0  500.0  0.0  0.0  9.0
+        21 -1    0    0  0  501  0.0  0.0 -500.0  500.0  0.0  0.0  9.0
+         5  1    1    2  0  0  40.0  0.0  0.0  40.31128874  5.0  0.0  9.0
+        -5  1    1    2  0  0  20.0  30.0  0.0  36.40054945  5.0  0.0  9.0
+         5  1    1    2  0  0  100.0  62.26756752  0.0  117.9247642  5.0  0.0  9.0
+        -5  1    1    2  0  0  100.0 -62.26756752  0.0  117.9247642  5.0  0.0  9.0
+</event>
+</LesHouchesEvents>
+""".format(weight=weight, xsec=xsec_pb)
+
+
 def validation_final_lhe_text_reversed_source_events(weight=2.0, xsec_pb=5.0):
     return """<LesHouchesEvents version="1.0">
 <init>
@@ -193,23 +232,7 @@ class HbbValidationTests(unittest.TestCase):
         self.assertTrue(math.isclose(sample["summary"]["weighted_event_sum"], 2.0))
 
         observables = sample["observables"]
-        self.assertEqual(
-            sorted(observables),
-            [
-                "b1_pt",
-                "b2_pt",
-                "b3_pt",
-                "b4_pt",
-                "b_pt_all",
-                "dr_associated_bb",
-                "dr_bb_all",
-                "dr_cross_bb",
-                "dr_higgs_bb",
-                "dr_min_bb",
-                "m_4b",
-                "m_bb_all",
-            ],
-        )
+        self.assertEqual(sorted(observables), sorted(OBSERVABLE_ORDER))
         self.assertEqual(len(observables["b_pt_all"]["values"]), 4)
         self.assertEqual(len(observables["dr_bb_all"]["values"]), 6)
         self.assertEqual(len(observables["m_bb_all"]["values"]), 6)
@@ -267,6 +290,31 @@ class HbbValidationTests(unittest.TestCase):
         self.assertEqual(sample["summary"]["pair_classification"]["source_lhe_match"], 1)
         self.assertEqual(sample["summary"]["pair_classification"]["higgs_mass_fallback"], 0)
 
+    def test_extract_lhe_4b_sample_adds_source_higgs_validation_observables(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            final_path = tmpdir / "final4b_boosted_higgs.lhe"
+            source_path = tmpdir / "pre_decay_boosted_higgs.lhe"
+            final_path.write_text(validation_final_lhe_text_boosted_higgs_truth(weight=2.5, xsec_pb=5.0))
+            source_path.write_text(validation_source_lhe_text_boosted_higgs(weight=2.5, xsec_pb=5.0))
+
+            sample = extract_lhe_4b_sample(final_path, label="gg_hg_forced_split", source_lhe=source_path)
+
+        observables = sample["observables"]
+        self.assertEqual(observables["h_pt"]["values"], [200.0])
+        self.assertEqual(observables["h_eta"]["values"], [0.0])
+        self.assertEqual(len(observables["dr_higgs_bb_hpt_150_300"]["values"]), 1)
+        self.assertEqual(len(observables["dr_higgs_bb_hpt_lt150"]["values"]), 0)
+        self.assertEqual(len(observables["dr_higgs_bb_hpt_ge300"]["values"]), 0)
+        self.assertEqual(len(observables["m_higgs_bb"]["values"]), 1)
+        self.assertEqual(len(observables["m_associated_bb"]["values"]), 1)
+        self.assertEqual(len(observables["cos_theta_star_higgs_b"]["values"]), 1)
+        self.assertGreaterEqual(observables["cos_theta_star_higgs_b"]["values"][0], -1.0)
+        self.assertLessEqual(observables["cos_theta_star_higgs_b"]["values"][0], 1.0)
+        self.assertEqual(len(observables["dr_associated_bb_0p8_1p5"]["values"]), 1)
+        self.assertEqual(sample["summary"]["associated_delta_r_bins"]["0.8_1.5"]["count"], 1)
+        self.assertTrue(math.isclose(sample["summary"]["associated_delta_r_bins"]["0.8_1.5"]["weighted"], 2.5))
+
     def test_extract_lhe_4b_sample_globally_matches_source_events_when_order_differs(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
@@ -306,9 +354,12 @@ class HbbValidationTests(unittest.TestCase):
             self.assertIn("class=\"grid\"", index.read_text())
             self.assertIn("gg_hg_forced_split", table.read_text())
             self.assertIn("gg_hbb_direct", table.read_text())
-            self.assertEqual(len(metadata["plots"]), 12)
+            self.assertEqual(len(metadata["plots"]), len(OBSERVABLE_ORDER))
             self.assertIn("associated_pair_deltaR_bb", index.read_text())
             self.assertIn("higgs_decay_deltaR_bb", index.read_text())
+            self.assertIn("higgs_decay_deltaR_bb_hpt_150_300", index.read_text())
+            self.assertIn("associated_pair_deltaR_bb_0p8_1p5", index.read_text())
+            self.assertIn("cos_theta_star_higgs_b", index.read_text())
             self.assertIn("cross_pair_deltaR_bb", index.read_text())
             self.assertIn("min_deltaR_bb", index.read_text())
             self.assertTrue(all(Path(row["path"]).exists() for row in metadata["plots"]))
@@ -401,6 +452,40 @@ class HbbValidationTests(unittest.TestCase):
             self.assertIn("decaymode h0->b,bbar; 1.0 1 /Herwig/Decays/Hff", direct_decay_card.read_text())
             self.assertEqual(len(summary["commands"]), 6)
             self.assertTrue(Path(summary["summary"]).exists())
+
+    def test_validation_scan_dry_run_writes_mode_cards_and_sequence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            split_input = tmpdir / "gg_hg.lhe"
+            direct_input = tmpdir / "gg_hbb.lhe"
+            split_input.write_text(validation_lhe_text(weight=1.0, xsec_pb=1.0))
+            direct_input.write_text(validation_lhe_text(weight=1.0, xsec_pb=2.0))
+
+            summary = run_validation_scan(
+                split_input_lhe=split_input,
+                direct_input_lhe=direct_input,
+                workdir=tmpdir / "scan",
+                events=1,
+                probe_trials=7,
+                modes=["baseline", "renorm_2p0", "gqq_scale_q2"],
+                dry_run=True,
+                overwrite=True,
+            )
+
+            self.assertEqual(summary["modes"], ["baseline", "renorm_2p0", "gqq_scale_q2"])
+            self.assertTrue(Path(summary["scan_summary"]).exists())
+            self.assertTrue(Path(summary["scan_manifest"]).exists())
+            self.assertTrue(Path(summary["run_sequence"]).exists())
+            sequence_text = Path(summary["run_sequence"]).read_text()
+            self.assertIn("hbb_validation_baseline", sequence_text)
+            self.assertIn("hbb_validation_renorm_2p0", sequence_text)
+            self.assertIn("hbb_validation_gqq_scale_q2", sequence_text)
+            baseline_card = Path(summary["runs"][0]["split_stage1_card"]).read_text()
+            renorm_card = Path(summary["runs"][1]["split_stage1_card"]).read_text()
+            q2_card = Path(summary["runs"][2]["split_stage1_card"]).read_text()
+            self.assertNotIn("RenormalizationScaleFactor", baseline_card)
+            self.assertIn("set ShowerHandler:RenormalizationScaleFactor 2.0", renorm_card)
+            self.assertIn("set /Herwig/Shower/GtoQQbarSplitFn:ScaleChoice Q2", q2_card)
 
 
 if __name__ == "__main__":

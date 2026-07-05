@@ -137,6 +137,28 @@ class ForcedSplittingTests(unittest.TestCase):
         self.assertIn("set ForceSplitVeto:SplitMaxBEta 3.0", card)
         self.assertIn("set ForceSplitVeto:ProbeTrials 25", card)
 
+    def test_stage1_card_accepts_extra_shower_variation_settings(self):
+        card = stage1_lhewriter_card(
+            PROCESS_CONFIGS["gg_hg"],
+            input_lhe="/data/gg_hg/unweighted_events.lhe.gz",
+            output_prefix="gg_hg_split",
+            events=1000,
+            probe_trials=25,
+            correction_file="gg_hg_split.weights",
+            extra_shower_settings=[
+                "set ShowerHandler:RenormalizationScaleFactor 0.5",
+                "set /Herwig/Shower/GtoQQbarSplitFn:ScaleChoice Q2",
+            ],
+        )
+
+        self.assertIn("# Shower/Sudakov variation settings", card)
+        self.assertIn("set ShowerHandler:RenormalizationScaleFactor 0.5", card)
+        self.assertIn("set /Herwig/Shower/GtoQQbarSplitFn:ScaleChoice Q2", card)
+        self.assertLess(
+            card.index("set ShowerHandler:RenormalizationScaleFactor 0.5"),
+            card.index("library HwMinBShowerVeto.so"),
+        )
+
     def test_hhgg_stage1_card_requires_two_distinct_split_pairs(self):
         card = stage1_lhewriter_card(
             PROCESS_CONFIGS["gg_hhgg"],

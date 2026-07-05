@@ -84,6 +84,13 @@ def _output_location_for_hwsim(output_location):
     return output_location + "/"
 
 
+def _extra_settings_block(settings):
+    settings = [str(setting).strip() for setting in (settings or []) if str(setting).strip()]
+    if not settings:
+        return ""
+    return "# Shower/Sudakov variation settings\n" + "\n".join(settings) + "\n"
+
+
 def stage1_lhewriter_card(
     config,
     input_lhe,
@@ -94,6 +101,7 @@ def stage1_lhewriter_card(
     correction_file=None,
     reset_after_attempts=100000,
     max_try=100000,
+    extra_shower_settings=None,
 ):
     """Return a Herwig Stage-1 card that writes split parton-level LHE events."""
     if correction_file is None:
@@ -163,6 +171,7 @@ set ShowerHandler:MPIHandler NULL
 # only come from the forced final-state gluon splitting.
 erase ShowerHandler:DecayInShower 3
 
+{extra_shower_settings}\
 library HwMinBShowerVeto.so
 create Herwig::MinBShowerVeto ForceSplitVeto HwMinBShowerVeto.so
 set ForceSplitVeto:MinB {min_b}
@@ -214,6 +223,7 @@ saverun {output_prefix} theGenerator
         correction_file=correction_file,
         reset_after_attempts=int(reset_after_attempts),
         max_try=int(max_try),
+        extra_shower_settings=_extra_settings_block(extra_shower_settings),
         final_state_splitting_deletions=FINAL_STATE_SPLITTING_DELETIONS,
         output_prefix=output_prefix,
     )
@@ -411,6 +421,7 @@ def main(argv=None):
     stage1.add_argument("--seed", type=int, default=31122002)
     stage1.add_argument("--probe-trials", type=int, default=0)
     stage1.add_argument("--correction-file")
+    stage1.add_argument("--extra-shower-setting", action="append", default=[])
     stage1.add_argument("--card-out")
 
     stage2 = subparsers.add_parser("stage2", help="write a Stage-2 HwSim card")
@@ -438,6 +449,7 @@ def main(argv=None):
             seed=args.seed,
             probe_trials=args.probe_trials,
             correction_file=args.correction_file,
+            extra_shower_settings=args.extra_shower_setting,
         )
         _write_or_print(card, args.card_out)
     elif args.command == "stage2":

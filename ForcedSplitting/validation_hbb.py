@@ -1,9 +1,11 @@
 """Validate forced g -> b bbar splitting against direct gg -> h b bbar LHEs."""
 
 import argparse
+import csv
 import gzip
 import json
 import math
+import shlex
 import sys
 from dataclasses import dataclass
 from itertools import combinations, permutations
@@ -38,10 +40,21 @@ OBSERVABLE_ORDER = [
     "dr_bb_all",
     "dr_associated_bb",
     "dr_higgs_bb",
+    "dr_higgs_bb_hpt_lt150",
+    "dr_higgs_bb_hpt_150_300",
+    "dr_higgs_bb_hpt_ge300",
     "dr_cross_bb",
     "dr_min_bb",
+    "dr_associated_bb_0p3_0p8",
+    "dr_associated_bb_0p8_1p5",
+    "dr_associated_bb_ge1p5",
     "m_bb_all",
+    "m_associated_bb",
+    "m_higgs_bb",
     "m_4b",
+    "h_pt",
+    "h_eta",
+    "cos_theta_star_higgs_b",
 ]
 
 OBSERVABLE_TITLES = {
@@ -53,14 +66,106 @@ OBSERVABLE_TITLES = {
     "dr_bb_all": "all_pair_deltaR_bb",
     "dr_associated_bb": "associated_pair_deltaR_bb",
     "dr_higgs_bb": "higgs_decay_deltaR_bb",
+    "dr_higgs_bb_hpt_lt150": "higgs_decay_deltaR_bb_hpt_lt150",
+    "dr_higgs_bb_hpt_150_300": "higgs_decay_deltaR_bb_hpt_150_300",
+    "dr_higgs_bb_hpt_ge300": "higgs_decay_deltaR_bb_hpt_ge300",
     "dr_cross_bb": "cross_pair_deltaR_bb",
     "dr_min_bb": "min_deltaR_bb",
+    "dr_associated_bb_0p3_0p8": "associated_pair_deltaR_bb_0p3_0p8",
+    "dr_associated_bb_0p8_1p5": "associated_pair_deltaR_bb_0p8_1p5",
+    "dr_associated_bb_ge1p5": "associated_pair_deltaR_bb_ge1p5",
     "m_bb_all": "all_pair_m_bb",
+    "m_associated_bb": "associated_pair_m_bb",
+    "m_higgs_bb": "higgs_decay_m_bb",
     "m_4b": "m_4b",
+    "h_pt": "source_h_pt",
+    "h_eta": "source_h_eta",
+    "cos_theta_star_higgs_b": "cos_theta_star_higgs_b",
 }
 
 
 SOURCE_MATCH_MAX_SCORE = 1.0e-3
+
+ASSOCIATED_DELTA_R_BINS = [
+    ("0.3_0.8", "dr_associated_bb_0p3_0p8", 0.3, 0.8),
+    ("0.8_1.5", "dr_associated_bb_0p8_1p5", 0.8, 1.5),
+    ("ge1.5", "dr_associated_bb_ge1p5", 1.5, None),
+]
+
+HIGGS_PT_BINS = [
+    ("dr_higgs_bb_hpt_lt150", None, 150.0),
+    ("dr_higgs_bb_hpt_150_300", 150.0, 300.0),
+    ("dr_higgs_bb_hpt_ge300", 300.0, None),
+]
+
+
+SHOWER_VARIATIONS = {
+    "baseline": {
+        "description": "nominal Herwig forced-splitting setup",
+        "settings": [],
+    },
+    "renorm_0p5": {
+        "description": "ShowerHandler renormalization scale factor 0.5",
+        "settings": ["set ShowerHandler:RenormalizationScaleFactor 0.5"],
+    },
+    "renorm_2p0": {
+        "description": "ShowerHandler renormalization scale factor 2.0",
+        "settings": ["set ShowerHandler:RenormalizationScaleFactor 2.0"],
+    },
+    "hard_0p5": {
+        "description": "ShowerHandler hard scale factor 0.5",
+        "settings": ["set ShowerHandler:HardScaleFactor 0.5"],
+    },
+    "hard_2p0": {
+        "description": "ShowerHandler hard scale factor 2.0",
+        "settings": ["set ShowerHandler:HardScaleFactor 2.0"],
+    },
+    "gqq_scale_pt": {
+        "description": "g->qqbar Sudakov scale choice pT",
+        "settings": ["set /Herwig/Shower/GtoQQbarSplitFn:ScaleChoice pT"],
+    },
+    "gqq_scale_q2": {
+        "description": "g->qqbar Sudakov scale choice Q2",
+        "settings": ["set /Herwig/Shower/GtoQQbarSplitFn:ScaleChoice Q2"],
+    },
+    "gqq_scale_from_ao": {
+        "description": "g->qqbar Sudakov scale choice FromAngularOrdering",
+        "settings": ["set /Herwig/Shower/GtoQQbarSplitFn:ScaleChoice FromAngularOrdering"],
+    },
+    "gqq_ao_no": {
+        "description": "g->qqbar AngularOrdered disabled",
+        "settings": ["set /Herwig/Shower/GtoQQbarSplitFn:AngularOrdered No"],
+    },
+    "gqq_ao_yes": {
+        "description": "g->qqbar AngularOrdered enabled; diagnostic for subsequent-emission studies",
+        "settings": ["set /Herwig/Shower/GtoQQbarSplitFn:AngularOrdered Yes"],
+    },
+    "gqq_strictao_no": {
+        "description": "g->qqbar StrictAO disabled",
+        "settings": ["set /Herwig/Shower/GtoQQbarSplitFn:StrictAO No"],
+    },
+    "partner_scale": {
+        "description": "PartnerFinder scale choice Partner",
+        "settings": ["set /Herwig/Shower/PartnerFinder:ScaleChoice Partner"],
+    },
+}
+
+SCAN_MODE_GROUPS = {
+    "recommended": [
+        "baseline",
+        "renorm_0p5",
+        "renorm_2p0",
+        "hard_0p5",
+        "hard_2p0",
+        "gqq_scale_pt",
+        "gqq_scale_q2",
+        "gqq_scale_from_ao",
+        "gqq_ao_no",
+        "gqq_strictao_no",
+        "partner_scale",
+    ],
+    "all": list(SHOWER_VARIATIONS),
+}
 
 
 @dataclass
@@ -80,6 +185,8 @@ class ValidationRunConfig(object):
     allow_input_oversampling: bool = False
     overwrite: bool = False
     dry_run: bool = False
+    stage1_extra_settings: tuple = ()
+    variation_label: str = "baseline"
 
 
 def _default_runner(command, cwd):
@@ -217,6 +324,83 @@ def _source_associated_b_quarks(source_event):
     ]
 
 
+def _source_higgs_bosons(source_event):
+    return [particle for particle in source_event.particles if particle.status == 1 and abs(particle.pid) == 25]
+
+
+def _matching_source_event(source_events, source_pairs, final_b_quarks, associated_indices, preferred_index=None):
+    if associated_indices is None:
+        return None
+    source_indices = []
+    if preferred_index is not None and preferred_index < len(source_events):
+        source_indices.append(preferred_index)
+    source_indices.extend(index for index in range(len(source_events)) if index not in source_indices)
+    for source_index in source_indices:
+        matched = _match_source_b_indices(source_pairs[source_index], final_b_quarks)
+        if matched == associated_indices:
+            return source_events[source_index]
+    return None
+
+
+def _four_vector(particle):
+    return particle.energy, particle.px, particle.py, particle.pz
+
+
+def _combined_four_vector(particles):
+    return (
+        sum(particle.energy for particle in particles),
+        sum(particle.px for particle in particles),
+        sum(particle.py for particle in particles),
+        sum(particle.pz for particle in particles),
+    )
+
+
+def _pt_from_four_vector(four_vector):
+    _, px, py, _ = four_vector
+    return math.hypot(px, py)
+
+
+def _eta_from_four_vector(four_vector):
+    _, px, py, pz = four_vector
+    p_abs = math.sqrt(px * px + py * py + pz * pz)
+    denominator = p_abs - pz
+    numerator = p_abs + pz
+    if denominator <= 0.0:
+        return math.copysign(float("inf"), pz if pz != 0.0 else 1.0)
+    if numerator <= 0.0:
+        return math.copysign(float("inf"), pz if pz != 0.0 else -1.0)
+    return 0.5 * math.log(numerator / denominator)
+
+
+def _cos_theta_star(child, parent_four_vector):
+    parent_energy, parent_px, parent_py, parent_pz = parent_four_vector
+    parent_momentum = math.sqrt(parent_px * parent_px + parent_py * parent_py + parent_pz * parent_pz)
+    if parent_energy <= 0.0 or parent_momentum <= 0.0:
+        return None
+
+    beta_x = parent_px / parent_energy
+    beta_y = parent_py / parent_energy
+    beta_z = parent_pz / parent_energy
+    beta2 = beta_x * beta_x + beta_y * beta_y + beta_z * beta_z
+    if beta2 <= 0.0 or beta2 >= 1.0:
+        return None
+    gamma = 1.0 / math.sqrt(1.0 - beta2)
+    beta_dot_p = beta_x * child.px + beta_y * child.py + beta_z * child.pz
+    factor = ((gamma - 1.0) * beta_dot_p / beta2) - gamma * child.energy
+    rest_px = child.px + factor * beta_x
+    rest_py = child.py + factor * beta_y
+    rest_pz = child.pz + factor * beta_z
+    rest_momentum = math.sqrt(rest_px * rest_px + rest_py * rest_py + rest_pz * rest_pz)
+    if rest_momentum <= 0.0:
+        return None
+
+    axis_x = parent_px / parent_momentum
+    axis_y = parent_py / parent_momentum
+    axis_z = parent_pz / parent_momentum
+    cos_theta = (rest_px * axis_x + rest_py * axis_y + rest_pz * axis_z) / rest_momentum
+    return max(-1.0, min(1.0, cos_theta))
+
+
 def _four_momentum_match_score(source, candidate):
     scale = max(
         1.0,
@@ -347,6 +531,32 @@ def _append(observables, name, value, weight):
     observables[name]["weights"].append(float(weight))
 
 
+def _higgs_pt_bin_observable(higgs_pt):
+    if higgs_pt is None:
+        return None
+    for observable, lower, upper in HIGGS_PT_BINS:
+        if lower is not None and higgs_pt < lower:
+            continue
+        if upper is not None and higgs_pt >= upper:
+            continue
+        return observable
+    return None
+
+
+def _associated_delta_r_bin(delta_r):
+    for label, observable, lower, upper in ASSOCIATED_DELTA_R_BINS:
+        if delta_r < lower:
+            continue
+        if upper is not None and delta_r >= upper:
+            continue
+        return label, observable
+    return None, None
+
+
+def _empty_associated_delta_r_bins():
+    return {label: {"count": 0, "weighted": 0.0} for label, _, _, _ in ASSOCIATED_DELTA_R_BINS}
+
+
 def extract_lhe_4b_sample(path, label=None, source_lhe=None):
     """Extract final-state 4b validation observables from an LHE file."""
 
@@ -367,6 +577,7 @@ def extract_lhe_4b_sample(path, label=None, source_lhe=None):
         "higgs_mass_fallback": 0,
         "source_lhe_unmatched": 0,
     }
+    associated_delta_r_bins = _empty_associated_delta_r_bins()
 
     for event_index, event in enumerate(events):
         weight = _event_weight(event)
@@ -394,10 +605,27 @@ def extract_lhe_4b_sample(path, label=None, source_lhe=None):
             classification_method = "source_lhe_match"
         else:
             higgs_indices, associated_indices, classification_method = _higgs_and_associated_index_sets(event, b_quarks)
+        source_event = _matching_source_event(
+            source_events,
+            source_pairs,
+            b_quarks,
+            associated_indices,
+            preferred_index=event_index,
+        )
+        source_higgs = None
+        if source_event is not None:
+            source_higgses = _source_higgs_bosons(source_event)
+            if source_higgses:
+                source_higgs = source_higgses[0]
+                _append(observables, "h_pt", _pt(source_higgs), weight)
+                _append(observables, "h_eta", _eta(source_higgs), weight)
         pair_classification[classification_method] += 1
         if source_lhe is not None and classification_method != "source_lhe_match":
             pair_classification["source_lhe_unmatched"] += 1
         pair_delta_rs = []
+        higgs_pair = []
+        associated_pair = []
+        higgs_delta_r = None
         for first_index, second_index in combinations(range(len(b_quarks)), 2):
             first = b_quarks[first_index]
             second = b_quarks[second_index]
@@ -407,10 +635,30 @@ def extract_lhe_4b_sample(path, label=None, source_lhe=None):
             _append(observables, "m_bb_all", _invariant_mass([first, second]), weight)
             if first_index in higgs_indices and second_index in higgs_indices:
                 _append(observables, "dr_higgs_bb", delta_r, weight)
+                higgs_delta_r = delta_r
+                higgs_pair = [first, second]
+                _append(observables, "m_higgs_bb", _invariant_mass(higgs_pair), weight)
             elif first_index in associated_indices and second_index in associated_indices:
                 _append(observables, "dr_associated_bb", delta_r, weight)
+                associated_pair = [first, second]
+                _append(observables, "m_associated_bb", _invariant_mass(associated_pair), weight)
+                bin_label, bin_observable = _associated_delta_r_bin(delta_r)
+                if bin_label is not None:
+                    associated_delta_r_bins[bin_label]["count"] += 1
+                    associated_delta_r_bins[bin_label]["weighted"] += weight
+                    _append(observables, bin_observable, delta_r, weight)
             else:
                 _append(observables, "dr_cross_bb", delta_r, weight)
+        if higgs_pair and higgs_delta_r is not None:
+            parent_four_vector = _four_vector(source_higgs) if source_higgs is not None else _combined_four_vector(higgs_pair)
+            higgs_pt = _pt_from_four_vector(parent_four_vector)
+            hpt_observable = _higgs_pt_bin_observable(higgs_pt)
+            if hpt_observable is not None:
+                _append(observables, hpt_observable, higgs_delta_r, weight)
+            decay_b = next((particle for particle in higgs_pair if particle.pid == 5), higgs_pair[0])
+            cos_theta_star = _cos_theta_star(decay_b, parent_four_vector)
+            if cos_theta_star is not None:
+                _append(observables, "cos_theta_star_higgs_b", cos_theta_star, weight)
         if pair_delta_rs:
             _append(observables, "dr_min_bb", min(pair_delta_rs), weight)
         _append(observables, "m_4b", _invariant_mass(b_quarks), weight)
@@ -433,6 +681,7 @@ def extract_lhe_4b_sample(path, label=None, source_lhe=None):
             "source_file": "" if source_lhe is None else str(source_lhe),
             "source_event_count": int(len(source_events)),
             "pair_classification": pair_classification,
+            "associated_delta_r_bins": associated_delta_r_bins,
         },
     }
 
@@ -478,11 +727,15 @@ def _write_validation_table(path, samples, correction_summary=None):
         "source match",
         "ancestry",
         "mH fallback",
+        "assoc dR 0.3-0.8",
+        "assoc dR 0.8-1.5",
+        "assoc dR >=1.5",
     ]
     rows = []
     for sample in samples:
         summary = sample["summary"]
         pair_classification = summary.get("pair_classification", {})
+        delta_r_bins = summary.get("associated_delta_r_bins", {})
         rows.append(
             [
                 summary["label"],
@@ -495,6 +748,18 @@ def _write_validation_table(path, samples, correction_summary=None):
                 int(pair_classification.get("source_lhe_match", 0)),
                 int(pair_classification.get("higgs_ancestry", 0)),
                 int(pair_classification.get("higgs_mass_fallback", 0)),
+                "%d (%s)" % (
+                    int(delta_r_bins.get("0.3_0.8", {}).get("count", 0)),
+                    terminal_number(delta_r_bins.get("0.3_0.8", {}).get("weighted", 0.0)),
+                ),
+                "%d (%s)" % (
+                    int(delta_r_bins.get("0.8_1.5", {}).get("count", 0)),
+                    terminal_number(delta_r_bins.get("0.8_1.5", {}).get("weighted", 0.0)),
+                ),
+                "%d (%s)" % (
+                    int(delta_r_bins.get("ge1.5", {}).get("count", 0)),
+                    terminal_number(delta_r_bins.get("ge1.5", {}).get("weighted", 0.0)),
+                ),
             ]
         )
     lines = [
@@ -513,26 +778,18 @@ def _write_validation_table(path, samples, correction_summary=None):
     Path(path).write_text("\n".join(lines) + "\n")
 
 
-def write_lhe_validation_report(
-    split_lhe,
-    direct_lhe,
+def write_lhe_validation_report_from_samples(
+    samples,
     output_dir,
-    split_label="gg_hg_forced_split",
-    direct_label="gg_hbb_direct",
-    split_source_lhe=None,
-    direct_source_lhe=None,
     correction_summary=None,
+    title="4H LHE 4b Validation Observables",
+    report_line="Final-state 4b LHE comparison; BR(h->bb)=1; validation outputs only.",
 ):
-    """Write an LHE 4b comparison report with the standard sample webpage."""
+    """Write a validation report from already extracted LHE 4b samples."""
 
     output_dir = Path(output_dir)
     plots_dir = output_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
-
-    samples = [
-        extract_lhe_4b_sample(split_lhe, label=split_label, source_lhe=split_source_lhe),
-        extract_lhe_4b_sample(direct_lhe, label=direct_label, source_lhe=direct_source_lhe),
-    ]
 
     plot_rows = []
     for observable in OBSERVABLE_ORDER:
@@ -567,7 +824,7 @@ def write_lhe_validation_report(
 
     metadata = {
         "validation_only": True,
-        "title": "4H LHE 4b Validation Observables",
+        "title": title,
         "table": str(table_path),
         "index": str(index_path),
         "metadata": str(metadata_path),
@@ -582,18 +839,41 @@ def write_lhe_validation_report(
             ),
         },
         "correction_summary": correction_summary,
-        "report_line": "Final-state 4b LHE comparison; BR(h->bb)=1; validation outputs only.",
+        "report_line": report_line,
     }
     write_report_index(
         index_path,
         plot_rows,
         table_path,
         metadata,
-        title="4H LHE 4b Validation Observables",
+        title=title,
         table_label="Validation table",
     )
     metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
     return metadata
+
+
+def write_lhe_validation_report(
+    split_lhe,
+    direct_lhe,
+    output_dir,
+    split_label="gg_hg_forced_split",
+    direct_label="gg_hbb_direct",
+    split_source_lhe=None,
+    direct_source_lhe=None,
+    correction_summary=None,
+):
+    """Write an LHE 4b comparison report with the standard sample webpage."""
+
+    samples = [
+        extract_lhe_4b_sample(split_lhe, label=split_label, source_lhe=split_source_lhe),
+        extract_lhe_4b_sample(direct_lhe, label=direct_label, source_lhe=direct_source_lhe),
+    ]
+    return write_lhe_validation_report_from_samples(
+        samples=samples,
+        output_dir=output_dir,
+        correction_summary=correction_summary,
+    )
 
 
 def _mg5_deck(process, process_dir, events, ebeam1=7000.0, ebeam2=7000.0, extra_run_settings=None):
@@ -743,6 +1023,7 @@ def run_validation_chain(config, runner=None):
         seed=config.seed_stage1,
         probe_trials=config.probe_trials,
         correction_file=split_correction_file.name,
+        extra_shower_settings=config.stage1_extra_settings,
     )
     _write_text(split_stage1_card, split_stage1_text, config.overwrite)
 
@@ -822,6 +1103,8 @@ def run_validation_chain(config, runner=None):
         "direct_input_event_count": int(direct_input_event_count),
         "events": int(config.events),
         "probe_trials": int(config.probe_trials),
+        "variation_label": str(config.variation_label),
+        "stage1_extra_settings": list(config.stage1_extra_settings or []),
         "workdir": str(workdir),
         "split_stage1_card": str(split_stage1_card),
         "split_stage1_run": str(split_stage1_run),
@@ -844,6 +1127,194 @@ def run_validation_chain(config, runner=None):
         "summary": str(summary_file),
     }
     _write_text(summary_file, json.dumps(summary, indent=2, sort_keys=True) + "\n", True)
+    return summary
+
+
+def _resolve_scan_modes(modes):
+    if modes is None:
+        modes = ["recommended"]
+    resolved = []
+    for mode_entry in modes:
+        for mode in str(mode_entry).split(","):
+            mode = mode.strip()
+            if not mode:
+                continue
+            if mode in SCAN_MODE_GROUPS:
+                for grouped_mode in SCAN_MODE_GROUPS[mode]:
+                    if grouped_mode not in resolved:
+                        resolved.append(grouped_mode)
+            elif mode in SHOWER_VARIATIONS:
+                if mode not in resolved:
+                    resolved.append(mode)
+            else:
+                raise ValueError(
+                    "Unknown scan mode '%s'. Known modes: %s; groups: %s"
+                    % (mode, ", ".join(sorted(SHOWER_VARIATIONS)), ", ".join(sorted(SCAN_MODE_GROUPS)))
+                )
+    if not resolved:
+        raise ValueError("No scan modes selected")
+    return resolved
+
+
+def _write_scan_manifest(path, runs):
+    fieldnames = [
+        "mode",
+        "description",
+        "workdir",
+        "run_name",
+        "split_stage1_card",
+        "split_decay_card",
+        "direct_decay_card",
+        "report",
+        "settings",
+    ]
+    with Path(path).open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for run in runs:
+            writer.writerow(
+                {
+                    "mode": run["variation_label"],
+                    "description": SHOWER_VARIATIONS[run["variation_label"]]["description"],
+                    "workdir": run["workdir"],
+                    "run_name": run["run_name"],
+                    "split_stage1_card": run["split_stage1_card"],
+                    "split_decay_card": run["split_decay_card"],
+                    "direct_decay_card": run["direct_decay_card"],
+                    "report": run["report"] or "",
+                    "settings": "; ".join(run.get("stage1_extra_settings", [])),
+                }
+            )
+
+
+def _write_run_sequence(path, runs):
+    lines = [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "",
+    ]
+    for run in runs:
+        lines.append("# %s: %s" % (run["variation_label"], SHOWER_VARIATIONS[run["variation_label"]]["description"]))
+        lines.append("cd %s" % shlex.quote(run["workdir"]))
+        for command in run["commands"]:
+            lines.append(command)
+        lines.append("")
+    Path(path).write_text("\n".join(lines))
+    Path(path).chmod(0o755)
+
+
+def _write_scan_aggregate_report(runs, output_dir, direct_source_lhe, correction_summary=None):
+    completed_runs = [run for run in runs if run.get("report")]
+    if not completed_runs:
+        return None
+    first_run = completed_runs[0]
+    samples = [
+        extract_lhe_4b_sample(
+            first_run["direct_final_lhe"],
+            label="gg_hbb_direct",
+            source_lhe=direct_source_lhe,
+        )
+    ]
+    for run in completed_runs:
+        samples.append(
+            extract_lhe_4b_sample(
+                run["split_final_lhe"],
+                label="gg_hg_forced_split__%s" % run["variation_label"],
+                source_lhe=run["split_decay_source_lhe"],
+            )
+        )
+    return write_lhe_validation_report_from_samples(
+        samples=samples,
+        output_dir=Path(output_dir) / "aggregate_report",
+        correction_summary=correction_summary,
+        title="4H Hbb Forced-Splitting Shower Scan",
+        report_line="Overlay of validation-only gg->hg forced-splitting shower variations against gg->hbb direct.",
+    )
+
+
+def run_validation_scan(
+    split_input_lhe,
+    direct_input_lhe,
+    workdir,
+    events,
+    probe_trials=0,
+    modes=None,
+    run_name_prefix="hbb_validation",
+    herwig="Herwig",
+    seed_stage1=31122002,
+    seed_split_decay=44071981,
+    seed_direct_decay=44071982,
+    input_xsec_error=None,
+    allow_zero_probe_successes=False,
+    allow_input_oversampling=False,
+    overwrite=False,
+    dry_run=False,
+    runner=None,
+):
+    """Run or dry-run the hbb validation sequence for named shower variations."""
+
+    resolved_modes = _resolve_scan_modes(modes)
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    runs = []
+    for mode_index, mode in enumerate(resolved_modes):
+        variation = SHOWER_VARIATIONS[mode]
+        mode_run = run_validation_chain(
+            ValidationRunConfig(
+                split_input_lhe=split_input_lhe,
+                direct_input_lhe=direct_input_lhe,
+                workdir=workdir / mode,
+                events=events,
+                probe_trials=probe_trials,
+                run_name="%s_%s" % (run_name_prefix, mode),
+                herwig=herwig,
+                seed_stage1=seed_stage1 + mode_index,
+                seed_split_decay=seed_split_decay + mode_index,
+                seed_direct_decay=seed_direct_decay + mode_index,
+                input_xsec_error=input_xsec_error,
+                allow_zero_probe_successes=allow_zero_probe_successes,
+                allow_input_oversampling=allow_input_oversampling,
+                overwrite=overwrite,
+                dry_run=dry_run,
+                stage1_extra_settings=tuple(variation["settings"]),
+                variation_label=mode,
+            ),
+            runner=runner,
+        )
+        runs.append(mode_run)
+
+    scan_manifest = workdir / "scan_manifest.csv"
+    run_sequence = workdir / "run_sequence.sh"
+    scan_summary = workdir / "scan_summary.json"
+    aggregate_metadata = None
+    if not dry_run:
+        aggregate_metadata = _write_scan_aggregate_report(
+            runs,
+            output_dir=workdir,
+            direct_source_lhe=direct_input_lhe,
+            correction_summary={run["variation_label"]: run.get("weight_check") for run in runs},
+        )
+
+    _write_scan_manifest(scan_manifest, runs)
+    _write_run_sequence(run_sequence, runs)
+    summary = {
+        "validation_only": True,
+        "split_input_lhe": str(Path(split_input_lhe).resolve()),
+        "direct_input_lhe": str(Path(direct_input_lhe).resolve()),
+        "workdir": str(workdir),
+        "events": int(events),
+        "probe_trials": int(probe_trials),
+        "modes": resolved_modes,
+        "mode_settings": {mode: SHOWER_VARIATIONS[mode] for mode in resolved_modes},
+        "runs": runs,
+        "scan_manifest": str(scan_manifest),
+        "run_sequence": str(run_sequence),
+        "aggregate_report": None if aggregate_metadata is None else str(aggregate_metadata["index"]),
+        "dry_run": bool(dry_run),
+        "scan_summary": str(scan_summary),
+    }
+    _write_text(scan_summary, json.dumps(summary, indent=2, sort_keys=True) + "\n", True)
     return summary
 
 
@@ -887,6 +1358,32 @@ def main(argv=None):
     compare.add_argument("--split-source-lhe", type=Path)
     compare.add_argument("--direct-source-lhe", type=Path)
     compare.add_argument("--output-dir", type=Path, required=True)
+
+    scan = subparsers.add_parser("scan", help="run split/direct validation for a sequence of shower variations")
+    scan.add_argument("--split-lhe", type=Path, required=True)
+    scan.add_argument("--direct-lhe", type=Path, required=True)
+    scan.add_argument("--workdir", type=Path, required=True)
+    scan.add_argument("--events", type=int, required=True)
+    scan.add_argument("--probe-trials", type=int, default=0)
+    scan.add_argument(
+        "--modes",
+        default="recommended",
+        help=(
+            "Comma-separated modes or groups. Default: recommended. "
+            "Groups: %s. Modes: %s"
+            % (", ".join(sorted(SCAN_MODE_GROUPS)), ", ".join(sorted(SHOWER_VARIATIONS)))
+        ),
+    )
+    scan.add_argument("--run-name-prefix", default="hbb_validation")
+    scan.add_argument("--herwig", default="Herwig")
+    scan.add_argument("--seed-stage1", type=int, default=31122002)
+    scan.add_argument("--seed-split-decay", type=int, default=44071981)
+    scan.add_argument("--seed-direct-decay", type=int, default=44071982)
+    scan.add_argument("--input-xsec-error", type=float)
+    scan.add_argument("--allow-zero-probe-successes", action="store_true")
+    scan.add_argument("--allow-input-oversampling", action="store_true")
+    scan.add_argument("--overwrite", action="store_true")
+    scan.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args(argv)
     if args.command == "prepare-mg5":
@@ -941,7 +1438,32 @@ def main(argv=None):
         )
         print("Validation report:", metadata["index"])
         return 0
-    parser.error("choose a command: prepare-mg5, run, or compare")
+    if args.command == "scan":
+        summary = run_validation_scan(
+            split_input_lhe=args.split_lhe,
+            direct_input_lhe=args.direct_lhe,
+            workdir=args.workdir,
+            events=args.events,
+            probe_trials=args.probe_trials,
+            modes=args.modes.split(","),
+            run_name_prefix=args.run_name_prefix,
+            herwig=args.herwig,
+            seed_stage1=args.seed_stage1,
+            seed_split_decay=args.seed_split_decay,
+            seed_direct_decay=args.seed_direct_decay,
+            input_xsec_error=args.input_xsec_error,
+            allow_zero_probe_successes=args.allow_zero_probe_successes,
+            allow_input_oversampling=args.allow_input_oversampling,
+            overwrite=args.overwrite,
+            dry_run=args.dry_run,
+        )
+        print("Validation scan summary:", summary["scan_summary"])
+        print("Validation scan manifest:", summary["scan_manifest"])
+        print("Run sequence:", summary["run_sequence"])
+        if summary["aggregate_report"]:
+            print("Aggregate report:", summary["aggregate_report"])
+        return 0
+    parser.error("choose a command: prepare-mg5, run, compare, or scan")
 
 
 if __name__ == "__main__":
