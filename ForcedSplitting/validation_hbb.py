@@ -1318,6 +1318,38 @@ def run_validation_scan(
     return summary
 
 
+def weight_check_report_lines(summary):
+    """Return human-readable probe-trial correction lines for a run or scan summary."""
+
+    runs = summary.get("runs") if isinstance(summary, dict) else None
+    if runs is None:
+        runs = [summary]
+
+    detail_lines = []
+    total_zero_success_rows = 0
+    for index, run in enumerate(runs, start=1):
+        weight_check = run.get("weight_check") or {}
+        if not weight_check:
+            continue
+        correction_rows = int(weight_check.get("correction_rows", 0))
+        zero_success_rows = int(weight_check.get("zero_success_rows", 0))
+        total_zero_success_rows += zero_success_rows
+        label = run.get("variation_label") or run.get("run_name") or "run_%d" % index
+        detail_lines.append(
+            "  {label}: unsuccessful rows={zero}/{rows} nonzero_weight_rows={nonzero} mean_p_hat={mean:g}".format(
+                label=label,
+                zero=zero_success_rows,
+                rows=correction_rows,
+                nonzero=int(weight_check.get("nonzero_weight_rows", 0)),
+                mean=float(weight_check.get("mean_p_hat", 0.0)),
+            )
+        )
+
+    if not detail_lines:
+        return []
+    return ["Forced-splitting probe check:", "total unsuccessful rows: %d" % total_zero_success_rows] + detail_lines
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command")
@@ -1427,6 +1459,8 @@ def main(argv=None):
         print("Validation summary:", summary["summary"])
         if summary["report"]:
             print("Validation report:", summary["report"])
+        for line in weight_check_report_lines(summary):
+            print(line)
         return 0
     if args.command == "compare":
         metadata = write_lhe_validation_report(
@@ -1462,6 +1496,8 @@ def main(argv=None):
         print("Run sequence:", summary["run_sequence"])
         if summary["aggregate_report"]:
             print("Aggregate report:", summary["aggregate_report"])
+        for line in weight_check_report_lines(summary):
+            print(line)
         return 0
     parser.error("choose a command: prepare-mg5, run, compare, or scan")
 

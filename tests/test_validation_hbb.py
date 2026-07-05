@@ -17,6 +17,7 @@ from ForcedSplitting.validation_hbb import (  # noqa: E402
     prepare_mg5_decks,
     run_validation_scan,
     run_validation_chain,
+    weight_check_report_lines,
     write_lhe_validation_report,
 )
 
@@ -486,6 +487,42 @@ class HbbValidationTests(unittest.TestCase):
             self.assertNotIn("RenormalizationScaleFactor", baseline_card)
             self.assertIn("set ShowerHandler:RenormalizationScaleFactor 2.0", renorm_card)
             self.assertIn("set /Herwig/Shower/GtoQQbarSplitFn:ScaleChoice Q2", q2_card)
+
+    def test_weight_check_report_lines_print_unsuccessful_probe_rows(self):
+        lines = weight_check_report_lines(
+            {
+                "runs": [
+                    {
+                        "variation_label": "baseline",
+                        "weight_check": {
+                            "correction_rows": 1000,
+                            "zero_success_rows": 3,
+                            "nonzero_weight_rows": 997,
+                            "mean_p_hat": 0.0125,
+                        },
+                    },
+                    {
+                        "variation_label": "renorm_2p0",
+                        "weight_check": {
+                            "correction_rows": 1000,
+                            "zero_success_rows": 1,
+                            "nonzero_weight_rows": 999,
+                            "mean_p_hat": 0.014,
+                        },
+                    },
+                ],
+            }
+        )
+
+        self.assertIn("total unsuccessful rows: 4", lines)
+        self.assertIn(
+            "  baseline: unsuccessful rows=3/1000 nonzero_weight_rows=997 mean_p_hat=0.0125",
+            lines,
+        )
+        self.assertIn(
+            "  renorm_2p0: unsuccessful rows=1/1000 nonzero_weight_rows=999 mean_p_hat=0.014",
+            lines,
+        )
 
 
 if __name__ == "__main__":
