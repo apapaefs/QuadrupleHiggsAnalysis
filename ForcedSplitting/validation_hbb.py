@@ -6,7 +6,7 @@ import json
 import math
 import sys
 from dataclasses import dataclass
-from itertools import combinations
+from itertools import combinations, permutations
 from pathlib import Path
 import subprocess
 
@@ -206,18 +206,72 @@ def _has_ancestor_pid(event, particle, target_pid, seen=None):
     return False
 
 
-def _higgs_and_associated_index_sets(event, b_quarks, higgs_mass=125.0):
+def _source_associated_b_quarks(source_event):
+    return [
+        particle
+        for particle in source_event.particles
+        if particle.status == 1 and abs(particle.pid) == 5 and not _has_ancestor_pid(source_event, particle, 25)
+    ]
+
+
+def _four_momentum_match_score(source, candidate):
+    scale = max(
+        1.0,
+        abs(source.energy),
+        abs(candidate.energy),
+        _momentum_abs(source),
+        _momentum_abs(candidate),
+    )
+    components = (
+        source.px - candidate.px,
+        source.py - candidate.py,
+        source.pz - candidate.pz,
+        source.energy - candidate.energy,
+    )
+    return sum((component / scale) ** 2 for component in components)
+
+
+def _match_source_b_indices(source_b_quarks, final_b_quarks, max_score=1.0e-8):
+    if len(source_b_quarks) != 2 or len(final_b_quarks) != 4:
+        return None
+
+    best_score = None
+    best_indices = None
+    for candidate_indices in permutations(range(len(final_b_quarks)), len(source_b_quarks)):
+        score = 0.0
+        valid = True
+        for source_b, candidate_index in zip(source_b_quarks, candidate_indices):
+            candidate = final_b_quarks[candidate_index]
+            if source_b.pid != candidate.pid:
+                valid = False
+                break
+            score += _four_momentum_match_score(source_b, candidate)
+        if valid and (best_score is None or score < best_score):
+            best_score = score
+            best_indices = set(candidate_indices)
+
+    if best_indices is None or best_score is None or best_score > max_score:
+        return None
+    return best_indices
+
+
+def _higgs_and_associated_index_sets(event, b_quarks, source_event=None, higgs_mass=125.0):
+    if source_event is not None:
+        associated_indices = _match_source_b_indices(_source_associated_b_quarks(source_event), b_quarks)
+        if associated_indices is not None:
+            return set(range(len(b_quarks))) - associated_indices, associated_indices, "source_lhe_match"
+
     from_higgs = [_has_ancestor_pid(event, b_quark, 25) for b_quark in b_quarks]
     if sum(1 for value in from_higgs if value) == 2:
         higgs_indices = {index for index, value in enumerate(from_higgs) if value}
-        return higgs_indices, set(range(len(b_quarks))) - higgs_indices
+        return higgs_indices, set(range(len(b_quarks))) - higgs_indices, "higgs_ancestry"
 
     best_pair = min(
         combinations(range(len(b_quarks)), 2),
         key=lambda pair: abs(_invariant_mass([b_quarks[pair[0]], b_quarks[pair[1]]]) - float(higgs_mass)),
     )
     higgs_indices = set(best_pair)
-    return higgs_indices, set(range(len(b_quarks))) - higgs_indices
+    return higgs_indices, set(range(len(b_quarks))) - higgs_indices, "higgs_mass_fallback"
 
 
 def _empty_observables():
@@ -235,18 +289,26 @@ def _append(observables, name, value, weight):
     observables[name]["weights"].append(float(weight))
 
 
-def extract_lhe_4b_sample(path, label=None):
+def extract_lhe_4b_sample(path, label=None, source_lhe=None):
     """Extract final-state 4b validation observables from an LHE file."""
 
     path = Path(path)
     text = _read_lhe_text(path)
     events = parse_lhe_events(text)
+    source_lhe = Path(source_lhe) if source_lhe is not None else None
+    source_events = parse_lhe_events(_read_lhe_text(source_lhe)) if source_lhe is not None else []
     observables = _empty_observables()
     accepted = 0
     skipped = 0
     weighted_event_sum = 0.0
+    pair_classification = {
+        "source_lhe_match": 0,
+        "higgs_ancestry": 0,
+        "higgs_mass_fallback": 0,
+        "source_lhe_unmatched": 0,
+    }
 
-    for event in events:
+    for event_index, event in enumerate(events):
         weight = _event_weight(event)
         b_quarks = [p for p in event.particles if p.status == 1 and abs(p.pid) == 5]
         if len(b_quarks) != 4:
@@ -261,7 +323,15 @@ def extract_lhe_4b_sample(path, label=None):
             _append(observables, "b_pt_all", _pt(b_quark), weight)
         for index, b_quark in enumerate(ranked, start=1):
             _append(observables, "b%d_pt" % index, _pt(b_quark), weight)
-        higgs_indices, associated_indices = _higgs_and_associated_index_sets(event, b_quarks)
+        source_event = source_events[event_index] if event_index < len(source_events) else None
+        higgs_indices, associated_indices, classification_method = _higgs_and_associated_index_sets(
+            event,
+            b_quarks,
+            source_event=source_event,
+        )
+        pair_classification[classification_method] += 1
+        if source_lhe is not None and classification_method != "source_lhe_match":
+            pair_classification["source_lhe_unmatched"] += 1
         pair_delta_rs = []
         for first_index, second_index in combinations(range(len(b_quarks)), 2):
             first = b_quarks[first_index]
@@ -295,6 +365,9 @@ def extract_lhe_4b_sample(path, label=None):
             "accepted_4b_events": int(accepted),
             "skipped_events": int(skipped),
             "weighted_event_sum": float(weighted_event_sum),
+            "source_file": "" if source_lhe is None else str(source_lhe),
+            "source_event_count": int(len(source_events)),
+            "pair_classification": pair_classification,
         },
     }
 
@@ -337,10 +410,14 @@ def _write_validation_table(path, samples, correction_summary=None):
         "accepted 4b",
         "skipped",
         "sum w(4b)",
+        "source match",
+        "ancestry",
+        "mH fallback",
     ]
     rows = []
     for sample in samples:
         summary = sample["summary"]
+        pair_classification = summary.get("pair_classification", {})
         rows.append(
             [
                 summary["label"],
@@ -350,6 +427,9 @@ def _write_validation_table(path, samples, correction_summary=None):
                 int(summary["accepted_4b_events"]),
                 int(summary["skipped_events"]),
                 terminal_number(summary["weighted_event_sum"]),
+                int(pair_classification.get("source_lhe_match", 0)),
+                int(pair_classification.get("higgs_ancestry", 0)),
+                int(pair_classification.get("higgs_mass_fallback", 0)),
             ]
         )
     lines = [
@@ -374,6 +454,8 @@ def write_lhe_validation_report(
     output_dir,
     split_label="gg_hg_forced_split",
     direct_label="gg_hbb_direct",
+    split_source_lhe=None,
+    direct_source_lhe=None,
     correction_summary=None,
 ):
     """Write an LHE 4b comparison report with the standard sample webpage."""
@@ -383,8 +465,8 @@ def write_lhe_validation_report(
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     samples = [
-        extract_lhe_4b_sample(split_lhe, label=split_label),
-        extract_lhe_4b_sample(direct_lhe, label=direct_label),
+        extract_lhe_4b_sample(split_lhe, label=split_label, source_lhe=split_source_lhe),
+        extract_lhe_4b_sample(direct_lhe, label=direct_label, source_lhe=direct_source_lhe),
     ]
 
     plot_rows = []
@@ -429,6 +511,10 @@ def write_lhe_validation_report(
         "normalisation": {
             "histograms": "weighted LHE events, normalized per observable and sample",
             "higgs_branching_ratio": "BR(h->bb)=1 validation",
+            "pair_assignment": (
+                "associated/higgs bb pairs use source pre-decay LHE four-momentum matching when provided; "
+                "otherwise Higgs ancestry is used, with a closest-mH bb fallback only if ancestry is unavailable"
+            ),
         },
         "correction_summary": correction_summary,
         "report_line": "Final-state 4b LHE comparison; BR(h->bb)=1; validation outputs only.",
@@ -658,6 +744,8 @@ def run_validation_chain(config, runner=None):
             split_lhe=split_final_lhe,
             direct_lhe=direct_final_lhe,
             output_dir=report_dir,
+            split_source_lhe=split_decay_input,
+            direct_source_lhe=direct_input_lhe,
             correction_summary=weight_check,
         )
 
@@ -676,8 +764,10 @@ def run_validation_chain(config, runner=None):
         "split_weighted_lhe": str(split_weighted_lhe) if config.probe_trials > 0 else "",
         "split_correction_file": str(split_correction_file),
         "split_decay_card": str(split_decay_card),
+        "split_decay_source_lhe": str(split_decay_input),
         "split_decay_run": str(split_decay_run),
         "split_final_lhe": str(split_final_lhe),
+        "direct_decay_source_lhe": str(direct_input_lhe),
         "direct_decay_card": str(direct_decay_card),
         "direct_decay_run": str(direct_decay_run),
         "direct_final_lhe": str(direct_final_lhe),
@@ -729,6 +819,8 @@ def main(argv=None):
     compare = subparsers.add_parser("compare", help="write a validation report from existing final 4b LHE files")
     compare.add_argument("--split-lhe", type=Path, required=True)
     compare.add_argument("--direct-lhe", type=Path, required=True)
+    compare.add_argument("--split-source-lhe", type=Path)
+    compare.add_argument("--direct-source-lhe", type=Path)
     compare.add_argument("--output-dir", type=Path, required=True)
 
     args = parser.parse_args(argv)
@@ -779,6 +871,8 @@ def main(argv=None):
             split_lhe=args.split_lhe,
             direct_lhe=args.direct_lhe,
             output_dir=args.output_dir,
+            split_source_lhe=args.split_source_lhe,
+            direct_source_lhe=args.direct_source_lhe,
         )
         print("Validation report:", metadata["index"])
         return 0

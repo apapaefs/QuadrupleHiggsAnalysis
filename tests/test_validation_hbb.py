@@ -86,6 +86,43 @@ def validation_lhe_text_without_mothers_higgs_mass_pair(weight=2.0, xsec_pb=5.0)
 """.format(weight=weight, xsec=xsec_pb)
 
 
+def validation_final_lhe_text_source_truth_overrides_mass_pair(weight=2.0, xsec_pb=5.0):
+    return """<LesHouchesEvents version="1.0">
+<init>
+     2212     2212           7000           7000  999  999  999  999    0    1
+   {xsec:.9e}   5.000000000e-01            100      1
+</init>
+<event>
+    6      1     {weight:.9e}        200.0    0.007546771     0.09944864
+        21 -1    0    0  501  0  0.0  0.0  200.0  200.0  0.0  0.0  9.0
+        21 -1    0    0  0  501  0.0  0.0 -200.0  200.0  0.0  0.0  9.0
+         5  1    1    2  0  0  62.29979936  0.0  0.0  62.5  5.0  0.0  9.0
+        -5  1    1    2  0  0 -62.29979936  0.0  0.0  62.5  5.0  0.0  9.0
+         5  1    1    2  0  0  18.0  0.0  0.0  18.68154169  5.0  0.0  9.0
+        -5  1    1    2  0  0  20.0  1.0  0.0  20.63976744  5.0  0.0  9.0
+</event>
+</LesHouchesEvents>
+""".format(weight=weight, xsec=xsec_pb)
+
+
+def validation_source_lhe_text_associated_high_mass_pair(weight=2.0, xsec_pb=5.0):
+    return """<LesHouchesEvents version="1.0">
+<init>
+     2212     2212           7000           7000  999  999  999  999    0    1
+   {xsec:.9e}   5.000000000e-01            100      1
+</init>
+<event>
+    5      1     {weight:.9e}        200.0    0.007546771     0.09944864
+        21 -1    0    0  501  0  0.0  0.0  200.0  200.0  0.0  0.0  9.0
+        21 -1    0    0  0  501  0.0  0.0 -200.0  200.0  0.0  0.0  9.0
+        25  1    1    2  0  0  0.0  0.0  0.0  125.0  125.0  0.0  9.0
+         5  1    1    2  0  0  62.29979936  0.0  0.0  62.5  5.0  0.0  9.0
+        -5  1    1    2  0  0 -62.29979936  0.0  0.0  62.5  5.0  0.0  9.0
+</event>
+</LesHouchesEvents>
+""".format(weight=weight, xsec=xsec_pb)
+
+
 class HbbValidationTests(unittest.TestCase):
     def test_extract_lhe_4b_sample_builds_weighted_validation_observables(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -159,6 +196,23 @@ class HbbValidationTests(unittest.TestCase):
         self.assertEqual(len(observables["dr_cross_bb"]["values"]), 4)
         self.assertTrue(all(weight == 4.0 for weight in observables["dr_higgs_bb"]["weights"]))
 
+    def test_extract_lhe_4b_sample_uses_source_lhe_associated_pair_truth(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            final_path = tmpdir / "final4b_no_higgs_mothers.lhe"
+            source_path = tmpdir / "pre_decay_source.lhe"
+            final_path.write_text(validation_final_lhe_text_source_truth_overrides_mass_pair(weight=4.0, xsec_pb=5.0))
+            source_path.write_text(validation_source_lhe_text_associated_high_mass_pair(weight=4.0, xsec_pb=5.0))
+
+            sample = extract_lhe_4b_sample(final_path, label="gg_hg_forced_split", source_lhe=source_path)
+
+        observables = sample["observables"]
+        self.assertEqual(len(observables["dr_associated_bb"]["values"]), 1)
+        self.assertTrue(math.isclose(observables["dr_associated_bb"]["values"][0], math.pi))
+        self.assertLess(observables["dr_higgs_bb"]["values"][0], 0.1)
+        self.assertEqual(sample["summary"]["pair_classification"]["source_lhe_match"], 1)
+        self.assertEqual(sample["summary"]["pair_classification"]["higgs_mass_fallback"], 0)
+
     def test_write_lhe_validation_report_uses_sample_report_webpage_shape(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
@@ -191,6 +245,36 @@ class HbbValidationTests(unittest.TestCase):
             self.assertIn("min_deltaR_bb", index.read_text())
             self.assertTrue(all(Path(row["path"]).exists() for row in metadata["plots"]))
             self.assertTrue(json.loads(metadata_path.read_text())["validation_only"])
+
+    def test_write_lhe_validation_report_passes_source_lhe_truth_to_samples(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            split_lhe = tmpdir / "gg_hg_forced_split.final4b.lhe"
+            split_source = tmpdir / "gg_hg_forced_split.pre_decay.lhe"
+            direct_lhe = tmpdir / "gg_hbb_direct.final4b.lhe"
+            direct_source = tmpdir / "gg_hbb_direct.pre_decay.lhe"
+            split_lhe.write_text(validation_final_lhe_text_source_truth_overrides_mass_pair(weight=1.5, xsec_pb=3.0))
+            split_source.write_text(validation_source_lhe_text_associated_high_mass_pair(weight=1.5, xsec_pb=3.0))
+            direct_lhe.write_text(validation_final_lhe_text_source_truth_overrides_mass_pair(weight=2.0, xsec_pb=5.0))
+            direct_source.write_text(validation_source_lhe_text_associated_high_mass_pair(weight=2.0, xsec_pb=5.0))
+
+            metadata = write_lhe_validation_report(
+                split_lhe=split_lhe,
+                direct_lhe=direct_lhe,
+                output_dir=tmpdir / "report",
+                split_source_lhe=split_source,
+                direct_source_lhe=direct_source,
+            )
+            table_text = Path(metadata["table"]).read_text()
+
+        samples = {sample["label"]: sample for sample in metadata["samples"]}
+        self.assertEqual(samples["gg_hg_forced_split"]["source_file"], str(split_source))
+        self.assertEqual(samples["gg_hbb_direct"]["source_file"], str(direct_source))
+        self.assertEqual(samples["gg_hg_forced_split"]["pair_classification"]["source_lhe_match"], 1)
+        self.assertEqual(samples["gg_hbb_direct"]["pair_classification"]["source_lhe_match"], 1)
+        self.assertEqual(samples["gg_hg_forced_split"]["pair_classification"]["higgs_mass_fallback"], 0)
+        self.assertIn("source match", table_text)
+        self.assertIn("mH fallback", table_text)
 
     def test_prepare_mg5_decks_writes_hg_and_hbb_validation_cards(self):
         with tempfile.TemporaryDirectory() as tmp:
