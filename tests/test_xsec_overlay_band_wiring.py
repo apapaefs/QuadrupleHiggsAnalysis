@@ -136,6 +136,16 @@ class HHHHXsecOverlayBandWiringTests(unittest.TestCase):
         ]
         self.assertFalse(unsafe_dump_calls)
 
+    def test_overlay_marks_sm_with_red_star_label_and_larger_axes(self):
+        module_text = MODULE_PATH.read_text()
+        self.assertIn("def _plot_sm_marker", module_text)
+        self.assertIn('marker="*"', module_text)
+        self.assertIn('color="red"', module_text)
+        self.assertIn('"SM"', module_text)
+        self.assertIn("DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE = 20", module_text)
+        self.assertIn("fontsize=DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE", module_text)
+        self.assertNotIn('marker="o", color="white", markeredgecolor="black", markersize=5', module_text)
+
 
 if __name__ == "__main__":
     unittest.main()

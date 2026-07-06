@@ -1631,6 +1631,7 @@ DEFAULT_HHHH_PERTURBATIVITY_MH = 125.0
 DEFAULT_HHHH_PERTURBATIVITY_V = 246.0
 DEFAULT_HHHH_PERTURBATIVITY_LEVEL = 0.5
 DEFAULT_HHHH_PERTURBATIVITY_SQRTS = np.arange(200.0, 5000.0, 10.0)
+DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE = 20
 ATL_PHYS_PUB_2025_003_LABEL = r"$gg\rightarrow hhh \rightarrow 6 b$, ATL-PHYS-PUB-2025-003 (no syst.)"
 ATL_PHYS_PUB_2025_003_SOURCE_URL = "https://cds.cern.ch/record/2924772/files/ATL-PHYS-PUB-2025-003.pdf"
 ATL_PHYS_PUB_2025_003_FIGURE = "Figure 7 black no-systematics curve"
@@ -2338,6 +2339,32 @@ def _plot_atlas_phys_pub_2025_003_curve(ax):
     }
 
 
+def _plot_sm_marker(ax):
+    ax.plot(
+        [0.0],
+        [0.0],
+        marker="*",
+        color="red",
+        markeredgecolor="black",
+        markeredgewidth=0.7,
+        markersize=13,
+        linestyle="None",
+        zorder=12,
+    )
+    ax.annotate(
+        "SM",
+        xy=(0.0, 0.0),
+        xytext=(8, 8),
+        textcoords="offset points",
+        color="red",
+        fontsize=13,
+        fontweight="bold",
+        ha="left",
+        va="bottom",
+        zorder=12,
+    )
+
+
 def _write_c3d4_atlas_limit_overlay_no_xsec_plot(
     path,
     limit_c3_grid,
@@ -2426,11 +2453,11 @@ def _write_c3d4_atlas_limit_overlay_no_xsec_plot(
 
         atlas_curve_metadata = _plot_atlas_phys_pub_2025_003_curve(ax)
 
-        ax.plot([0.0], [0.0], marker="o", color="white", markeredgecolor="black", markersize=5)
+        _plot_sm_marker(ax)
         ax.set_xlim(plot_c3_range)
         ax.set_ylim(plot_d4_range)
-        ax.set_xlabel(r"$c_3$", fontsize=18)
-        ax.set_ylabel(r"$d_4$", fontsize=18)
+        ax.set_xlabel(r"$c_3$", fontsize=DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE)
+        ax.set_ylabel(r"$d_4$", fontsize=DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE)
         ax.set_title(r"$gg \to hhhh$ at 14 TeV, " + _luminosity_legend_label(luminosity), fontsize=20)
         ax.tick_params(axis="both", labelsize=15)
 
@@ -2641,11 +2668,11 @@ def _write_hhhh_xsec_limit_overlay_plot(
             if handles:
                 ax.legend(loc="best", fontsize=10)
 
-            ax.plot([0.0], [0.0], marker="o", color="white", markeredgecolor="black", markersize=5)
+            _plot_sm_marker(ax)
             ax.set_xlim(plot_c3_range)
             ax.set_ylim(plot_d4_range)
-            ax.set_xlabel(r"$c_3$", fontsize=18)
-            ax.set_ylabel(r"$d_4$", fontsize=18)
+            ax.set_xlabel(r"$c_3$", fontsize=DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE)
+            ax.set_ylabel(r"$d_4$", fontsize=DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE)
             ax.set_title(r"$gg \to hhhh$ at 14 TeV, " + _luminosity_legend_label(luminosity), fontsize=20)
             ax.tick_params(axis="both", labelsize=15)
 
