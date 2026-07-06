@@ -60,6 +60,18 @@ class HHHHXsecOverlayBandWiringTests(unittest.TestCase):
         self.assertIn(r"Perturbative unitarity, $hh \rightarrow hh$", module_text)
         self.assertNotIn(r"Perturbativity $|\mathrm{Re}\,a_0| = 0.5$", module_text)
 
+    def test_hhhh_xsec_overlay_uses_requested_atlas_and_our_limit_labels(self):
+        module_text = MODULE_PATH.read_text()
+        self.assertIn(r"$gg\rightarrow hhh \rightarrow 6 b$, ATL-PHYS-PUB-2025-003 (no syst.,", module_text)
+        self.assertIn(r"Our limit $gg \rightarrow hhhh \rightarrow 8b$, Poisson", module_text)
+        self.assertIn("poisson_confidence_percent_label", module_text)
+
+    def test_background_variation_band_style_uses_stronger_fill_and_thinner_boundaries(self):
+        module_text = MODULE_PATH.read_text()
+        self.assertIn('"alpha": 0.32', module_text)
+        self.assertIn('"boundary_linewidth": 0.75', module_text)
+        self.assertIn('band.get("boundary_linewidth", 0.75)', module_text)
+
 
 if __name__ == "__main__":
     unittest.main()

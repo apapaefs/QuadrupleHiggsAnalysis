@@ -1608,7 +1608,7 @@ DEFAULT_HHHH_PERTURBATIVITY_MH = 125.0
 DEFAULT_HHHH_PERTURBATIVITY_V = 246.0
 DEFAULT_HHHH_PERTURBATIVITY_LEVEL = 0.5
 DEFAULT_HHHH_PERTURBATIVITY_SQRTS = np.arange(200.0, 5000.0, 10.0)
-ATL_PHYS_PUB_2025_003_LABEL = r"ATL-PHYS-PUB-2025-003 (no syst., $L = 3000\,\mathrm{fb}^{-1}$)"
+ATL_PHYS_PUB_2025_003_LABEL_PREFIX = r"$gg\rightarrow hhh \rightarrow 6 b$, ATL-PHYS-PUB-2025-003 (no syst.,"
 ATL_PHYS_PUB_2025_003_SOURCE_URL = "https://cds.cern.ch/record/2924772/files/ATL-PHYS-PUB-2025-003.pdf"
 ATL_PHYS_PUB_2025_003_FIGURE = "Figure 7 black no-systematics curve"
 ATL_PHYS_PUB_2025_003_NO_SYST_KAPPA34 = np.array(
@@ -1777,6 +1777,14 @@ ATL_PHYS_PUB_2025_003_NO_SYST_KAPPA34 = np.array(
 )
 
 
+def _luminosity_legend_label(luminosity):
+    return rf"$L = {float(luminosity):g}\,\mathrm{{fb}}^{{-1}}$"
+
+
+def _atlas_phys_pub_2025_003_label(luminosity):
+    return f"{ATL_PHYS_PUB_2025_003_LABEL_PREFIX} {_luminosity_legend_label(luminosity)})"
+
+
 def _scale_to_chebyshev(value, value_range):
     xmin, xmax = value_range
     return (2.0 * value - xmin - xmax) / (xmax - xmin)
@@ -1902,6 +1910,7 @@ def _draw_background_variation_band(
     visible_upper = min(float(z_max), upper)
     color = band.get("color", "#d55e00")
     alpha = float(band.get("alpha", 0.22))
+    boundary_linewidth = float(band.get("boundary_linewidth", 0.75))
     drawn = False
     if visible_lower < visible_upper:
         contourf_func(
@@ -1933,7 +1942,7 @@ def _draw_background_variation_band(
             z_values,
             levels=line_targets,
             colors=[color],
-            linewidths=1.2,
+            linewidths=boundary_linewidth,
             linestyles="--",
         )
         drawn = True
@@ -2288,17 +2297,18 @@ def _atlas_phys_pub_2025_003_c3d4_curve():
     return curve
 
 
-def _plot_atlas_phys_pub_2025_003_curve(ax):
+def _plot_atlas_phys_pub_2025_003_curve(ax, luminosity=3000.0):
     curve = _atlas_phys_pub_2025_003_c3d4_curve()
+    label = _atlas_phys_pub_2025_003_label(luminosity)
     ax.plot(
         curve[:, 0],
         curve[:, 1],
         color="blue",
         linewidth=2.0,
-        label=ATL_PHYS_PUB_2025_003_LABEL,
+        label=label,
     )
     return {
-        "label": ATL_PHYS_PUB_2025_003_LABEL,
+        "label": label,
         "source": ATL_PHYS_PUB_2025_003_SOURCE_URL,
         "figure": ATL_PHYS_PUB_2025_003_FIGURE,
         "coordinate_system": "digitized in kappa3,kappa4 and plotted as c3=kappa3-1, d4=kappa4-1",
@@ -2328,6 +2338,7 @@ def _write_hhhh_xsec_limit_overlay_plot(
     plot_n_d4,
     atlas_overlay_path=None,
     background_variation_band=None,
+    luminosity=3000.0,
 ):
     metadata = {
         "status": "not_run",
@@ -2478,7 +2489,7 @@ def _write_hhhh_xsec_limit_overlay_plot(
 
             atlas_curve_metadata = None
             if include_atlas_curve:
-                atlas_curve_metadata = _plot_atlas_phys_pub_2025_003_curve(ax)
+                atlas_curve_metadata = _plot_atlas_phys_pub_2025_003_curve(ax, luminosity=luminosity)
 
             handles, labels = ax.get_legend_handles_labels()
             if handles:
@@ -2586,9 +2597,13 @@ def write_c3d4_limit_scan(
     poisson_observed_source = "median_background" if poisson_observed_events is None else "user_specified"
     poisson_method_label = "CLs" if str(poisson_limit["method"]).lower() == "cls" else "classical"
     poisson_confidence_label = f"{100.0 * poisson_confidence_level:g}%"
+    poisson_confidence_percent_label = rf"{100.0 * poisson_confidence_level:g}\%"
     poisson_contour_label = ""
-    luminosity_label = rf"$L = {luminosity:g}\,\mathrm{{fb}}^{{-1}}$"
-    poisson_legend_label = f"Poisson {poisson_method_label} {poisson_confidence_label} CL, {luminosity_label}"
+    luminosity_label = _luminosity_legend_label(luminosity)
+    poisson_legend_label = (
+        rf"Our limit $gg \rightarrow hhhh \rightarrow 8b$, Poisson "
+        f"{poisson_method_label} {poisson_confidence_percent_label}, {luminosity_label}"
+    )
     poisson_selected_label = f"scored S >= S95 ({required_signal_events:.3g})"
     background_variation = background_variation_scale_factors(
         background_variation_factor,
@@ -2646,8 +2661,9 @@ def write_c3d4_limit_scan(
             "required_signal_events_low": required_low,
             "required_signal_events_high": required_high,
             "label": band_label,
-            "color": "#d55e00",
-            "alpha": 0.24,
+            "color": "crimson",
+            "alpha": 0.32,
+            "boundary_linewidth": 0.75,
         }
     syst_denominator = (
         math.sqrt(background_events + (systematics * background_events) ** 2)
@@ -2843,6 +2859,7 @@ def write_c3d4_limit_scan(
                     plot_n_d4,
                     atlas_overlay_path=hhhh_xsec_atlas_overlay_plot,
                     background_variation_band=background_variation_plot_band,
+                    luminosity=luminosity,
                 )
                 hhhh_xsec_atlas_overlay_path = hhhh_xsec_overlay_metadata.get("atlas_overlay_output")
                 if hhhh_xsec_overlay_path is None:
