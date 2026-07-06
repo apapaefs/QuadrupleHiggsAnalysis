@@ -10,7 +10,18 @@ _CODE_DIR = _REPO_DIR / "Code"
 if str(_CODE_DIR) not in _sys.path:
     _sys.path.insert(0, str(_CODE_DIR))
 
+from sample_report import (
+    attach_poisson_event_interval,
+    background_generation_rate_factor,
+    background_tag_rate_factor,
+    event_interval_text,
+    signal_generation_rate_factor,
+    signal_tag_rate_factor,
+    terminal_xgboost_mc_table,
+)
+
 DEFAULT_HBB_BRANCHING_RATIO = 0.5824
+DEFAULT_ZBB_BRANCHING_RATIO = 0.150998
 DEFAULT_BTAGGING_RATE = 0.85
 DEFAULT_SIGNAL_HBB_POWER = 4
 DEFAULT_EIGHT_BTAG_POWER = 8
@@ -1216,6 +1227,26 @@ def _print_sm_background_mc_counts(metrics):
     print("  Background generated events =", _format_count(counts.get("background_generated_events")))
 
 
+def _signal_metadata_for_files(signal_files):
+    metadata = []
+    for path in signal_files:
+        path = _Path(path)
+        metadata.append(
+            {
+                "process_id": path.name.split("_var.smear", 1)[0],
+                "description": "SM gg -> hhhh, h -> b bbar",
+                "local_lhe": path.name,
+            }
+        )
+    return metadata
+
+
+def _sample_report_dir(args, default_parent):
+    if args.sample_report_dir is not None:
+        return args.sample_report_dir
+    return _Path(default_parent) / "sample_report"
+
+
 def _score_rows_summary(rows, luminosity):
     rows = rows or []
     entries = sum(int(row.get("entries", 0)) for row in rows)
@@ -1230,7 +1261,7 @@ def _score_rows_summary(rows, luminosity):
     analysis_efficiency = preselected_events / initial_events if initial_events > 0.0 else 0.0
     xgboost_efficiency = selected_events / preselected_events if preselected_events > 0.0 else 0.0
     final_efficiency = selected_events / initial_events if initial_events > 0.0 else 0.0
-    return {
+    summary = {
         "entries": entries,
         "selected_entries": selected_entries,
         "expected_preselected_events": preselected_events,
@@ -1240,6 +1271,17 @@ def _score_rows_summary(rows, luminosity):
         "xgboost_efficiency": xgboost_efficiency,
         "final_efficiency": final_efficiency,
     }
+    attach_poisson_event_interval(
+        summary,
+        selected_entries_key="selected_entries",
+        expected_events_key="expected_selected_events",
+        input_entries_key="entries",
+        expected_input_events_key="expected_preselected_events",
+        output_prefix="expected_selected_events",
+        confidence_level=0.95,
+    )
+    summary["expected_selected_error"] = summary["expected_selected_events_error_high_95cl"]
+    return summary
 
 
 def _print_xgboost_threshold_summary(threshold, sm_signal_rows, background_rows, luminosity):
@@ -1254,7 +1296,7 @@ def _print_xgboost_threshold_summary(threshold, sm_signal_rows, background_rows,
     )
     print(
         "  SM signal expected events after threshold = "
-        f"{sm_summary['expected_selected_events']} +/- {sm_summary['expected_selected_error']}"
+        f"{event_interval_text(sm_summary, 'expected_selected_events')} (95% CL)"
     )
     print(f"  SM signal analysis efficiency = {sm_summary['analysis_efficiency']}")
     print(f"  SM signal XGBoost efficiency = {sm_summary['xgboost_efficiency']}")
@@ -1265,45 +1307,107 @@ def _print_xgboost_threshold_summary(threshold, sm_signal_rows, background_rows,
     )
     print(
         "  Background expected events after threshold = "
-        f"{background_summary['expected_selected_events']} +/- {background_summary['expected_selected_error']}"
+        f"{event_interval_text(background_summary, 'expected_selected_events')} (95% CL)"
     )
     print(f"  Background analysis efficiency = {background_summary['analysis_efficiency']}")
     print(f"  Background XGBoost efficiency = {background_summary['xgboost_efficiency']}")
     print(f"  Background final efficiency = {background_summary['final_efficiency']}")
+    print()
+    print(
+        terminal_xgboost_mc_table(
+            sm_signal_rows,
+            title="Per-sample SM XGBoost MC event counts",
+            threshold=threshold,
+        )
+    )
+    print()
+    print(
+        terminal_xgboost_mc_table(
+            background_rows,
+            title="Per-sample background XGBoost MC event counts",
+            threshold=threshold,
+        )
+    )
 
 
 def _physics_rate_factor(hbb_branching_ratio, hbb_power, btagging_rate, btag_power):
     return float(hbb_branching_ratio) ** int(hbb_power) * float(btagging_rate) ** int(btag_power)
 
 
-def _background_rate_factor_from_metadata(metadata, btagging_rate, c_mistag_rate, light_mistag_rate, k_factor):
-    return (
-        float(k_factor)
-        * float(btagging_rate) ** int(metadata.get("b_quarks", 0))
-        * float(c_mistag_rate) ** int(metadata.get("c_quarks", 0))
-        * float(light_mistag_rate) ** int(metadata.get("light_jets", 0))
+def _signal_generation_rate_factor_for_cli(args):
+    return signal_generation_rate_factor(
+        args.hbb_branching_ratio,
+        args.signal_hbb_power,
+        args.signal_k_factor,
     )
 
 
-def _background_rate_factors_for_cli(background_metadata, args):
-    if background_metadata and all(metadata.get("process_id") for metadata in background_metadata):
-        return [
-            _background_rate_factor_from_metadata(
-                metadata,
-                args.btagging_rate,
-                args.c_mistag_rate,
-                args.light_mistag_rate,
-                args.background_k_factor,
-            )
-            for metadata in background_metadata
-        ]
+def _signal_tag_rate_factor_for_cli(args):
+    return signal_tag_rate_factor(args.btagging_rate, args.signal_btag_power)
 
-    return _physics_rate_factor(
-        args.hbb_branching_ratio,
-        args.background_hbb_power,
+
+def _signal_final_rate_factor_for_cli(args):
+    return _signal_generation_rate_factor_for_cli(args) * _signal_tag_rate_factor_for_cli(args)
+
+
+def _background_rate_factor_from_metadata(metadata, btagging_rate, c_mistag_rate, light_mistag_rate, k_factor):
+    generation_factor = background_generation_rate_factor(
+        metadata,
+        k_factor,
+        DEFAULT_ZBB_BRANCHING_RATIO,
+    )
+    tag_factor = background_tag_rate_factor(
+        metadata,
+        btagging_rate,
+        c_mistag_rate,
+        light_mistag_rate,
+    )
+    return generation_factor * tag_factor
+
+
+def _background_generation_rate_factor_from_metadata(metadata, args):
+    return background_generation_rate_factor(
+        metadata,
+        args.background_k_factor,
+        args.zbb_branching_ratio,
+    )
+
+
+def _background_tag_rate_factor_from_metadata(metadata, args):
+    return background_tag_rate_factor(
+        metadata,
         args.btagging_rate,
-        args.background_btag_power,
-    ) * float(args.background_k_factor)
+        args.c_mistag_rate,
+        args.light_mistag_rate,
+    )
+
+
+def _background_generation_rate_factors_for_cli(background_metadata, args):
+    if background_metadata and all(metadata.get("process_id") for metadata in background_metadata):
+        return [_background_generation_rate_factor_from_metadata(metadata, args) for metadata in background_metadata]
+    return float(args.background_k_factor) * float(args.hbb_branching_ratio) ** int(args.background_hbb_power)
+
+
+def _background_tag_rate_factors_for_cli(background_metadata, args):
+    if background_metadata and all(metadata.get("process_id") for metadata in background_metadata):
+        return [_background_tag_rate_factor_from_metadata(metadata, args) for metadata in background_metadata]
+    return float(args.btagging_rate) ** int(args.background_btag_power)
+
+
+def _multiply_rate_factors(left, right, count):
+    if isinstance(left, list) or isinstance(right, list):
+        if not isinstance(left, list):
+            left = [left for _ in range(count)]
+        if not isinstance(right, list):
+            right = [right for _ in range(count)]
+        return [float(a) * float(b) for a, b in zip(left, right)]
+    return float(left) * float(right)
+
+
+def _background_rate_factors_for_cli(background_metadata, args):
+    generation_factors = _background_generation_rate_factors_for_cli(background_metadata, args)
+    tag_factors = _background_tag_rate_factors_for_cli(background_metadata, args)
+    return _multiply_rate_factors(generation_factors, tag_factors, len(background_metadata or []))
 
 
 def _format_optional_float(value):
@@ -1537,6 +1641,7 @@ def _run_local_xgboost_cli():
         run_signal_background_analysis,
         score_background_files,
         score_signal_files,
+        write_sample_report,
         write_c3d4_limit_scan,
     )
 
@@ -1547,9 +1652,12 @@ def _run_local_xgboost_cli():
     parser.add_argument("--background", action="append", type=_Path, help="Background Data2 ROOT file. May be repeated.")
     parser.add_argument("--include-auxiliary-samples", action="store_true", help="Include debug/smoke ROOT files in discovery.")
     parser.add_argument("--outdir", type=_Path, default=_REPO_DIR / "xgboost_results", help="Directory for model and plots.")
+    parser.add_argument("--sample-report-dir", type=_Path, default=None, help="Directory for the LaTeX table and observable-plot webpage.")
+    parser.add_argument("--no-sample-report", action="store_true", help="Disable the SM/background cutflow table and observable-plot webpage.")
     parser.add_argument("--luminosity", type=float, default=3000.0, help="Integrated luminosity in fb^-1.")
     parser.add_argument("--systematics", type=float, default=0.0, help="Fractional background systematic for threshold scan.")
     parser.add_argument("--hbb-branching-ratio", type=float, default=DEFAULT_HBB_BRANCHING_RATIO, help="Higgs to b bbar branching ratio used in the c3/d4 limit scan.")
+    parser.add_argument("--zbb-branching-ratio", type=float, default=DEFAULT_ZBB_BRANCHING_RATIO, help="Z to b bbar branching ratio applied only to Z backgrounds not already generated with Z -> b bbar.")
     parser.add_argument("--btagging-rate", type=float, default=DEFAULT_BTAGGING_RATE, help="Per-b b-tagging rate used in the c3/d4 limit scan.")
     parser.add_argument("--c-mistag-rate", type=float, default=0.1, help="Per-c-jet charm mistag rate applied to CSV background rates.")
     parser.add_argument("--light-mistag-rate", type=float, default=0.01, help="Per-light-jet mistag rate applied to CSV background rates.")
@@ -1562,6 +1670,24 @@ def _run_local_xgboost_cli():
     parser.add_argument("--test-size", type=float, default=0.35, help="Held-out test fraction.")
     parser.add_argument("--seed", type=int, default=12345, help="Random seed.")
     parser.add_argument("--max-events", type=int, default=None, help="Optional maximum events read per file.")
+    parser.add_argument(
+        "--min-xgb-background-mc",
+        type=int,
+        default=25,
+        help="Minimum raw held-out background MC entries required after the optimized XGBoost threshold. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--min-xgb-background-effective-mc",
+        type=float,
+        default=10.0,
+        help="Minimum effective held-out background MC entries required after the optimized XGBoost threshold. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--min-xgb-background-mc-per-sample",
+        type=int,
+        default=0,
+        help="Optional minimum held-out background MC entries per background source after the optimized XGBoost threshold.",
+    )
     parser.add_argument("--signal-xsec-fb", action="append", type=float, help="Signal cross section in fb. May be repeated.")
     parser.add_argument("--background-xsec-fb", action="append", type=float, help="Background cross section in fb. May be repeated.")
     parser.add_argument(
@@ -1848,14 +1974,13 @@ def _run_local_xgboost_cli():
             background_metadata,
         ) = _training_inputs_from_cli(args, ensure_analysis=True)
 
-        signal_decay_btag_rate_factor = _physics_rate_factor(
-            args.hbb_branching_ratio,
-            args.signal_hbb_power,
-            args.btagging_rate,
-            args.signal_btag_power,
-        )
-        signal_rate_factor = signal_decay_btag_rate_factor * float(args.signal_k_factor)
+        signal_generation_factor = _signal_generation_rate_factor_for_cli(args)
+        signal_tag_factor = _signal_tag_rate_factor_for_cli(args)
+        signal_rate_factor = signal_generation_factor * signal_tag_factor
+        background_generation_factor = _background_generation_rate_factors_for_cli(background_metadata, args)
+        background_tag_factor = _background_tag_rate_factors_for_cli(background_metadata, args)
         background_rate_factor = _background_rate_factors_for_cli(background_metadata, args)
+        signal_metadata = _signal_metadata_for_files(signal_files)
         _print_training_inputs(
             signal_files,
             background_files,
@@ -1882,22 +2007,27 @@ def _run_local_xgboost_cli():
             "signal_btag_power": args.signal_btag_power,
             "background_hbb_power": args.background_hbb_power,
             "background_btag_power": args.background_btag_power,
+            "zbb_branching_ratio": args.zbb_branching_ratio,
             "signal_k_factor": float(args.signal_k_factor),
             "background_k_factor": float(args.background_k_factor),
-            "signal_decay_btag_rate_factor": signal_decay_btag_rate_factor,
+            "signal_generation_rate_factor": signal_generation_factor,
+            "signal_tag_rate_factor": signal_tag_factor,
             "signal_rate_factor": signal_rate_factor,
+            "background_generation_rate_factor": background_generation_factor,
+            "background_tag_rate_factor": background_tag_factor,
             "background_rate_factor": background_rate_factor,
         }
         print(f"Using luminosity {args.luminosity:g} fb^-1")
         print(f"K-factors: signal = {args.signal_k_factor:g}, background = {args.background_k_factor:g}")
         print(
-            f"Signal rate factor = {signal_rate_factor:g} "
-            f"(K_signal * BR_hbb^{args.signal_hbb_power} * btag^{args.signal_btag_power})"
+            f"Signal generation factor = {signal_generation_factor:g} "
+            f"(K_signal * BR_hbb^{args.signal_hbb_power}); "
+            f"final tag factor = {signal_tag_factor:g} (btag^{args.signal_btag_power})"
         )
         if isinstance(background_rate_factor, list):
             print(
-                "Background rate factors use "
-                "K_background * btag^b * c_mistag^c * light_mistag^j per CSV process"
+                "Background rate factors use K_background, optional BR_zbb for undecayed Z samples, "
+                "and btag^b * c_mistag^c * light_mistag^j per CSV process"
             )
         else:
             print(
@@ -1919,11 +2049,15 @@ def _run_local_xgboost_cli():
             background_generated_events=background_generated,
             signal_normalisation_weights=signal_normalisation_weights,
             background_normalisation_weights=background_normalisation_weights,
+            signal_metadata=signal_metadata,
             background_metadata=background_metadata,
             luminosity=args.luminosity,
             test_size=args.test_size,
             seed=args.seed,
             systematics=args.systematics,
+            min_background_mc_entries=args.min_xgb_background_mc,
+            min_background_effective_entries=args.min_xgb_background_effective_mc,
+            min_background_mc_entries_per_sample=args.min_xgb_background_mc_per_sample,
             max_events=args.max_events,
         )
         metrics = analysis["metrics"]
@@ -1954,6 +2088,7 @@ def _run_local_xgboost_cli():
             signal_rate_factors=signal_rate_factor,
             signal_generated_events=signal_generated,
             signal_normalisation_weights=signal_normalisation_weights,
+            signal_metadata=signal_metadata,
             luminosity=args.luminosity,
             max_events=args.max_events,
         )
@@ -2050,6 +2185,28 @@ def _run_local_xgboost_cli():
             rate_metadata=rate_metadata,
         )
         _print_sm_background_mc_counts(metrics)
+        if not args.no_sample_report:
+            write_sample_report(
+                signal_files=signal_files,
+                background_files=background_files,
+                output_dir=_sample_report_dir(args, args.c3d4_scan_outdir),
+                model_file=model_file,
+                threshold=threshold,
+                signal_xsecs_fb=signal_xsecs,
+                background_xsecs_fb=background_xsecs,
+                signal_generation_rate_factors=signal_generation_factor,
+                background_generation_rate_factors=background_generation_factor,
+                signal_tag_rate_factors=signal_tag_factor,
+                background_tag_rate_factors=background_tag_factor,
+                signal_generated_events=signal_generated,
+                background_generated_events=background_generated,
+                signal_normalisation_weights=signal_normalisation_weights,
+                background_normalisation_weights=background_normalisation_weights,
+                signal_metadata=signal_metadata,
+                background_metadata=background_metadata,
+                luminosity=args.luminosity,
+                max_events=args.max_events,
+            )
         return 0
 
     score_inputs = []
@@ -2103,8 +2260,13 @@ def _run_local_xgboost_cli():
         background_metadata,
     ) = _training_inputs_from_cli(args)
 
-    signal_rate_factor = float(args.signal_k_factor)
+    signal_generation_factor = _signal_generation_rate_factor_for_cli(args)
+    signal_tag_factor = _signal_tag_rate_factor_for_cli(args)
+    signal_rate_factor = signal_generation_factor * signal_tag_factor
+    background_generation_factor = _background_generation_rate_factors_for_cli(background_metadata, args)
+    background_tag_factor = _background_tag_rate_factors_for_cli(background_metadata, args)
     background_rate_factor = _background_rate_factors_for_cli(background_metadata, args)
+    signal_metadata = _signal_metadata_for_files(signal_files)
     _print_training_inputs(
         signal_files,
         background_files,
@@ -2123,8 +2285,13 @@ def _run_local_xgboost_cli():
         background_metadata=background_metadata,
     )
     print(f"K-factors: signal = {args.signal_k_factor:g}, background = {args.background_k_factor:g}")
+    print(
+        f"Signal generation factor = {signal_generation_factor:g} "
+        f"(K_signal * BR_hbb^{args.signal_hbb_power}); "
+        f"final tag factor = {signal_tag_factor:g} (btag^{args.signal_btag_power})"
+    )
 
-    run_signal_background_analysis(
+    analysis = run_signal_background_analysis(
         signal_files=signal_files,
         background_files=background_files,
         output_dir=args.outdir,
@@ -2136,13 +2303,74 @@ def _run_local_xgboost_cli():
         background_generated_events=background_generated,
         signal_normalisation_weights=signal_normalisation_weights,
         background_normalisation_weights=background_normalisation_weights,
+        signal_metadata=signal_metadata,
         background_metadata=background_metadata,
         luminosity=args.luminosity,
         test_size=args.test_size,
         seed=args.seed,
         systematics=args.systematics,
+        min_background_mc_entries=args.min_xgb_background_mc,
+        min_background_effective_entries=args.min_xgb_background_effective_mc,
+        min_background_mc_entries_per_sample=args.min_xgb_background_mc_per_sample,
         max_events=args.max_events,
     )
+    metrics = analysis["metrics"]
+    threshold = metrics["best_threshold"]["threshold"]
+    model_file = _Path(metrics["outputs"]["model"])
+    background_scores = score_background_files(
+        background_files=background_files,
+        model_file=model_file,
+        output_dir=args.outdir / "background_scores",
+        threshold=threshold,
+        background_xsecs_fb=background_xsecs,
+        background_rate_factors=background_rate_factor,
+        background_generated_events=background_generated,
+        background_normalisation_weights=background_normalisation_weights,
+        background_metadata=background_metadata,
+        luminosity=args.luminosity,
+        max_events=args.max_events,
+    )
+    sm_signal_scores = score_signal_files(
+        signal_files=signal_files,
+        model_file=model_file,
+        output_dir=args.outdir / "sm_signal_scores",
+        threshold=threshold,
+        signal_xsecs_fb=signal_xsecs,
+        signal_rate_factors=signal_rate_factor,
+        signal_generated_events=signal_generated,
+        signal_normalisation_weights=signal_normalisation_weights,
+        signal_metadata=signal_metadata,
+        luminosity=args.luminosity,
+        max_events=args.max_events,
+    )
+    _print_xgboost_threshold_summary(
+        threshold,
+        sm_signal_scores,
+        background_scores["backgrounds"],
+        args.luminosity,
+    )
+    if not args.no_sample_report:
+        write_sample_report(
+            signal_files=signal_files,
+            background_files=background_files,
+            output_dir=_sample_report_dir(args, args.outdir),
+            model_file=model_file,
+            threshold=threshold,
+            signal_xsecs_fb=signal_xsecs,
+            background_xsecs_fb=background_xsecs,
+            signal_generation_rate_factors=signal_generation_factor,
+            background_generation_rate_factors=background_generation_factor,
+            signal_tag_rate_factors=signal_tag_factor,
+            background_tag_rate_factors=background_tag_factor,
+            signal_generated_events=signal_generated,
+            background_generated_events=background_generated,
+            signal_normalisation_weights=signal_normalisation_weights,
+            background_normalisation_weights=background_normalisation_weights,
+            signal_metadata=signal_metadata,
+            background_metadata=background_metadata,
+            luminosity=args.luminosity,
+            max_events=args.max_events,
+        )
     return 0
 
 

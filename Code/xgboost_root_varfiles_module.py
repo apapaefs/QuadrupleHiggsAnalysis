@@ -8,6 +8,8 @@ import os
 import re
 from pathlib import Path
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.colors as colors
 import matplotlib.pyplot as plt 
 # import xgboost and sklearn stuff:
@@ -23,6 +25,17 @@ from tqdm.auto import tqdm
 
 # functions to load root varfiles from HwSim
 from read_root_varfiles import *
+from sample_report import (
+    attach_poisson_event_interval,
+    best_significance_threshold,
+    cutflow_rates,
+    event_interval_text,
+    html_escape,
+    latex_number,
+    safe_feature_filename,
+    sample_latex_label,
+    terminal_cutflow_table,
+)
     
 ###############
 # FUNCTIONS   #
@@ -329,41 +342,26 @@ def _mc_event_count_summary(signal_summary, background_summary):
     }
 
 
-def _best_significance_threshold(scores, labels, physical_weights, systematics=0.0):
-    thresholds = np.linspace(0.0, 1.0, 501)
-    best = {
-        "threshold": 0.5,
-        "signal_events": 0.0,
-        "background_events": 0.0,
-        "significance": 0.0,
-        "signal_efficiency": 0.0,
-        "background_efficiency": 0.0,
-    }
-
-    labels = np.asarray(labels)
-    scores = np.asarray(scores)
-    physical_weights = np.asarray(physical_weights, dtype=float)
-    total_signal = np.sum(physical_weights[labels == 1])
-    total_background = np.sum(physical_weights[labels == 0])
-
-    for threshold in thresholds:
-        selected = scores >= threshold
-        signal = float(np.sum(physical_weights[(labels == 1) & selected]))
-        background = float(np.sum(physical_weights[(labels == 0) & selected]))
-        if background <= 0.0:
-            continue
-        denominator = math.sqrt(background + (systematics * background) ** 2)
-        significance = signal / denominator
-        if significance > best["significance"]:
-            best = {
-                "threshold": float(threshold),
-                "signal_events": signal,
-                "background_events": background,
-                "significance": float(significance),
-                "signal_efficiency": float(signal / total_signal) if total_signal > 0 else 0.0,
-                "background_efficiency": float(background / total_background) if total_background > 0 else 0.0,
-            }
-    return best
+def _best_significance_threshold(
+    scores,
+    labels,
+    physical_weights,
+    systematics=0.0,
+    background_sources=None,
+    min_background_mc_entries=25,
+    min_background_effective_entries=10.0,
+    min_background_mc_entries_per_sample=0,
+):
+    return best_significance_threshold(
+        scores,
+        labels,
+        physical_weights,
+        systematics=systematics,
+        background_sources=background_sources,
+        min_background_mc_entries=min_background_mc_entries,
+        min_background_effective_entries=min_background_effective_entries,
+        min_background_mc_entries_per_sample=min_background_mc_entries_per_sample,
+    )
 
 
 def _write_scores_csv(path, labels, scores, physical_weights, sources):
@@ -398,6 +396,466 @@ def _write_feature_importance_plot(path, model, feature_names, top_n=20):
     plt.close()
 
 
+def _feature_axis_label(name):
+    if name.startswith("bjet") and name.endswith("_pt"):
+        index = name.removeprefix("bjet").removesuffix("_pt")
+        return rf"$p_T(b_{index})$ [GeV]"
+    if name == "m8b":
+        return r"$m_{8b}$ [GeV]"
+    if name == "chi8":
+        return r"$\chi^2_{8b}$"
+    if name.startswith("delta_m_"):
+        label = name.removeprefix("delta_m_").replace("_", r"\,")
+        return rf"$\Delta m_{{{label}}}$ [GeV]"
+    if name.startswith("higgs") and name.endswith("_pt"):
+        index = name.removeprefix("higgs").removesuffix("_pt")
+        return rf"$p_T(h_{index})$ [GeV]"
+    if name.startswith("dr_hh_"):
+        indices = name.removeprefix("dr_hh_").split("_")
+        if len(indices) == 2:
+            return rf"$\Delta R(h_{indices[0]},h_{indices[1]})$"
+    if name.startswith("dr_bb_h"):
+        index = name.removeprefix("dr_bb_h")
+        return rf"$\Delta R(b,b)_{{h_{index}}}$"
+    return name.replace("_", r"\_")
+
+
+def _effective_entries(weights):
+    weights = np.asarray(weights, dtype=float)
+    weights = weights[np.isfinite(weights)]
+    if weights.size == 0:
+        return 0.0
+    sum_abs = float(np.sum(np.abs(weights)))
+    sum_sq = float(np.sum(np.square(weights)))
+    if sum_sq <= 0.0:
+        return float(weights.size)
+    return sum_abs * sum_abs / sum_sq
+
+
+def _feature_bin_edges(values, sample_weights, min_bins=5, max_bins=60, entries_per_bin=10.0):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return np.linspace(0.0, 1.0, min_bins + 1)
+
+    low = float(np.min(values))
+    high = float(np.max(values))
+    if not math.isfinite(low) or not math.isfinite(high) or low == high:
+        center = low if math.isfinite(low) else 0.0
+        width = abs(center) * 0.05 if center != 0.0 else 1.0
+        return np.linspace(center - width, center + width, min_bins + 1)
+
+    q25, q75 = np.percentile(values, [25.0, 75.0])
+    iqr = float(q75 - q25)
+    if iqr > 0.0:
+        fd_width = 2.0 * iqr / float(values.size) ** (1.0 / 3.0)
+        fd_bins = int(math.ceil((high - low) / fd_width)) if fd_width > 0.0 else max_bins
+    else:
+        fd_bins = int(math.ceil(math.sqrt(values.size)))
+
+    effective_counts = [_effective_entries(weights) for weights in sample_weights if len(weights) > 0]
+    if effective_counts:
+        stats_cap = int(max(min_bins, math.floor(min(effective_counts) / float(entries_per_bin))))
+    else:
+        stats_cap = max_bins
+    bins = max(min_bins, min(max_bins, fd_bins, max(min_bins, stats_cap)))
+    return np.linspace(low, high, bins + 1)
+
+
+def _normalised_histogram(values, weights, edges):
+    values = np.asarray(values, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    mask = np.isfinite(values) & np.isfinite(weights)
+    values = values[mask]
+    weights = weights[mask]
+    if values.size == 0:
+        zeros = np.zeros(len(edges) - 1, dtype=float)
+        return zeros, zeros
+
+    counts, _ = np.histogram(values, bins=edges, weights=weights)
+    sumw2, _ = np.histogram(values, bins=edges, weights=np.square(weights))
+    norm = float(np.sum(counts))
+    if norm == 0.0:
+        norm = float(np.sum(np.abs(weights)))
+    if norm == 0.0:
+        zeros = np.zeros(len(edges) - 1, dtype=float)
+        return zeros, zeros
+    return counts / norm, np.sqrt(sumw2) / abs(norm)
+
+
+def _sample_style(index):
+    colors = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E9", "#000000", "#F0E442"]
+    linestyles = ["-", "--", "-.", ":", (0, (5, 1)), (0, (3, 1, 1, 1)), (0, (1, 1)), (0, (5, 2, 1, 2))]
+    markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
+    return {
+        "color": colors[index % len(colors)],
+        "linestyle": linestyles[index % len(linestyles)],
+        "marker": markers[index % len(markers)],
+    }
+
+
+def _write_feature_shape_plot(path, feature_index, feature_name, samples):
+    pooled_values = []
+    sample_weights = []
+    for sample in samples:
+        features = sample["features"]
+        weights = sample["raw_weights"]
+        if features.size == 0 or feature_index >= features.shape[1]:
+            sample_weights.append(np.asarray([], dtype=float))
+            continue
+        values = features[:, feature_index]
+        mask = np.isfinite(values) & np.isfinite(weights)
+        pooled_values.append(values[mask])
+        sample_weights.append(weights[mask])
+
+    pooled = np.concatenate([values for values in pooled_values if values.size > 0]) if pooled_values else np.asarray([])
+    edges = _feature_bin_edges(pooled, sample_weights)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+
+    fig, ax = plt.subplots(figsize=(7.2, 5.2))
+    plotted = False
+    for sample in samples:
+        features = sample["features"]
+        weights = sample["raw_weights"]
+        if features.size == 0 or feature_index >= features.shape[1]:
+            continue
+        values = features[:, feature_index]
+        y, yerr = _normalised_histogram(values, weights, edges)
+        if not np.any(np.isfinite(y)):
+            continue
+        style = sample["style"]
+        ax.stairs(
+            y,
+            edges,
+            label=sample["label"],
+            color=style["color"],
+            linestyle=style["linestyle"],
+            linewidth=1.7,
+        )
+        ax.errorbar(
+            centers,
+            y,
+            yerr=yerr,
+            fmt=style["marker"],
+            markersize=3.0,
+            color=style["color"],
+            linestyle="none",
+            linewidth=0.9,
+            capsize=1.8,
+        )
+        plotted = True
+
+    ax.set_xlabel(_feature_axis_label(feature_name))
+    ax.set_ylabel("Normalized events / bin")
+    ax.grid(True, which="major", linewidth=0.4, alpha=0.35)
+    if plotted:
+        ax.legend(frameon=False, fontsize=8)
+    else:
+        ax.text(0.5, 0.5, "No finite entries", transform=ax.transAxes, ha="center", va="center")
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+
+
+def _write_cutflow_latex_table(path, rows, luminosity, threshold):
+    lines = [
+        rf"% Luminosity: {luminosity:g} fb^{{-1}}",
+        rf"% XGBoost threshold: {threshold:g}",
+        "% Generation columns include K-factors and decay branching ratios.",
+        "% Input-selection and XGBoost columns additionally include b-tag and mistag factors.",
+        "% N_XGB entries include Poisson 95% CL intervals from selected MC counts.",
+        r"\begin{tabular}{lrrrrrr}",
+        r"\hline",
+        (
+            r"Sample & $\sigma_{\rm gen}$ [fb] & $N_{\rm gen}$ "
+            r"& $\sigma_{\rm input}$ [fb] & $N_{\rm input}$ "
+            r"& $\sigma_{\rm XGB}$ [fb] & $N_{\rm XGB}$ \\"
+        ),
+        r"\hline",
+    ]
+    for row in rows:
+        lines.append(
+            " & ".join(
+                [
+                    row["label"],
+                    f"${latex_number(row['generation_xsec_fb'])}$",
+                    f"${latex_number(row['generation_events'])}$",
+                    f"${latex_number(row['input_xsec_fb'])}$",
+                    f"${latex_number(row['input_events'])}$",
+                    f"${latex_number(row['xgboost_xsec_fb'])}$",
+                    event_interval_text(row, "xgboost_events", latex=True),
+                ]
+            )
+            + r" \\"
+        )
+    lines.extend([r"\hline", r"\end{tabular}", ""])
+    Path(path).write_text("\n".join(lines))
+
+
+def _write_report_index(path, plot_rows, table_path, metadata):
+    table_rel = Path(table_path).name
+    cards = []
+    for row in plot_rows:
+        plot_rel = Path("plots") / Path(row["path"]).name
+        cards.append(
+            "<article>"
+            f"<a href=\"{html_escape(plot_rel)}\"><img src=\"{html_escape(plot_rel)}\" alt=\"{html_escape(row['feature'])}\"></a>"
+            f"<h2>{html_escape(row['feature'])}</h2>"
+            f"<p>importance = {row['importance']:.6g}</p>"
+            "</article>"
+        )
+
+    sample_items = "".join(
+        f"<li>{html_escape(row['label'])}: {html_escape(row['file'])}</li>"
+        for row in metadata.get("samples", [])
+    )
+    html_text = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>4H XGBoost Input Observables</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #1d1d1f; }}
+    header {{ max-width: 1100px; margin-bottom: 1.5rem; }}
+    a {{ color: #005ea8; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.1rem; }}
+    article {{ border: 1px solid #ddd; border-radius: 6px; padding: 0.75rem; background: #fff; }}
+    img {{ width: 100%; height: auto; display: block; }}
+    h1 {{ margin-bottom: 0.25rem; }}
+    h2 {{ font-size: 1rem; margin: 0.65rem 0 0.2rem; }}
+    p, li {{ line-height: 1.4; }}
+    code {{ background: #f4f4f4; padding: 0.12rem 0.25rem; border-radius: 3px; }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>4H XGBoost Input Observables</h1>
+    <p>Cutflow table: <a href="{html_escape(table_rel)}"><code>{html_escape(table_rel)}</code></a></p>
+    <p>Luminosity: {metadata.get('luminosity_fb_inverse', 0):g} fb<sup>-1</sup>; XGBoost threshold: {metadata.get('threshold', 0):g}</p>
+    <ul>{sample_items}</ul>
+  </header>
+  <main class="grid">
+    {''.join(cards)}
+  </main>
+</body>
+</html>
+"""
+    Path(path).write_text(html_text)
+
+
+def write_sample_report(
+    signal_files,
+    background_files,
+    output_dir,
+    model_file,
+    threshold,
+    signal_xsecs_fb=None,
+    background_xsecs_fb=None,
+    signal_generation_rate_factors=None,
+    background_generation_rate_factors=None,
+    signal_tag_rate_factors=None,
+    background_tag_rate_factors=None,
+    signal_generated_events=None,
+    background_generated_events=None,
+    signal_normalisation_weights=None,
+    background_normalisation_weights=None,
+    signal_metadata=None,
+    background_metadata=None,
+    luminosity=3000.0,
+    max_events=None,
+):
+    """Write a LaTeX cutflow table and normalized observable-shape gallery."""
+
+    signal_files = _as_path_list(signal_files)
+    background_files = _as_path_list(background_files)
+    signal_xsecs_fb = _expand_per_file(signal_xsecs_fb, signal_files, 1.0)
+    background_xsecs_fb = _expand_per_file(background_xsecs_fb, background_files, 1.0)
+    signal_generation_rate_factors = _expand_per_file(signal_generation_rate_factors, signal_files, 1.0)
+    background_generation_rate_factors = _expand_per_file(background_generation_rate_factors, background_files, 1.0)
+    signal_tag_rate_factors = _expand_per_file(signal_tag_rate_factors, signal_files, 1.0)
+    background_tag_rate_factors = _expand_per_file(background_tag_rate_factors, background_files, 1.0)
+    signal_generated_events = _expand_per_file(signal_generated_events, signal_files, None)
+    background_generated_events = _expand_per_file(background_generated_events, background_files, None)
+    signal_normalisation_weights = _expand_per_file(signal_normalisation_weights, signal_files, None)
+    background_normalisation_weights = _expand_per_file(background_normalisation_weights, background_files, None)
+    signal_metadata = _expand_metadata(signal_metadata, signal_files)
+    background_metadata = _expand_metadata(background_metadata, background_files)
+
+    output_dir = Path(output_dir)
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    model = load_model(str(model_file))
+    threshold = float(threshold)
+    luminosity = float(luminosity)
+
+    rows = []
+    plot_samples = []
+
+    def add_samples(files, label_id, is_signal, xsecs, generation_factors, tag_factors, generated_events, normalisation_weights, metadata_rows):
+        start_index = len(plot_samples)
+        for index, (path, xsec_fb, generation_factor, tag_factor, generated, normalisation_weight, metadata) in enumerate(
+            zip(files, xsecs, generation_factors, tag_factors, generated_events, normalisation_weights, metadata_rows)
+        ):
+            features, _, weights = read_ROOT_varfile(path, label_id, 1.0, max_events=max_events)
+            features = np.asarray(features, dtype=float)
+            raw_weights = np.asarray(weights, dtype=float)
+            if features.size == 0:
+                features = np.empty((0, len(FEATURE_NAMES)), dtype=float)
+            if features.ndim == 1:
+                features = features.reshape(1, -1)
+
+            normalisation, normalisation_source = _normalisation_denominator(
+                generated,
+                raw_weights,
+                normalisation_weight,
+            )
+            input_weight_sum = float(np.sum(raw_weights))
+
+            if features.shape[0] > 0:
+                scores = model.predict_proba(features)[:, 1]
+                selected = scores >= threshold
+            else:
+                scores = np.asarray([], dtype=float)
+                selected = np.asarray([], dtype=bool)
+
+            selected_weight_sum = float(np.sum(raw_weights[selected])) if raw_weights.size else 0.0
+            rates = cutflow_rates(
+                raw_xsec_fb=xsec_fb,
+                generation_rate_factor=generation_factor,
+                tag_rate_factor=tag_factor,
+                normalisation_weight=normalisation,
+                input_weight_sum=input_weight_sum,
+                selected_weight_sum=selected_weight_sum,
+            )
+            generation_xsec = rates["generation_xsec_fb"]
+            input_xsec = rates["input_xsec_fb"]
+            xgboost_xsec = rates["xgboost_xsec_fb"]
+            score_weight_sum = float(np.sum(np.abs(raw_weights))) if raw_weights.size else 0.0
+            label = sample_latex_label(metadata, is_signal=is_signal)
+            row = dict(metadata or {})
+            row.update(
+                {
+                    "label": label,
+                    "file": str(path),
+                    "is_signal": bool(is_signal),
+                    "entries": int(raw_weights.size),
+                    "selected_entries": int(np.sum(selected)),
+                    "threshold": threshold,
+                    "raw_xsec_fb": float(xsec_fb),
+                    "generation_rate_factor": float(generation_factor),
+                    "tag_rate_factor": float(tag_factor),
+                    "generation_xsec_fb": float(generation_xsec),
+                    "generation_events": float(luminosity * generation_xsec),
+                    "input_xsec_fb": float(input_xsec),
+                    "input_events": float(luminosity * input_xsec),
+                    "xgboost_xsec_fb": float(xgboost_xsec),
+                    "xgboost_events": float(luminosity * xgboost_xsec),
+                    "xgboost_events_error": 0.0,
+                    "input_efficiency": float(input_xsec / generation_xsec) if generation_xsec else 0.0,
+                    "xgboost_efficiency_before_tag": (
+                        float(selected_weight_sum / input_weight_sum) if input_weight_sum else 0.0
+                    ),
+                    "final_efficiency": float(xgboost_xsec / generation_xsec) if generation_xsec else 0.0,
+                    "normalisation_weight": float(normalisation),
+                    "normalisation_source": normalisation_source,
+                    "mean_score": (
+                        float(np.average(scores, weights=np.abs(raw_weights)))
+                        if scores.size and score_weight_sum > 0.0
+                        else None
+                    ),
+                }
+            )
+            attach_poisson_event_interval(
+                row,
+                selected_entries_key="selected_entries",
+                expected_events_key="xgboost_events",
+                input_entries_key="entries",
+                expected_input_events_key="input_events",
+                output_prefix="xgboost_events",
+                confidence_level=0.95,
+            )
+            row["xgboost_events_error"] = row["xgboost_events_error_high_95cl"]
+            rows.append(row)
+            plot_samples.append(
+                {
+                    "label": label,
+                    "features": features,
+                    "raw_weights": raw_weights,
+                    "style": _sample_style(start_index + index),
+                }
+            )
+
+    add_samples(
+        signal_files,
+        1,
+        True,
+        signal_xsecs_fb,
+        signal_generation_rate_factors,
+        signal_tag_rate_factors,
+        signal_generated_events,
+        signal_normalisation_weights,
+        signal_metadata,
+    )
+    add_samples(
+        background_files,
+        0,
+        False,
+        background_xsecs_fb,
+        background_generation_rate_factors,
+        background_tag_rate_factors,
+        background_generated_events,
+        background_normalisation_weights,
+        background_metadata,
+    )
+
+    importances = np.asarray(getattr(model, "feature_importances_", np.zeros(len(FEATURE_NAMES))), dtype=float)
+    if importances.size < len(FEATURE_NAMES):
+        importances = np.pad(importances, (0, len(FEATURE_NAMES) - importances.size))
+    importances = importances[: len(FEATURE_NAMES)]
+    feature_order = sorted(range(len(FEATURE_NAMES)), key=lambda idx: (-float(importances[idx]), FEATURE_NAMES[idx]))
+
+    plot_rows = []
+    for feature_index in feature_order:
+        feature = FEATURE_NAMES[feature_index]
+        plot_path = plots_dir / f"{safe_feature_filename(feature)}.png"
+        _write_feature_shape_plot(plot_path, feature_index, feature, plot_samples)
+        plot_rows.append(
+            {
+                "feature": feature,
+                "path": str(plot_path),
+                "importance": float(importances[feature_index]),
+            }
+        )
+
+    table_path = output_dir / "cutflow_table.txt"
+    index_path = output_dir / "index.html"
+    metadata_path = output_dir / "report_metadata.json"
+    _write_cutflow_latex_table(table_path, rows, luminosity, threshold)
+    metadata = {
+        "luminosity_fb_inverse": luminosity,
+        "threshold": threshold,
+        "model_file": str(model_file),
+        "table": str(table_path),
+        "index": str(index_path),
+        "plots": plot_rows,
+        "samples": rows,
+        "normalisation": {
+            "generation_columns": "K-factors and decay branching ratios",
+            "input_and_xgboost_columns": "K-factors, decay branching ratios, and b-tag/mistag factors",
+        },
+    }
+    _write_report_index(index_path, plot_rows, table_path, metadata)
+    with open(metadata_path, "w") as handle:
+        json.dump(metadata, handle, indent=2)
+
+    print("Wrote sample report table:", table_path)
+    print("Wrote sample report index:", index_path)
+    print()
+    print(terminal_cutflow_table(rows, luminosity, threshold))
+    return metadata
+
+
 def run_signal_background_analysis(
     signal_files,
     background_files,
@@ -416,6 +874,9 @@ def run_signal_background_analysis(
     test_size=0.35,
     seed=12345,
     systematics=0.0,
+    min_background_mc_entries=25,
+    min_background_effective_entries=10.0,
+    min_background_mc_entries_per_sample=0,
     max_events=None,
     model_params=None,
 ):
@@ -510,7 +971,16 @@ def run_signal_background_analysis(
     accuracy = accuracy_score(y_test, predictions)
     auc_unweighted = roc_auc_score(y_test, scores)
     auc_weighted = roc_auc_score(y_test, scores, sample_weight=phys_test)
-    best = _best_significance_threshold(scores, y_test, phys_test, systematics)
+    best = _best_significance_threshold(
+        scores,
+        y_test,
+        phys_test,
+        systematics,
+        background_sources=src_test,
+        min_background_mc_entries=min_background_mc_entries,
+        min_background_effective_entries=min_background_effective_entries,
+        min_background_mc_entries_per_sample=min_background_mc_entries_per_sample,
+    )
     best_predictions = (scores >= best["threshold"]).astype(int)
     confmatrix = confusion_matrix(y_test, best_predictions, labels=[0, 1])
 
@@ -540,6 +1010,11 @@ def run_signal_background_analysis(
         "seed": int(seed),
         "luminosity_fb_inverse": float(luminosity),
         "systematics": float(systematics),
+        "threshold_mc_stat_requirements": {
+            "min_background_mc_entries": int(min_background_mc_entries or 0),
+            "min_background_effective_entries": float(min_background_effective_entries or 0.0),
+            "min_background_mc_entries_per_sample": int(min_background_mc_entries_per_sample or 0),
+        },
         "accuracy_threshold_0p5": float(accuracy),
         "auc_unweighted": float(auc_unweighted),
         "auc_weighted": float(auc_weighted),
@@ -568,6 +1043,15 @@ def run_signal_background_analysis(
     print("Best threshold =", best["threshold"])
     print("Expected S, B =", best["signal_events"], best["background_events"])
     print("S/sqrt(B + syst^2 B^2) =", best["significance"])
+    print(
+        "Selected background MC at threshold =",
+        best.get("selected_background_entries", 0),
+        "raw,",
+        best.get("selected_background_effective_entries", 0.0),
+        "effective",
+    )
+    if not best.get("mc_stat_requirement_satisfied", False):
+        print("Warning:", best.get("mc_stat_warning", "MC-statistics threshold requirement was not satisfied."))
     print("MC event counts")
     print("  Signal entries read =", mc_event_counts["signal_entries_read"])
     if mc_event_counts["signal_generated_events"] is None:
@@ -667,7 +1151,6 @@ def score_signal_files(
 
         preselected_events = float(np.sum(physical_weights))
         selected_events = float(np.sum(physical_weights[selected]))
-        selected_error = float(np.sqrt(np.sum(np.square(physical_weights[selected]))))
         initial_events = float(luminosity) * effective_xsec_fb
         analysis_efficiency = preselected_events / initial_events if initial_events != 0.0 else 0.0
         weighted_efficiency = selected_events / preselected_events if preselected_events != 0.0 else 0.0
@@ -698,7 +1181,7 @@ def score_signal_files(
                 "normalisation_source": normalisation_source,
                 "expected_preselected_events": preselected_events,
                 "expected_selected_events": selected_events,
-                "expected_selected_error": selected_error,
+                "expected_selected_error": 0.0,
                 "raw_sigma_eff_fb": float(float(xsec_fb) * weighted_efficiency),
                 "effective_sigma_eff_fb": float(effective_xsec_fb * weighted_efficiency),
                 "analysis_efficiency": float(analysis_efficiency),
@@ -709,6 +1192,16 @@ def score_signal_files(
                 "mean_score": float(np.average(scores, weights=np.abs(raw_weights))),
             }
         )
+        attach_poisson_event_interval(
+            row,
+            selected_entries_key="selected_entries",
+            expected_events_key="expected_selected_events",
+            input_entries_key="entries",
+            expected_input_events_key="expected_preselected_events",
+            output_prefix="expected_selected_events",
+            confidence_level=0.95,
+        )
+        row["expected_selected_error"] = row["expected_selected_events_error_high_95cl"]
         rows.append(row)
 
         if write_event_scores:
@@ -755,6 +1248,13 @@ def score_signal_files(
         "expected_preselected_events",
         "expected_selected_events",
         "expected_selected_error",
+        "expected_selected_events_lower_95cl",
+        "expected_selected_events_upper_95cl",
+        "expected_selected_events_error_low_95cl",
+        "expected_selected_events_error_high_95cl",
+        "expected_selected_events_upper_limit_95cl",
+        "expected_selected_events_is_upper_limit",
+        "expected_selected_events_confidence_level",
         "raw_sigma_eff_fb",
         "effective_sigma_eff_fb",
         "analysis_efficiency",
@@ -860,7 +1360,6 @@ def score_background_files(
 
         preselected_events = float(np.sum(physical_weights))
         selected_events = float(np.sum(physical_weights[selected]))
-        selected_error = float(np.sqrt(np.sum(np.square(physical_weights[selected]))))
         initial_events = float(luminosity) * effective_xsec_fb
         analysis_efficiency = preselected_events / initial_events if initial_events != 0.0 else 0.0
         weighted_efficiency = selected_events / preselected_events if preselected_events != 0.0 else 0.0
@@ -887,7 +1386,7 @@ def score_background_files(
                 "normalisation_source": normalisation_source,
                 "expected_preselected_events": preselected_events,
                 "expected_selected_events": selected_events,
-                "expected_selected_error": selected_error,
+                "expected_selected_error": 0.0,
                 "raw_sigma_eff_fb": float(float(xsec_fb) * weighted_efficiency),
                 "effective_sigma_eff_fb": float(effective_xsec_fb * weighted_efficiency),
                 "analysis_efficiency": float(analysis_efficiency),
@@ -898,6 +1397,16 @@ def score_background_files(
                 "mean_score": float(np.average(scores, weights=np.abs(raw_weights))),
             }
         )
+        attach_poisson_event_interval(
+            row,
+            selected_entries_key="selected_entries",
+            expected_events_key="expected_selected_events",
+            input_entries_key="entries",
+            expected_input_events_key="expected_preselected_events",
+            output_prefix="expected_selected_events",
+            confidence_level=0.95,
+        )
+        row["expected_selected_error"] = row["expected_selected_events_error_high_95cl"]
         rows.append(row)
 
     summary_csv = output_dir / "scored_background_samples.csv"
@@ -926,6 +1435,13 @@ def score_background_files(
         "expected_preselected_events",
         "expected_selected_events",
         "expected_selected_error",
+        "expected_selected_events_lower_95cl",
+        "expected_selected_events_upper_95cl",
+        "expected_selected_events_error_low_95cl",
+        "expected_selected_events_error_high_95cl",
+        "expected_selected_events_upper_limit_95cl",
+        "expected_selected_events_is_upper_limit",
+        "expected_selected_events_confidence_level",
         "raw_sigma_eff_fb",
         "effective_sigma_eff_fb",
         "analysis_efficiency",
@@ -2028,6 +2544,13 @@ def write_c3d4_limit_scan(
                 "expected_preselected_events": preselected_events,
                 "expected_selected_events": signal_events,
                 "expected_selected_error": selected_error,
+                "expected_selected_events_lower_95cl": row.get("expected_selected_events_lower_95cl"),
+                "expected_selected_events_upper_95cl": row.get("expected_selected_events_upper_95cl"),
+                "expected_selected_events_error_low_95cl": row.get("expected_selected_events_error_low_95cl"),
+                "expected_selected_events_error_high_95cl": row.get("expected_selected_events_error_high_95cl"),
+                "expected_selected_events_upper_limit_95cl": row.get("expected_selected_events_upper_limit_95cl"),
+                "expected_selected_events_is_upper_limit": row.get("expected_selected_events_is_upper_limit"),
+                "expected_selected_events_confidence_level": row.get("expected_selected_events_confidence_level"),
                 "raw_sigma_eff_fb": raw_sigma_eff_fb,
                 "effective_sigma_eff_fb": effective_sigma_eff_fb,
                 "effective_sigma_eff_error_fb": effective_sigma_eff_error_fb,
@@ -2181,6 +2704,13 @@ def write_c3d4_limit_scan(
         "expected_preselected_events",
         "expected_selected_events",
         "expected_selected_error",
+        "expected_selected_events_lower_95cl",
+        "expected_selected_events_upper_95cl",
+        "expected_selected_events_error_low_95cl",
+        "expected_selected_events_error_high_95cl",
+        "expected_selected_events_upper_limit_95cl",
+        "expected_selected_events_is_upper_limit",
+        "expected_selected_events_confidence_level",
         "raw_sigma_eff_fb",
         "effective_sigma_eff_fb",
         "effective_sigma_eff_error_fb",
