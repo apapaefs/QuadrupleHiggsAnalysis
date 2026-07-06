@@ -110,6 +110,32 @@ class HHHHXsecOverlayBandWiringTests(unittest.TestCase):
         self.assertIn('"boundary_linewidth": 0.75', module_text)
         self.assertIn('band.get("boundary_linewidth", 0.75)', module_text)
 
+    def test_c3d4_limit_json_writes_sanitize_path_objects(self):
+        tree = _module_tree()
+        helper_names = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
+        self.assertIn("_json_safe_value", helper_names)
+
+        scan_writer = _function_def(tree, "write_c3d4_limit_scan")
+        dump_calls = [
+            node
+            for node in ast.walk(scan_writer)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "dump"
+        ]
+        self.assertTrue(dump_calls)
+        unsafe_dump_calls = [
+            node
+            for node in dump_calls
+            if not (
+                node.args
+                and isinstance(node.args[0], ast.Call)
+                and isinstance(node.args[0].func, ast.Name)
+                and node.args[0].func.id == "_json_safe_value"
+            )
+        ]
+        self.assertFalse(unsafe_dump_calls)
+
 
 if __name__ == "__main__":
     unittest.main()

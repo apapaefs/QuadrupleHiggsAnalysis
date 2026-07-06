@@ -1494,6 +1494,29 @@ def _json_safe_float(value):
     return value
 
 
+def _json_safe_value(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.generic):
+        return _json_safe_value(value.item())
+    if isinstance(value, np.ndarray):
+        return _json_safe_value(value.tolist())
+    if isinstance(value, dict):
+        safe_dict = {}
+        for key, item in value.items():
+            if isinstance(key, (str, int, float, bool)) or key is None:
+                safe_key = key
+            else:
+                safe_key = str(_json_safe_value(key))
+            safe_dict[safe_key] = _json_safe_value(item)
+        return safe_dict
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
 def _plot_pdf_path(path):
     return Path(path).with_suffix(".pdf")
 
@@ -3148,10 +3171,10 @@ def write_c3d4_limit_scan(
         "outputs": outputs,
     }
     with open(fit_json, "w") as handle:
-        json.dump(fit_metadata, handle, indent=2)
+        json.dump(_json_safe_value(fit_metadata), handle, indent=2)
 
     with open(limit_json, "w") as handle:
-        json.dump({"metadata": metadata, "points": rows}, handle, indent=2)
+        json.dump(_json_safe_value({"metadata": metadata, "points": rows}), handle, indent=2)
 
     print("Wrote c3/d4 limit scan", limit_csv)
     print("Wrote c3/d4 limit metadata", limit_json)
