@@ -86,9 +86,23 @@ class HHHHXsecOverlayBandWiringTests(unittest.TestCase):
     def test_hhhh_xsec_overlay_writes_atlas_variant_without_ratio_contours(self):
         module_text = MODULE_PATH.read_text()
         self.assertIn("c3d4_hhhh_xsec_with_95cl_atl_phys_pub_2025_003_no_ratio_contours.png", module_text)
-        self.assertIn("atlas_overlay_no_ratio_contours_path", module_text)
-        self.assertIn("draw_ratio_contours=False", module_text)
+        self.assertIn("_write_c3d4_atlas_limit_overlay_no_xsec_plot", module_text)
         self.assertIn("hhhh_xsec_atlas_overlay_no_ratio_contours_plot", module_text)
+
+    def test_no_ratio_contours_variant_does_not_use_hhhh_cross_section_calculation(self):
+        tree = _module_tree()
+        helper = _function_def(tree, "_write_c3d4_atlas_limit_overlay_no_xsec_plot")
+        called_names = {
+            node.func.id
+            for node in ast.walk(helper)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+
+        self.assertNotIn("_read_hhhh_xsec_points", called_names)
+        self.assertNotIn("_fit_c3d4_chebyshev", called_names)
+        self.assertNotIn("_evaluate_c3d4_chebyshev_grid", called_names)
+        self.assertNotIn("_make_hhhh_xsec_log_levels", called_names)
+        self.assertNotIn("_make_hhhh_xsec_line_levels", called_names)
 
     def test_background_variation_band_style_uses_stronger_fill_and_thinner_boundaries(self):
         module_text = MODULE_PATH.read_text()

@@ -2315,6 +2315,134 @@ def _plot_atlas_phys_pub_2025_003_curve(ax):
     }
 
 
+def _write_c3d4_atlas_limit_overlay_no_xsec_plot(
+    path,
+    limit_c3_grid,
+    limit_d4_grid,
+    limit_signal_events_grid,
+    required_signal_events,
+    limit_contour_label,
+    limit_legend_label,
+    plot_c3_range,
+    plot_d4_range,
+    background_variation_band=None,
+    luminosity=3000.0,
+):
+    metadata = {
+        "status": "not_run",
+        "cross_section_calculation": False,
+    }
+    try:
+        finite_limit = np.isfinite(limit_signal_events_grid)
+        if not np.any(finite_limit):
+            metadata["status"] = "skipped"
+            metadata["reason"] = "no finite signal-event grid"
+            return None, metadata
+
+        limit_min = float(np.nanmin(limit_signal_events_grid[finite_limit]))
+        limit_max = float(np.nanmax(limit_signal_events_grid[finite_limit]))
+        contour_drawn = limit_min != limit_max and limit_min <= required_signal_events <= limit_max
+
+        perturbativity_grid = _hhhh_perturbativity_grid(limit_c3_grid, limit_d4_grid)
+        perturbativity_min = float(np.nanmin(perturbativity_grid))
+        perturbativity_max = float(np.nanmax(perturbativity_grid))
+        perturbativity_contour_drawn = (
+            perturbativity_min <= DEFAULT_HHHH_PERTURBATIVITY_LEVEL <= perturbativity_max
+        )
+        background_variation_band_drawn = False
+
+        fig, ax = plt.subplots(figsize=(8.2, 6.2), constrained_layout=True)
+        ax.set_facecolor("white")
+        ax.grid(alpha=0.2, linewidth=0.5)
+
+        if limit_min != limit_max:
+            background_variation_band_drawn = _draw_background_variation_band(
+                ax,
+                limit_c3_grid,
+                limit_d4_grid,
+                limit_signal_events_grid,
+                limit_min,
+                limit_max,
+                background_variation_band,
+                contourf_func=ax.contourf,
+                contour_func=ax.contour,
+            )
+
+        if perturbativity_contour_drawn:
+            ax.contour(
+                limit_c3_grid,
+                limit_d4_grid,
+                perturbativity_grid,
+                levels=[DEFAULT_HHHH_PERTURBATIVITY_LEVEL],
+                colors=["black"],
+                linestyles="--",
+                linewidths=1.7,
+            )
+            ax.plot(
+                [],
+                [],
+                color="black",
+                linestyle="--",
+                linewidth=1.7,
+                label=r"Perturbative unitarity, $hh \rightarrow hh$",
+            )
+
+        if contour_drawn:
+            limit_line = ax.contour(
+                limit_c3_grid,
+                limit_d4_grid,
+                limit_signal_events_grid,
+                levels=[required_signal_events],
+                colors=["crimson"],
+                linewidths=2.0,
+            )
+            if limit_contour_label != "":
+                ax.clabel(limit_line, fmt={required_signal_events: limit_contour_label}, inline=True, fontsize=9)
+            if limit_legend_label is not None:
+                ax.plot([], [], color="crimson", linewidth=2.0, label=limit_legend_label)
+
+        atlas_curve_metadata = _plot_atlas_phys_pub_2025_003_curve(ax)
+
+        ax.plot([0.0], [0.0], marker="o", color="white", markeredgecolor="black", markersize=5)
+        ax.set_xlim(plot_c3_range)
+        ax.set_ylim(plot_d4_range)
+        ax.set_xlabel(r"$c_3$", fontsize=18)
+        ax.set_ylabel(r"$d_4$", fontsize=18)
+        ax.set_title(r"$gg \to hhhh$ at 14 TeV, " + _luminosity_legend_label(luminosity), fontsize=20)
+        ax.tick_params(axis="both", labelsize=15)
+
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(loc="best", fontsize=10)
+
+        fig.savefig(path, dpi=220)
+        fig.savefig(_plot_pdf_path(path))
+        plt.close(fig)
+
+        metadata.update(
+            {
+                "status": "ok",
+                "output": str(path),
+                "output_pdf": str(_plot_pdf_path(path)),
+                "limit_signal_events_min": limit_min,
+                "limit_signal_events_max": limit_max,
+                "limit_contour_drawn": contour_drawn,
+                "background_variation_band": background_variation_band,
+                "background_variation_band_drawn": background_variation_band_drawn,
+                "perturbativity_level": DEFAULT_HHHH_PERTURBATIVITY_LEVEL,
+                "perturbativity_min": perturbativity_min,
+                "perturbativity_max": perturbativity_max,
+                "perturbativity_contour_drawn": perturbativity_contour_drawn,
+                "atlas_reference_curve": atlas_curve_metadata,
+            }
+        )
+        return path, metadata
+    except Exception as error:
+        metadata["status"] = "skipped"
+        metadata["reason"] = str(error)
+        return None, metadata
+
+
 def _write_hhhh_xsec_limit_overlay_plot(
     path,
     source_dir,
@@ -2332,7 +2460,6 @@ def _write_hhhh_xsec_limit_overlay_plot(
     plot_n_c3,
     plot_n_d4,
     atlas_overlay_path=None,
-    atlas_overlay_no_ratio_contours_path=None,
     background_variation_band=None,
     luminosity=3000.0,
 ):
@@ -2411,7 +2538,7 @@ def _write_hhhh_xsec_limit_overlay_plot(
             metadata["limit_signal_events_min"] = limit_min
             metadata["limit_signal_events_max"] = limit_max
 
-        def draw_overlay(output_path, include_atlas_curve=False, draw_ratio_contours=True):
+        def draw_overlay(output_path, include_atlas_curve=False):
             nonlocal background_variation_band_drawn
             fig, ax = plt.subplots(figsize=(8.2, 6.2), constrained_layout=True)
             contour = ax.contourf(
@@ -2425,7 +2552,7 @@ def _write_hhhh_xsec_limit_overlay_plot(
             )
             if np.any(np.isfinite(ratio) & (ratio <= 0.0)):
                 ax.contourf(c3_grid, d4_grid, ratio <= 0.0, levels=[0.5, 1.5], colors=["0.75"], alpha=0.8)
-            if draw_ratio_contours and line_levels:
+            if line_levels:
                 lines = ax.contour(
                     c3_grid,
                     d4_grid,
@@ -2512,13 +2639,6 @@ def _write_hhhh_xsec_limit_overlay_plot(
         atlas_curve_metadata = None
         if atlas_overlay_path is not None:
             atlas_curve_metadata = draw_overlay(atlas_overlay_path, include_atlas_curve=True)
-        atlas_no_ratio_curve_metadata = None
-        if atlas_overlay_no_ratio_contours_path is not None:
-            atlas_no_ratio_curve_metadata = draw_overlay(
-                atlas_overlay_no_ratio_contours_path,
-                include_atlas_curve=True,
-                draw_ratio_contours=False,
-            )
 
         finite_ratio = ratio[np.isfinite(ratio)]
         metadata.update(
@@ -2542,10 +2662,6 @@ def _write_hhhh_xsec_limit_overlay_plot(
             metadata["atlas_overlay_output"] = str(atlas_overlay_path)
             metadata["atlas_overlay_output_pdf"] = str(_plot_pdf_path(atlas_overlay_path))
             metadata["atlas_reference_curve"] = atlas_curve_metadata
-        if atlas_overlay_no_ratio_contours_path is not None:
-            metadata["atlas_overlay_no_ratio_contours_output"] = str(atlas_overlay_no_ratio_contours_path)
-            metadata["atlas_overlay_no_ratio_contours_output_pdf"] = str(_plot_pdf_path(atlas_overlay_no_ratio_contours_path))
-            metadata["atlas_reference_curve_no_ratio_contours"] = atlas_no_ratio_curve_metadata
         return path, metadata
     except Exception as error:
         metadata["status"] = "skipped"
@@ -2788,6 +2904,10 @@ def write_c3d4_limit_scan(
     fit = None
     fit_metadata = {"status": "disabled"}
     hhhh_xsec_overlay_metadata = {"status": "disabled" if not xsec_overlay else "not_run"}
+    hhhh_xsec_atlas_overlay_no_ratio_contours_metadata = {
+        "status": "disabled" if not xsec_overlay else "not_run",
+        "cross_section_calculation": False,
+    }
     grid_outputs = {}
     if fit_signal:
         fit_metadata = _fit_c3d4_chebyshev(
@@ -2851,6 +2971,22 @@ def write_c3d4_limit_scan(
             hhhh_xsec_atlas_overlay_path = None
             hhhh_xsec_atlas_overlay_no_ratio_contours_path = None
             if xsec_overlay:
+                (
+                    hhhh_xsec_atlas_overlay_no_ratio_contours_path,
+                    hhhh_xsec_atlas_overlay_no_ratio_contours_metadata,
+                ) = _write_c3d4_atlas_limit_overlay_no_xsec_plot(
+                    hhhh_xsec_atlas_overlay_no_ratio_contours_plot,
+                    c3_grid,
+                    d4_grid,
+                    fitted_signal_events_grid,
+                    required_signal_events,
+                    poisson_contour_label,
+                    poisson_legend_label,
+                    plot_c3_range,
+                    plot_d4_range,
+                    background_variation_band=background_variation_plot_band,
+                    luminosity=luminosity,
+                )
                 hhhh_xsec_overlay_path, hhhh_xsec_overlay_metadata = _write_hhhh_xsec_limit_overlay_plot(
                     hhhh_xsec_overlay_plot,
                     xsec_source_dir,
@@ -2868,14 +3004,10 @@ def write_c3d4_limit_scan(
                     plot_n_c3,
                     plot_n_d4,
                     atlas_overlay_path=hhhh_xsec_atlas_overlay_plot,
-                    atlas_overlay_no_ratio_contours_path=hhhh_xsec_atlas_overlay_no_ratio_contours_plot,
                     background_variation_band=background_variation_plot_band,
                     luminosity=luminosity,
                 )
                 hhhh_xsec_atlas_overlay_path = hhhh_xsec_overlay_metadata.get("atlas_overlay_output")
-                hhhh_xsec_atlas_overlay_no_ratio_contours_path = hhhh_xsec_overlay_metadata.get(
-                    "atlas_overlay_no_ratio_contours_output"
-                )
                 if hhhh_xsec_overlay_path is None:
                     print("hhhh cross-section overlay skipped:", hhhh_xsec_overlay_metadata.get("reason", "unknown reason"))
             grid_outputs = {
@@ -3012,6 +3144,7 @@ def write_c3d4_limit_scan(
         "rate_metadata": rate_metadata or {},
         "chebyshev_fit": fit_metadata,
         "hhhh_xsec_overlay": hhhh_xsec_overlay_metadata,
+        "hhhh_xsec_atlas_overlay_no_ratio_contours": hhhh_xsec_atlas_overlay_no_ratio_contours_metadata,
         "outputs": outputs,
     }
     with open(fit_json, "w") as handle:
