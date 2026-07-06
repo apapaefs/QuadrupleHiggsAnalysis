@@ -2445,7 +2445,7 @@ def _write_hhhh_xsec_limit_overlay_plot(
                     color="black",
                     linestyle="--",
                     linewidth=1.7,
-                    label=r"Perturbativity $|\mathrm{Re}\,a_0| = 0.5$",
+                    label=r"Perturbative unitarity, $hh \rightarrow hh$",
                 )
 
             if limit_min is not None and limit_max is not None and limit_min != limit_max:

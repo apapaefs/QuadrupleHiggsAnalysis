@@ -55,6 +55,11 @@ class HHHHXsecOverlayBandWiringTests(unittest.TestCase):
         keyword_names = {keyword.arg for call in overlay_calls for keyword in call.keywords}
         self.assertIn("background_variation_band", keyword_names)
 
+    def test_hhhh_xsec_overlay_uses_requested_perturbative_unitarity_label(self):
+        module_text = MODULE_PATH.read_text()
+        self.assertIn(r"Perturbative unitarity, $hh \rightarrow hh$", module_text)
+        self.assertNotIn(r"Perturbativity $|\mathrm{Re}\,a_0| = 0.5$", module_text)
+
 
 if __name__ == "__main__":
     unittest.main()
