@@ -27,6 +27,7 @@ from tqdm.auto import tqdm
 from read_root_varfiles import *
 from sample_report import (
     attach_poisson_event_interval,
+    background_variation_scale_factors,
     best_significance_threshold,
     cutflow_rates,
     event_interval_text,
@@ -1879,6 +1880,66 @@ def _evaluate_c3d4_chebyshev_grid(fit, c3_range, d4_range, n_c3, n_d4):
     return c3_grid, d4_grid, values
 
 
+def _draw_background_variation_band(
+    ax,
+    x_values,
+    y_values,
+    z_values,
+    z_min,
+    z_max,
+    band,
+    contourf_func,
+    contour_func,
+):
+    if not band or not band.get("enabled", False):
+        return False
+    lower = _finite_float(band.get("required_signal_events_low"))
+    upper = _finite_float(band.get("required_signal_events_high"))
+    if lower is None or upper is None:
+        return False
+    lower, upper = sorted((lower, upper))
+    visible_lower = max(float(z_min), lower)
+    visible_upper = min(float(z_max), upper)
+    color = band.get("color", "#d55e00")
+    alpha = float(band.get("alpha", 0.22))
+    drawn = False
+    if visible_lower < visible_upper:
+        contourf_func(
+            x_values,
+            y_values,
+            z_values,
+            levels=[visible_lower, visible_upper],
+            colors=[color],
+            alpha=alpha,
+        )
+        ax.plot(
+            [],
+            [],
+            color=color,
+            linewidth=8.0,
+            alpha=alpha,
+            label=band.get("label", "background normalization band"),
+        )
+        drawn = True
+    line_targets = []
+    if float(z_min) <= lower <= float(z_max):
+        line_targets.append(lower)
+    if float(z_min) <= upper <= float(z_max) and upper != lower:
+        line_targets.append(upper)
+    if line_targets:
+        contour_func(
+            x_values,
+            y_values,
+            z_values,
+            levels=line_targets,
+            colors=[color],
+            linewidths=1.2,
+            linestyles="--",
+        )
+        drawn = True
+    return drawn
+
+
 def _write_c3d4_grid_plot(
     path,
     c3_grid,
@@ -1891,6 +1952,7 @@ def _write_c3d4_grid_plot(
     contour_label=None,
     selected_label=None,
     contour_legend_label=None,
+    background_variation_band=None,
 ):
     finite = np.isfinite(z_grid)
     if not np.any(finite):
@@ -1906,6 +1968,17 @@ def _write_c3d4_grid_plot(
         levels = np.linspace(z_min, z_max, 24)
         contour = ax.contourf(c3_grid, d4_grid, z_grid, levels=levels, cmap="viridis")
         fig.colorbar(contour, ax=ax, label=colorbar_label)
+        _draw_background_variation_band(
+            ax,
+            c3_grid,
+            d4_grid,
+            z_grid,
+            z_min,
+            z_max,
+            background_variation_band,
+            contourf_func=ax.contourf,
+            contour_func=ax.contour,
+        )
         if cl_target is not None and z_min <= cl_target <= z_max:
             line = ax.contour(c3_grid, d4_grid, z_grid, levels=[cl_target], colors=["crimson"], linewidths=2.0)
             label = contour_label if contour_label is not None else f"S/sqrt(B) = {cl_target:g}"
@@ -1967,6 +2040,7 @@ def _write_c3d4_scatter_or_contour(
     contour_label=None,
     selected_label=None,
     contour_legend_label=None,
+    background_variation_band=None,
 ):
     points = []
     seen = {}
@@ -2009,6 +2083,17 @@ def _write_c3d4_scatter_or_contour(
             contour = ax.tricontourf(c3_values, d4_values, z_values, levels=levels, cmap="viridis")
             fig.colorbar(contour, ax=ax, label=colorbar_label)
             contour_written = True
+            _draw_background_variation_band(
+                ax,
+                c3_values,
+                d4_values,
+                z_values,
+                z_min,
+                z_max,
+                background_variation_band,
+                contourf_func=ax.tricontourf,
+                contour_func=ax.tricontour,
+            )
             if cl_target is not None and z_min <= cl_target <= z_max:
                 line = ax.tricontour(
                     c3_values,
@@ -2441,6 +2526,8 @@ def write_c3d4_limit_scan(
     poisson_confidence_level=0.95,
     poisson_method="cls",
     poisson_observed_events=None,
+    background_variation_band=True,
+    background_variation_factor=4.0,
     systematics=0.0,
     model_file=None,
     metrics_file=None,
@@ -2484,6 +2571,65 @@ def write_c3d4_limit_scan(
     luminosity_label = rf"$L = {luminosity:g}\,\mathrm{{fb}}^{{-1}}$"
     poisson_legend_label = f"Poisson {poisson_method_label} {poisson_confidence_label} CL, {luminosity_label}"
     poisson_selected_label = f"scored S >= S95 ({required_signal_events:.3g})"
+    background_variation = background_variation_scale_factors(
+        background_variation_factor,
+        enabled=background_variation_band,
+    )
+    background_variation_metadata = {
+        "enabled": False,
+        "factor": None,
+        "down_factor": None,
+        "up_factor": None,
+        "background_events_down": None,
+        "background_events_up": None,
+        "required_signal_events_low": None,
+        "required_signal_events_high": None,
+        "label": None,
+    }
+    background_variation_plot_band = None
+    if background_variation is not None:
+        b_down = background_events * background_variation["down_factor"]
+        b_up = background_events * background_variation["up_factor"]
+        poisson_limit_down = _poisson_signal_upper_limit(
+            b_down,
+            confidence_level=poisson_confidence_level,
+            method=poisson_method,
+            observed_events=poisson_observed_events,
+        )
+        poisson_limit_up = _poisson_signal_upper_limit(
+            b_up,
+            confidence_level=poisson_confidence_level,
+            method=poisson_method,
+            observed_events=poisson_observed_events,
+        )
+        required_low, required_high = sorted(
+            (float(poisson_limit_down["signal_events"]), float(poisson_limit_up["signal_events"]))
+        )
+        band_label = (
+            rf"Background $\times[{background_variation['down_factor']:.3g},"
+            rf"{background_variation['up_factor']:.3g}]$"
+        )
+        background_variation_metadata = {
+            "enabled": True,
+            "factor": background_variation["factor"],
+            "down_factor": background_variation["down_factor"],
+            "up_factor": background_variation["up_factor"],
+            "background_events_down": b_down,
+            "background_events_up": b_up,
+            "required_signal_events_low": required_low,
+            "required_signal_events_high": required_high,
+            "poisson_limit_down": poisson_limit_down,
+            "poisson_limit_up": poisson_limit_up,
+            "label": band_label,
+        }
+        background_variation_plot_band = {
+            "enabled": True,
+            "required_signal_events_low": required_low,
+            "required_signal_events_high": required_high,
+            "label": band_label,
+            "color": "#d55e00",
+            "alpha": 0.24,
+        }
     syst_denominator = (
         math.sqrt(background_events + (systematics * background_events) ** 2)
         if background_events > 0.0
@@ -2648,6 +2794,7 @@ def write_c3d4_limit_scan(
                 contour_label=poisson_contour_label,
                 selected_label=poisson_selected_label,
                 contour_legend_label=poisson_legend_label,
+                background_variation_band=background_variation_plot_band,
             )
             sigma_eff_plot_path = _write_c3d4_grid_plot(
                 sigma_eff_plot,
@@ -2752,6 +2899,7 @@ def write_c3d4_limit_scan(
         contour_label=poisson_contour_label,
         contour_legend_label=poisson_legend_label,
         selected_label=f"S >= S95 ({required_signal_events:.3g})",
+        background_variation_band=background_variation_plot_band,
     )
     if fit is None:
         grid_outputs["cl_plot"] = None if cl_points_path is None else str(cl_points_path)
@@ -2799,6 +2947,7 @@ def write_c3d4_limit_scan(
         "gaussian_required_signal_events": _json_safe_float(gaussian_required_signal_events),
         "background_effective_sigma_eff_fb": background_events / float(luminosity) if luminosity > 0.0 else None,
         "systematics": systematics,
+        "background_variation": background_variation_metadata,
         "n_points": len(rows),
         "n_excluded_95cl": sum(1 for row in rows if row["excluded_95cl"]),
         "n_fitted_excluded_95cl": sum(1 for row in rows if row["fitted_excluded_95cl"]),
@@ -2846,6 +2995,18 @@ def write_c3d4_limit_scan(
     print("  observed n =", poisson_limit["observed_events"], f"({poisson_observed_source})")
     print("  B =", background_events, "expected events")
     print("  S95 =", required_signal_events, "expected signal events")
+    if background_variation_metadata.get("enabled"):
+        print(
+            "  background variation band:",
+            f"B x [{background_variation_metadata['down_factor']:.3g}, {background_variation_metadata['up_factor']:.3g}]",
+        )
+        print(
+            "  S95 band =",
+            background_variation_metadata["required_signal_events_low"],
+            "to",
+            background_variation_metadata["required_signal_events_high"],
+            "expected signal events",
+        )
     if luminosity > 0.0:
         print("  sigma*eff target =", required_signal_events / float(luminosity), "fb at L =", luminosity, "fb^-1")
     if gaussian_required_signal_events is not None:

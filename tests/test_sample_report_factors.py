@@ -9,6 +9,7 @@ CODE_DIR = REPO_DIR / "Code"
 sys.path.insert(0, str(CODE_DIR))
 
 from sample_report import (  # noqa: E402
+    background_variation_scale_factors,
     best_significance_threshold,
     background_generation_rate_factor,
     background_tag_rate_factor,
@@ -211,6 +212,20 @@ class SampleReportFactorTests(unittest.TestCase):
         self.assertLessEqual(constrained["threshold"], 0.2)
         self.assertGreaterEqual(constrained["selected_background_entries"], 25)
         self.assertTrue(constrained["mc_stat_requirement_satisfied"])
+
+    def test_background_variation_scale_factors_default_to_factor_four(self):
+        factors = background_variation_scale_factors()
+
+        self.assertTrue(math.isclose(factors["factor"], 4.0))
+        self.assertTrue(math.isclose(factors["down_factor"], 0.25))
+        self.assertTrue(math.isclose(factors["up_factor"], 4.0))
+
+    def test_background_variation_scale_factors_can_be_disabled(self):
+        self.assertIsNone(background_variation_scale_factors(enabled=False))
+
+    def test_background_variation_scale_factors_reject_subunit_factor(self):
+        with self.assertRaises(ValueError):
+            background_variation_scale_factors(0.9)
 
 
 if __name__ == "__main__":

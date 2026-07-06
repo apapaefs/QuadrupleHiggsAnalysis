@@ -70,6 +70,21 @@ def background_tag_rate_factor(metadata, btagging_rate, c_mistag_rate, light_mis
     )
 
 
+def background_variation_scale_factors(factor=4.0, enabled=True):
+    """Multiplicative background-normalization factors for exclusion bands."""
+
+    if not enabled:
+        return None
+    factor = float(factor)
+    if not math.isfinite(factor) or factor < 1.0:
+        raise ValueError("background variation factor must be finite and >= 1")
+    return {
+        "factor": factor,
+        "down_factor": 1.0 / factor,
+        "up_factor": factor,
+    }
+
+
 def cutflow_rates(
     raw_xsec_fb,
     generation_rate_factor,

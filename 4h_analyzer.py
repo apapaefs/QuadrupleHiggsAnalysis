@@ -1872,6 +1872,17 @@ def _run_local_xgboost_cli():
         default=None,
         help="Observed event count for the Poisson target. Defaults to the median expected background count.",
     )
+    parser.add_argument(
+        "--background-variation-factor",
+        type=float,
+        default=4.0,
+        help="Multiplicative background normalization factor used for the shaded c3/d4 exclusion band.",
+    )
+    parser.add_argument(
+        "--no-background-variation-band",
+        action="store_true",
+        help="Disable the shaded c3/d4 exclusion band from varying the total background normalization.",
+    )
     parser.add_argument("--c3d4-signal-xsec-fb", action="append", type=float, help="Cross section in fb for c3/d4 scan files.")
     parser.add_argument("--c3d4-signal-generated-events", action="append", type=int, help="Generated event counts for c3/d4 scan files.")
     parser.add_argument(
@@ -2170,6 +2181,8 @@ def _run_local_xgboost_cli():
             poisson_confidence_level=args.poisson_cl,
             poisson_method=args.poisson_limit_method,
             poisson_observed_events=args.poisson_observed_events,
+            background_variation_band=not args.no_background_variation_band,
+            background_variation_factor=args.background_variation_factor,
             systematics=args.systematics,
             model_file=model_file,
             metrics_file=metrics_file,
