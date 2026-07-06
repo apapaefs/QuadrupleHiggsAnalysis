@@ -2327,6 +2327,7 @@ def _write_hhhh_xsec_limit_overlay_plot(
     plot_n_c3,
     plot_n_d4,
     atlas_overlay_path=None,
+    background_variation_band=None,
 ):
     metadata = {
         "status": "not_run",
@@ -2392,6 +2393,7 @@ def _write_hhhh_xsec_limit_overlay_plot(
 
         finite_limit = np.isfinite(limit_signal_events_grid)
         contour_drawn = False
+        background_variation_band_drawn = False
         limit_min = None
         limit_max = None
         if np.any(finite_limit):
@@ -2403,6 +2405,7 @@ def _write_hhhh_xsec_limit_overlay_plot(
             metadata["limit_signal_events_max"] = limit_max
 
         def draw_overlay(output_path, include_atlas_curve=False):
+            nonlocal background_variation_band_drawn
             fig, ax = plt.subplots(figsize=(8.2, 6.2), constrained_layout=True)
             contour = ax.contourf(
                 c3_grid,
@@ -2444,6 +2447,20 @@ def _write_hhhh_xsec_limit_overlay_plot(
                     linewidth=1.7,
                     label=r"Perturbativity $|\mathrm{Re}\,a_0| = 0.5$",
                 )
+
+            if limit_min is not None and limit_max is not None and limit_min != limit_max:
+                if _draw_background_variation_band(
+                    ax,
+                    limit_c3_grid,
+                    limit_d4_grid,
+                    limit_signal_events_grid,
+                    limit_min,
+                    limit_max,
+                    background_variation_band,
+                    contourf_func=ax.contourf,
+                    contour_func=ax.contour,
+                ):
+                    background_variation_band_drawn = True
 
             if contour_drawn:
                 limit_line = ax.contour(
@@ -2499,6 +2516,8 @@ def _write_hhhh_xsec_limit_overlay_plot(
                 "ratio_min": float(np.nanmin(finite_ratio)) if finite_ratio.size else None,
                 "ratio_max": float(np.nanmax(finite_ratio)) if finite_ratio.size else None,
                 "limit_contour_drawn": contour_drawn,
+                "background_variation_band": background_variation_band,
+                "background_variation_band_drawn": background_variation_band_drawn,
                 "perturbativity_level": DEFAULT_HHHH_PERTURBATIVITY_LEVEL,
                 "perturbativity_min": perturbativity_min,
                 "perturbativity_max": perturbativity_max,
@@ -2823,6 +2842,7 @@ def write_c3d4_limit_scan(
                     plot_n_c3,
                     plot_n_d4,
                     atlas_overlay_path=hhhh_xsec_atlas_overlay_plot,
+                    background_variation_band=background_variation_plot_band,
                 )
                 hhhh_xsec_atlas_overlay_path = hhhh_xsec_overlay_metadata.get("atlas_overlay_output")
                 if hhhh_xsec_overlay_path is None:
