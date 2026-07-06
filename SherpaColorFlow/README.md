@@ -17,6 +17,9 @@ export.
   card following the tiresias setup.
 - `Examples/GluonFusion_GG_3bbbar_ccbar_LHE/Sherpa.yaml`: `gg -> 6b + c cbar`.
 - `Examples/GluonFusion_GG_3bbbar_2j_LHE/Sherpa.yaml`: `gg -> 6b + 2j`.
+- `Examples/GluonFusion_HEFT_GG_H_3bbbar_Hbb_LHE/Sherpa.yaml`: HEFT
+  `gg -> h + 6b`, with `h -> b bbar` forced using the Herwig signal-card
+  BR=1 convention.
 - `Examples/GluonFusion_GG_2bbbar_2ccbar_LHE/Sherpa.yaml`: `gg -> 4b + 4c`.
 - `Examples/GluonFusion_GG_2bbbar_ccbar_2j_LHE/Sherpa.yaml`: `gg -> 4b + 2c + 2j`.
 - `Examples/GluonFusion_GG_2bbbar_4j_LHE/Sherpa.yaml`: `gg -> 4b + 4j`.
@@ -341,6 +344,7 @@ Available process keys:
 | `gg8b` | `g g -> b bbar b bbar b bbar b bbar` | `gg_4bbbar` |
 | `gg6bcc` | `g g -> b bbar b bbar b bbar c cbar` | `gg_3bbbar_ccbar` |
 | `gg6b2j` | `g g -> b bbar b bbar b bbar j j` | `gg_3bbbar_2j` |
+| `gg_h6b_heft` | HEFT `g g -> h + 6b`, `h -> b bbar` forced | `gg_heft_h_3bbbar_hbb` |
 | `gg4b4c` | `g g -> b bbar b bbar c cbar c cbar` | `gg_2bbbar_2ccbar` |
 | `gg4b2c2j` | `g g -> b bbar b bbar c cbar j j` | `gg_2bbbar_ccbar_2j` |
 | `gg4b4j` | `g g -> b bbar b bbar j j j j` | `gg_2bbbar_4j` |
