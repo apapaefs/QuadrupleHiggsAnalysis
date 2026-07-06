@@ -62,9 +62,33 @@ class HHHHXsecOverlayBandWiringTests(unittest.TestCase):
 
     def test_hhhh_xsec_overlay_uses_requested_atlas_and_our_limit_labels(self):
         module_text = MODULE_PATH.read_text()
-        self.assertIn(r"$gg\rightarrow hhh \rightarrow 6 b$, ATL-PHYS-PUB-2025-003 (no syst.,", module_text)
-        self.assertIn(r"Our limit $gg \rightarrow hhhh \rightarrow 8b$, Poisson", module_text)
+        self.assertIn(r"$gg\rightarrow hhh \rightarrow 6 b$, ATL-PHYS-PUB-2025-003 (no syst.)", module_text)
+        self.assertIn(r"$gg \rightarrow hhhh \rightarrow 8b$, Poisson", module_text)
+        self.assertNotIn(r"Our limit", module_text)
+        self.assertNotIn(r"\%", module_text)
         self.assertIn("poisson_confidence_percent_label", module_text)
+
+    def test_hhhh_xsec_overlay_title_carries_luminosity_without_ratio_text(self):
+        module_text = MODULE_PATH.read_text()
+        self.assertIn(r"$gg \to hhhh$ at 14 TeV, ", module_text)
+        self.assertIn("_luminosity_legend_label(luminosity)", module_text)
+        self.assertNotIn(r"$gg \to hhhh$ at 14 TeV: $\sigma(c_3,d_4)/\sigma(0,0)$", module_text)
+
+    def test_c3d4_plot_defaults_use_requested_viewport(self):
+        module_text = MODULE_PATH.read_text()
+        self.assertIn("plot_c3_range=(-20.0, 20.0)", module_text)
+        self.assertIn("plot_d4_range=(-300.0, 300.0)", module_text)
+        self.assertIn('default=-20.0, help="Minimum c3', (REPO_DIR / "4h_analyzer.py").read_text())
+        self.assertIn('default=20.0, help="Maximum c3', (REPO_DIR / "4h_analyzer.py").read_text())
+        self.assertIn('default=-300.0, help="Minimum d4', (REPO_DIR / "4h_analyzer.py").read_text())
+        self.assertIn('default=300.0, help="Maximum d4', (REPO_DIR / "4h_analyzer.py").read_text())
+
+    def test_hhhh_xsec_overlay_writes_atlas_variant_without_ratio_contours(self):
+        module_text = MODULE_PATH.read_text()
+        self.assertIn("c3d4_hhhh_xsec_with_95cl_atl_phys_pub_2025_003_no_ratio_contours.png", module_text)
+        self.assertIn("atlas_overlay_no_ratio_contours_path", module_text)
+        self.assertIn("draw_ratio_contours=False", module_text)
+        self.assertIn("hhhh_xsec_atlas_overlay_no_ratio_contours_plot", module_text)
 
     def test_background_variation_band_style_uses_stronger_fill_and_thinner_boundaries(self):
         module_text = MODULE_PATH.read_text()

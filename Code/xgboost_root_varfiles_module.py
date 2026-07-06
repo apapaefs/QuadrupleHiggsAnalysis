@@ -1608,7 +1608,7 @@ DEFAULT_HHHH_PERTURBATIVITY_MH = 125.0
 DEFAULT_HHHH_PERTURBATIVITY_V = 246.0
 DEFAULT_HHHH_PERTURBATIVITY_LEVEL = 0.5
 DEFAULT_HHHH_PERTURBATIVITY_SQRTS = np.arange(200.0, 5000.0, 10.0)
-ATL_PHYS_PUB_2025_003_LABEL_PREFIX = r"$gg\rightarrow hhh \rightarrow 6 b$, ATL-PHYS-PUB-2025-003 (no syst.,"
+ATL_PHYS_PUB_2025_003_LABEL = r"$gg\rightarrow hhh \rightarrow 6 b$, ATL-PHYS-PUB-2025-003 (no syst.)"
 ATL_PHYS_PUB_2025_003_SOURCE_URL = "https://cds.cern.ch/record/2924772/files/ATL-PHYS-PUB-2025-003.pdf"
 ATL_PHYS_PUB_2025_003_FIGURE = "Figure 7 black no-systematics curve"
 ATL_PHYS_PUB_2025_003_NO_SYST_KAPPA34 = np.array(
@@ -1779,10 +1779,6 @@ ATL_PHYS_PUB_2025_003_NO_SYST_KAPPA34 = np.array(
 
 def _luminosity_legend_label(luminosity):
     return rf"$L = {float(luminosity):g}\,\mathrm{{fb}}^{{-1}}$"
-
-
-def _atlas_phys_pub_2025_003_label(luminosity):
-    return f"{ATL_PHYS_PUB_2025_003_LABEL_PREFIX} {_luminosity_legend_label(luminosity)})"
 
 
 def _scale_to_chebyshev(value, value_range):
@@ -2297,18 +2293,17 @@ def _atlas_phys_pub_2025_003_c3d4_curve():
     return curve
 
 
-def _plot_atlas_phys_pub_2025_003_curve(ax, luminosity=3000.0):
+def _plot_atlas_phys_pub_2025_003_curve(ax):
     curve = _atlas_phys_pub_2025_003_c3d4_curve()
-    label = _atlas_phys_pub_2025_003_label(luminosity)
     ax.plot(
         curve[:, 0],
         curve[:, 1],
         color="blue",
         linewidth=2.0,
-        label=label,
+        label=ATL_PHYS_PUB_2025_003_LABEL,
     )
     return {
-        "label": label,
+        "label": ATL_PHYS_PUB_2025_003_LABEL,
         "source": ATL_PHYS_PUB_2025_003_SOURCE_URL,
         "figure": ATL_PHYS_PUB_2025_003_FIGURE,
         "coordinate_system": "digitized in kappa3,kappa4 and plotted as c3=kappa3-1, d4=kappa4-1",
@@ -2337,6 +2332,7 @@ def _write_hhhh_xsec_limit_overlay_plot(
     plot_n_c3,
     plot_n_d4,
     atlas_overlay_path=None,
+    atlas_overlay_no_ratio_contours_path=None,
     background_variation_band=None,
     luminosity=3000.0,
 ):
@@ -2415,7 +2411,7 @@ def _write_hhhh_xsec_limit_overlay_plot(
             metadata["limit_signal_events_min"] = limit_min
             metadata["limit_signal_events_max"] = limit_max
 
-        def draw_overlay(output_path, include_atlas_curve=False):
+        def draw_overlay(output_path, include_atlas_curve=False, draw_ratio_contours=True):
             nonlocal background_variation_band_drawn
             fig, ax = plt.subplots(figsize=(8.2, 6.2), constrained_layout=True)
             contour = ax.contourf(
@@ -2429,7 +2425,7 @@ def _write_hhhh_xsec_limit_overlay_plot(
             )
             if np.any(np.isfinite(ratio) & (ratio <= 0.0)):
                 ax.contourf(c3_grid, d4_grid, ratio <= 0.0, levels=[0.5, 1.5], colors=["0.75"], alpha=0.8)
-            if line_levels:
+            if draw_ratio_contours and line_levels:
                 lines = ax.contour(
                     c3_grid,
                     d4_grid,
@@ -2489,7 +2485,7 @@ def _write_hhhh_xsec_limit_overlay_plot(
 
             atlas_curve_metadata = None
             if include_atlas_curve:
-                atlas_curve_metadata = _plot_atlas_phys_pub_2025_003_curve(ax, luminosity=luminosity)
+                atlas_curve_metadata = _plot_atlas_phys_pub_2025_003_curve(ax)
 
             handles, labels = ax.get_legend_handles_labels()
             if handles:
@@ -2500,7 +2496,7 @@ def _write_hhhh_xsec_limit_overlay_plot(
             ax.set_ylim(plot_d4_range)
             ax.set_xlabel(r"$c_3$", fontsize=18)
             ax.set_ylabel(r"$d_4$", fontsize=18)
-            ax.set_title(r"$gg \to hhhh$ at 14 TeV: $\sigma(c_3,d_4)/\sigma(0,0)$", fontsize=20)
+            ax.set_title(r"$gg \to hhhh$ at 14 TeV, " + _luminosity_legend_label(luminosity), fontsize=20)
             ax.tick_params(axis="both", labelsize=15)
 
             cbar = fig.colorbar(contour, ax=ax)
@@ -2516,6 +2512,13 @@ def _write_hhhh_xsec_limit_overlay_plot(
         atlas_curve_metadata = None
         if atlas_overlay_path is not None:
             atlas_curve_metadata = draw_overlay(atlas_overlay_path, include_atlas_curve=True)
+        atlas_no_ratio_curve_metadata = None
+        if atlas_overlay_no_ratio_contours_path is not None:
+            atlas_no_ratio_curve_metadata = draw_overlay(
+                atlas_overlay_no_ratio_contours_path,
+                include_atlas_curve=True,
+                draw_ratio_contours=False,
+            )
 
         finite_ratio = ratio[np.isfinite(ratio)]
         metadata.update(
@@ -2539,6 +2542,10 @@ def _write_hhhh_xsec_limit_overlay_plot(
             metadata["atlas_overlay_output"] = str(atlas_overlay_path)
             metadata["atlas_overlay_output_pdf"] = str(_plot_pdf_path(atlas_overlay_path))
             metadata["atlas_reference_curve"] = atlas_curve_metadata
+        if atlas_overlay_no_ratio_contours_path is not None:
+            metadata["atlas_overlay_no_ratio_contours_output"] = str(atlas_overlay_no_ratio_contours_path)
+            metadata["atlas_overlay_no_ratio_contours_output_pdf"] = str(_plot_pdf_path(atlas_overlay_no_ratio_contours_path))
+            metadata["atlas_reference_curve_no_ratio_contours"] = atlas_no_ratio_curve_metadata
         return path, metadata
     except Exception as error:
         metadata["status"] = "skipped"
@@ -2565,8 +2572,8 @@ def write_c3d4_limit_scan(
     fit_terms=None,
     fit_k3_range=(-29.0, 31.0),
     fit_k4_range=(-699.0, 701.0),
-    plot_c3_range=(-30.0, 30.0),
-    plot_d4_range=(-700.0, 700.0),
+    plot_c3_range=(-20.0, 20.0),
+    plot_d4_range=(-300.0, 300.0),
     plot_n_c3=301,
     plot_n_d4=301,
     xsec_overlay=True,
@@ -2597,12 +2604,11 @@ def write_c3d4_limit_scan(
     poisson_observed_source = "median_background" if poisson_observed_events is None else "user_specified"
     poisson_method_label = "CLs" if str(poisson_limit["method"]).lower() == "cls" else "classical"
     poisson_confidence_label = f"{100.0 * poisson_confidence_level:g}%"
-    poisson_confidence_percent_label = rf"{100.0 * poisson_confidence_level:g}\%"
+    poisson_confidence_percent_label = f"{100.0 * poisson_confidence_level:g}%"
     poisson_contour_label = ""
-    luminosity_label = _luminosity_legend_label(luminosity)
     poisson_legend_label = (
-        rf"Our limit $gg \rightarrow hhhh \rightarrow 8b$, Poisson "
-        f"{poisson_method_label} {poisson_confidence_percent_label}, {luminosity_label}"
+        rf"$gg \rightarrow hhhh \rightarrow 8b$, Poisson "
+        f"{poisson_method_label} {poisson_confidence_percent_label}"
     )
     poisson_selected_label = f"scored S >= S95 ({required_signal_events:.3g})"
     background_variation = background_variation_scale_factors(
@@ -2775,6 +2781,9 @@ def write_c3d4_limit_scan(
     sigma_eff_plot = output_dir / "c3d4_sigma_eff_fit.png"
     hhhh_xsec_overlay_plot = output_dir / "c3d4_hhhh_xsec_with_95cl.png"
     hhhh_xsec_atlas_overlay_plot = output_dir / "c3d4_hhhh_xsec_with_95cl_atl_phys_pub_2025_003.png"
+    hhhh_xsec_atlas_overlay_no_ratio_contours_plot = (
+        output_dir / "c3d4_hhhh_xsec_with_95cl_atl_phys_pub_2025_003_no_ratio_contours.png"
+    )
 
     fit = None
     fit_metadata = {"status": "disabled"}
@@ -2840,6 +2849,7 @@ def write_c3d4_limit_scan(
             )
             hhhh_xsec_overlay_path = None
             hhhh_xsec_atlas_overlay_path = None
+            hhhh_xsec_atlas_overlay_no_ratio_contours_path = None
             if xsec_overlay:
                 hhhh_xsec_overlay_path, hhhh_xsec_overlay_metadata = _write_hhhh_xsec_limit_overlay_plot(
                     hhhh_xsec_overlay_plot,
@@ -2858,10 +2868,14 @@ def write_c3d4_limit_scan(
                     plot_n_c3,
                     plot_n_d4,
                     atlas_overlay_path=hhhh_xsec_atlas_overlay_plot,
+                    atlas_overlay_no_ratio_contours_path=hhhh_xsec_atlas_overlay_no_ratio_contours_plot,
                     background_variation_band=background_variation_plot_band,
                     luminosity=luminosity,
                 )
                 hhhh_xsec_atlas_overlay_path = hhhh_xsec_overlay_metadata.get("atlas_overlay_output")
+                hhhh_xsec_atlas_overlay_no_ratio_contours_path = hhhh_xsec_overlay_metadata.get(
+                    "atlas_overlay_no_ratio_contours_output"
+                )
                 if hhhh_xsec_overlay_path is None:
                     print("hhhh cross-section overlay skipped:", hhhh_xsec_overlay_metadata.get("reason", "unknown reason"))
             grid_outputs = {
@@ -2869,6 +2883,7 @@ def write_c3d4_limit_scan(
                 "sigma_eff_plot": None if sigma_eff_plot_path is None else str(sigma_eff_plot_path),
                 "hhhh_xsec_overlay_plot": None if hhhh_xsec_overlay_path is None else str(hhhh_xsec_overlay_path),
                 "hhhh_xsec_atlas_overlay_plot": hhhh_xsec_atlas_overlay_path,
+                "hhhh_xsec_atlas_overlay_no_ratio_contours_plot": hhhh_xsec_atlas_overlay_no_ratio_contours_path,
             }
         else:
             print("Chebyshev fit skipped:", fit_metadata.get("reason", "unknown reason"))
@@ -2964,6 +2979,12 @@ def write_c3d4_limit_scan(
         "hhhh_xsec_overlay_plot_pdf": _plot_pdf_output(grid_outputs.get("hhhh_xsec_overlay_plot")),
         "hhhh_xsec_atlas_overlay_plot": grid_outputs.get("hhhh_xsec_atlas_overlay_plot"),
         "hhhh_xsec_atlas_overlay_plot_pdf": _plot_pdf_output(grid_outputs.get("hhhh_xsec_atlas_overlay_plot")),
+        "hhhh_xsec_atlas_overlay_no_ratio_contours_plot": grid_outputs.get(
+            "hhhh_xsec_atlas_overlay_no_ratio_contours_plot"
+        ),
+        "hhhh_xsec_atlas_overlay_no_ratio_contours_plot_pdf": _plot_pdf_output(
+            grid_outputs.get("hhhh_xsec_atlas_overlay_no_ratio_contours_plot")
+        ),
         "efficiency_plot": None if efficiency_plot_path is None else str(efficiency_plot_path),
         "efficiency_plot_pdf": _plot_pdf_output(efficiency_plot_path),
     }
@@ -3023,6 +3044,10 @@ def write_c3d4_limit_scan(
         print("Wrote", outputs["hhhh_xsec_atlas_overlay_plot"])
     if outputs["hhhh_xsec_atlas_overlay_plot_pdf"] is not None:
         print("Wrote", outputs["hhhh_xsec_atlas_overlay_plot_pdf"])
+    if outputs["hhhh_xsec_atlas_overlay_no_ratio_contours_plot"] is not None:
+        print("Wrote", outputs["hhhh_xsec_atlas_overlay_no_ratio_contours_plot"])
+    if outputs["hhhh_xsec_atlas_overlay_no_ratio_contours_plot_pdf"] is not None:
+        print("Wrote", outputs["hhhh_xsec_atlas_overlay_no_ratio_contours_plot_pdf"])
     if efficiency_plot_path is not None:
         print("Wrote", efficiency_plot_path)
     if outputs["efficiency_plot_pdf"] is not None:
