@@ -51,7 +51,7 @@ HARD_DECAYS:
   Channels:
     25,5,-5: {Status: 2}
   Apply_Branching_Ratios: false
-  Use_HO_SM_Widths: true
+  Use_HO_SM_Widths: false
 
 ME_GENERATORS: Comix
 SCALES: VAR{0.25*(H_T2+sqr(125.0))}{0.25*(H_T2+sqr(125.0))}
