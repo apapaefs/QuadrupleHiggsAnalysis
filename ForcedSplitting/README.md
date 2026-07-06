@@ -221,3 +221,55 @@ while read card; do Herwig read "$card"; Herwig run "${card%.in}.run"; done < st
 For final production with split-filter corrections, repeat the preparation with
 a nonzero `--probe-trials` value.  In that mode the pipeline writes Stage-2
 cards that read the `.weighted.lhe` files.
+
+## HEFT hhh+bb 8b Validation
+
+The `validation_hhhbb` helper compares `gg_hhhg_heft` plus one forced
+final-state `g -> b,bbar` split with the direct `gg_hhhbb_heft` HEFT sample.
+Both branches are then passed through the validation-only LHEWriter Higgs
+decay card, forcing `h0 -> b,bbar` with BR set to one, and the final LHE-level
+8b samples are plotted with the sample-report webpage style.
+
+Run the baseline validation with explicit MG5 LHE paths:
+
+```sh
+cd /mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis
+
+SPLIT_LHE=/home/apapaefs/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15/gg_hhhg_heft/Events/run_02/unweighted_events.lhe.gz
+DIRECT_LHE=/home/apapaefs/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15/gg_hhhbb_heft/Events/run_01/unweighted_events.lhe.gz
+
+python3 -m ForcedSplitting.validation_hhhbb run \
+  --split-lhe "$SPLIT_LHE" \
+  --direct-lhe "$DIRECT_LHE" \
+  --workdir HerwigForcedSplitting/hhhbb_heft_validation_baseline \
+  --events 10000 \
+  --run-name hhhbb_heft_validation \
+  --overwrite
+```
+
+For the split-filter weighted version, add probe trials:
+
+```sh
+python3 -m ForcedSplitting.validation_hhhbb run \
+  --split-lhe "$SPLIT_LHE" \
+  --direct-lhe "$DIRECT_LHE" \
+  --workdir HerwigForcedSplitting/hhhbb_heft_validation_baseline_weighted \
+  --events 10000 \
+  --probe-trials 10000 \
+  --run-name hhhbb_heft_validation \
+  --overwrite \
+  --allow-zero-probe-successes
+```
+
+The report lands in `WORKDIR/report/index.html`, with
+`validation_table.txt` and `report_metadata.json` beside it.  Regenerate only
+the webpage from existing final 8b LHE files with:
+
+```sh
+python3 -m ForcedSplitting.validation_hhhbb compare \
+  --split-lhe HerwigForcedSplitting/hhhbb_heft_validation_baseline/hhhbb_heft_validation_split_final8b.lhe \
+  --direct-lhe HerwigForcedSplitting/hhhbb_heft_validation_baseline/hhhbb_heft_validation_direct_final8b.lhe \
+  --split-source-lhe HerwigForcedSplitting/hhhbb_heft_validation_baseline/hhhbb_heft_validation_split_stage1.lhe \
+  --direct-source-lhe "$DIRECT_LHE" \
+  --output-dir HerwigForcedSplitting/hhhbb_heft_validation_baseline/report
+```
