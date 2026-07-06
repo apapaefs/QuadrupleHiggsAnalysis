@@ -1337,11 +1337,19 @@ def _signal_final_rate_factor_for_cli(args):
     return _signal_generation_rate_factor_for_cli(args) * _signal_tag_rate_factor_for_cli(args)
 
 
-def _background_rate_factor_from_metadata(metadata, btagging_rate, c_mistag_rate, light_mistag_rate, k_factor):
+def _background_rate_factor_from_metadata(
+    metadata,
+    btagging_rate,
+    c_mistag_rate,
+    light_mistag_rate,
+    k_factor,
+    hbb_branching_ratio=DEFAULT_HBB_BRANCHING_RATIO,
+):
     generation_factor = background_generation_rate_factor(
         metadata,
         k_factor,
         DEFAULT_ZBB_BRANCHING_RATIO,
+        hbb_branching_ratio,
     )
     tag_factor = background_tag_rate_factor(
         metadata,
@@ -1357,6 +1365,7 @@ def _background_generation_rate_factor_from_metadata(metadata, args):
         metadata,
         args.background_k_factor,
         args.zbb_branching_ratio,
+        args.hbb_branching_ratio,
     )
 
 

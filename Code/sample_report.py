@@ -50,12 +50,24 @@ def background_needs_zbb_branching(metadata):
     return metadata_mentions_z(metadata) and not metadata_has_zbb_decay(metadata)
 
 
-def background_generation_rate_factor(metadata, k_factor, zbb_branching_ratio):
+def background_needs_forced_hbb_branching(metadata):
+    text = _metadata_text(metadata)
+    compact = re.sub(r"[^a-z0-9]+", "", text)
+    if "ggh6bheft" in compact or "gghefth3bbbarhbb" in compact:
+        return True
+    if re.search(r"\bheft\b.*\bh\b\s*(?:\+|plus)\s*6b\b", text):
+        return True
+    return bool(re.search(r"21\s+21\s*->\s*25\s+5\s+-5\s+5\s+-5\s+5\s+-5", text))
+
+
+def background_generation_rate_factor(metadata, k_factor, zbb_branching_ratio, hbb_branching_ratio=1.0):
     """Rate factor before tag/mistag efficiencies for a background sample."""
 
     factor = float(k_factor)
     if background_needs_zbb_branching(metadata):
         factor *= float(zbb_branching_ratio)
+    if background_needs_forced_hbb_branching(metadata):
+        factor *= float(hbb_branching_ratio)
     return factor
 
 

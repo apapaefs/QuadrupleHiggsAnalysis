@@ -69,6 +69,24 @@ class SampleReportFactorTests(unittest.TestCase):
             )
         )
 
+    def test_heft_h6b_generation_factor_multiplies_hbb_once(self):
+        metadata = {
+            "process_id": "gg_h6b_heft",
+            "description": "HEFT gg -> h + 6b, h -> b bbar forced with BR=1 in Sherpa",
+            "local_lhe": "gg_heft_h_3bbbar_hbb_1k.lhe",
+        }
+        self.assertTrue(
+            math.isclose(
+                background_generation_rate_factor(
+                    metadata,
+                    k_factor=2.0,
+                    zbb_branching_ratio=0.150998,
+                    hbb_branching_ratio=0.5824,
+                ),
+                2.0 * 0.5824,
+            )
+        )
+
     def test_background_tag_factor_uses_flavor_specific_tags(self):
         metadata = {"b_quarks": 4, "c_quarks": 2, "light_jets": 2}
         self.assertTrue(
