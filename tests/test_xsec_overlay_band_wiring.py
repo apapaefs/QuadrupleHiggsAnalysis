@@ -55,6 +55,13 @@ class HHHHXsecOverlayBandWiringTests(unittest.TestCase):
         keyword_names = {keyword.arg for call in overlay_calls for keyword in call.keywords}
         self.assertIn("background_variation_band", keyword_names)
 
+    def test_limit_scan_accepts_hbb_branching_ratio_keyword_from_cli(self):
+        tree = _module_tree()
+        scan_writer = _function_def(tree, "write_c3d4_limit_scan")
+        argument_names = [arg.arg for arg in scan_writer.args.args]
+
+        self.assertIn("hbb_branching_ratio", argument_names)
+
     def test_hhhh_xsec_overlay_uses_requested_perturbative_unitarity_label(self):
         module_text = MODULE_PATH.read_text()
         self.assertIn(r"Perturbative unitarity, $hh \rightarrow hh$", module_text)

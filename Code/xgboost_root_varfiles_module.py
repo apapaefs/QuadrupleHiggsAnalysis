@@ -3059,12 +3059,17 @@ def write_c3d4_limit_scan(
     xsec_overlay=True,
     xsec_source_dir=DEFAULT_HHHH_XSEC_SOURCE_DIR,
     hhh_xsec_source_dir=DEFAULT_HHH_XSEC_SOURCE_DIR,
+    hbb_branching_ratio=None,
     rate_metadata=None,
 ):
     """Write c3/d4 efficiencies, sigma*eff fits, and 95% CL contour plots."""
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    scan_rate_metadata = dict(rate_metadata or {})
+    if hbb_branching_ratio is not None:
+        scan_rate_metadata.setdefault("hbb_branching_ratio", float(hbb_branching_ratio))
 
     background_events = float(background_events)
     cl_target = float(cl_target)
@@ -3537,7 +3542,7 @@ def write_c3d4_limit_scan(
         "n_points": len(rows),
         "n_excluded_95cl": sum(1 for row in rows if row["excluded_95cl"]),
         "n_fitted_excluded_95cl": sum(1 for row in rows if row["fitted_excluded_95cl"]),
-        "rate_metadata": rate_metadata or {},
+        "rate_metadata": scan_rate_metadata,
         "chebyshev_fit": fit_metadata,
         "hhhh_xsec_overlay": hhhh_xsec_overlay_metadata,
         "hhhh_xsec_atlas_overlay_no_ratio_contours": hhhh_xsec_atlas_overlay_no_ratio_contours_metadata,
