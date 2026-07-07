@@ -6,7 +6,7 @@ import hashlib
 import re
 from pathlib import Path
 
-from .herwig_cards import PROCESS_CONFIGS, stage1_lhewriter_card, stage2_hwsim_card
+from .herwig_cards import DEFAULT_HERWIG_PDF_NAME, PROCESS_CONFIGS, stage1_lhewriter_card, stage2_hwsim_card
 
 
 _NUMBER_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
@@ -106,6 +106,7 @@ def prepare_forced_splitting_inputs(
     output_location="events/",
     run_prefix="FS",
     probe_trials=0,
+    pdf_name=DEFAULT_HERWIG_PDF_NAME,
     reference_grid_manifest=None,
     overwrite=False,
 ):
@@ -164,6 +165,7 @@ def prepare_forced_splitting_inputs(
             "stage2_output_root": str(stage2_root),
             "events": int(events),
             "probe_trials": int(probe_trials),
+            "pdf_name": str(pdf_name),
             "seed_stage1": seed_stage1,
             "seed_stage2": seed_stage2,
             "reason": "",
@@ -201,6 +203,7 @@ def prepare_forced_splitting_inputs(
             seed=seed_stage1,
             probe_trials=probe_trials,
             correction_file=stage1_correction,
+            pdf_name=pdf_name,
         )
         stage2_text = stage2_hwsim_card(
             input_lhe=stage2_lhe_file,
@@ -208,6 +211,7 @@ def prepare_forced_splitting_inputs(
             events=events,
             run_name=stage2_run_name,
             seed=seed_stage2,
+            pdf_name=pdf_name,
         )
         stage1_input.write_text(stage1_text)
         stage2_input.write_text(stage2_text)
@@ -239,6 +243,7 @@ def prepare_forced_splitting_inputs(
         "stage2_output_root",
         "events",
         "probe_trials",
+        "pdf_name",
         "seed_stage1",
         "seed_stage2",
         "reason",
@@ -266,6 +271,7 @@ def main(argv=None):
     parser.add_argument("--output-location", default="events/")
     parser.add_argument("--run-prefix", default="FS")
     parser.add_argument("--probe-trials", type=int, default=0)
+    parser.add_argument("--pdf-name", default=DEFAULT_HERWIG_PDF_NAME)
     parser.add_argument("--reference-grid-manifest", type=Path)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args(argv)
@@ -279,6 +285,7 @@ def main(argv=None):
         output_location=args.output_location,
         run_prefix=args.run_prefix,
         probe_trials=args.probe_trials,
+        pdf_name=args.pdf_name,
         reference_grid_manifest=args.reference_grid_manifest,
         overwrite=args.overwrite,
     )

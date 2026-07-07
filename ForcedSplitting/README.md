@@ -234,6 +234,7 @@ Run the baseline validation with explicit MG5 LHE paths:
 
 ```sh
 cd /mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis
+module load herwig/730
 
 SPLIT_LHE=/home/apapaefs/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15/gg_hhhg_heft/Events/run_02/unweighted_events.lhe.gz
 DIRECT_LHE=/home/apapaefs/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15/gg_hhhbb_heft/Events/run_01/unweighted_events.lhe.gz
@@ -260,6 +261,10 @@ python3 -m ForcedSplitting.validation_hhhbb run \
   --overwrite \
   --allow-zero-probe-successes
 ```
+
+If the default `NNPDF23_nlo_as_0119` LHAPDF set is not available on a
+machine, either install it with LHAPDF or pass a local set explicitly, for
+example `--pdf-name CT10nlo_as_0119`.
 
 The report lands in `WORKDIR/report/index.html`, with
 `validation_table.txt` and `report_metadata.json` beside it.  Regenerate only

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 
-from .herwig_cards import PROCESS_CONFIGS, stage1_lhewriter_card, stage2_hwsim_card
+from .herwig_cards import DEFAULT_HERWIG_PDF_NAME, PROCESS_CONFIGS, stage1_lhewriter_card, stage2_hwsim_card
 from .lhe_validation import normalize_lhe_file_process_ids
 from .lhe_weights import apply_weights, verify_weighted_lhe
 
@@ -25,6 +25,7 @@ class ChainConfig(object):
     output_location: str = "events"
     seed_stage1: int = 31122002
     seed_stage2: int = 89968250
+    pdf_name: str = DEFAULT_HERWIG_PDF_NAME
     input_xsec_error: float = None
     allow_zero_probe_successes: bool = False
     allow_input_oversampling: bool = False
@@ -125,6 +126,7 @@ def run_chain(config, runner=None):
         seed=config.seed_stage1,
         probe_trials=config.probe_trials,
         correction_file=correction_file.name,
+        pdf_name=config.pdf_name,
     )
     _write_text(stage1_card, stage1_text, config.overwrite)
 
@@ -170,6 +172,7 @@ def run_chain(config, runner=None):
         events=stage2_events,
         run_name=stage2_name,
         seed=config.seed_stage2,
+        pdf_name=config.pdf_name,
     )
     _write_text(stage2_card, stage2_text, config.overwrite)
 
@@ -188,6 +191,7 @@ def run_chain(config, runner=None):
         "events": int(config.events),
         "stage2_events": int(stage2_events),
         "probe_trials": int(config.probe_trials),
+        "pdf_name": str(config.pdf_name),
         "run_name": run_name,
         "stage1_card": stage1_card.name,
         "stage1_run": stage1_run.name,
@@ -224,6 +228,7 @@ def main(argv=None):
     parser.add_argument("--output-location", default="events")
     parser.add_argument("--seed-stage1", type=int, default=31122002)
     parser.add_argument("--seed-stage2", type=int, default=89968250)
+    parser.add_argument("--pdf-name", default=DEFAULT_HERWIG_PDF_NAME)
     parser.add_argument("--input-xsec-error", type=float)
     parser.add_argument("--allow-zero-probe-successes", action="store_true")
     parser.add_argument(
@@ -250,6 +255,7 @@ def main(argv=None):
             output_location=args.output_location,
             seed_stage1=args.seed_stage1,
             seed_stage2=args.seed_stage2,
+            pdf_name=args.pdf_name,
             input_xsec_error=args.input_xsec_error,
             allow_zero_probe_successes=args.allow_zero_probe_successes,
             allow_input_oversampling=args.allow_input_oversampling,

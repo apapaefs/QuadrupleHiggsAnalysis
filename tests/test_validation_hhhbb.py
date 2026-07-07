@@ -244,6 +244,7 @@ class HHHBBValidationTests(unittest.TestCase):
                     workdir=tmpdir / "validation",
                     events=1,
                     probe_trials=11,
+                    pdf_name="CT10nlo_as_0119",
                     dry_run=True,
                 )
             )
@@ -258,6 +259,9 @@ class HHHBBValidationTests(unittest.TestCase):
             self.assertIn("gg -> hhh + g with one forced final-state g -> b bbar split", stage1_card.read_text())
             self.assertIn("set ForceSplitVeto:MinB 2", stage1_card.read_text())
             self.assertIn("set ForceSplitVeto:ProbeTrials 11", stage1_card.read_text())
+            self.assertIn("set /Herwig/Partons/thePDFset:PDFName CT10nlo_as_0119", stage1_card.read_text())
+            self.assertIn("set /Herwig/Partons/thePDFset:PDFName CT10nlo_as_0119", split_decay_card.read_text())
+            self.assertIn("set /Herwig/Partons/thePDFset:PDFName CT10nlo_as_0119", direct_decay_card.read_text())
             self.assertIn("decaymode h0->b,bbar; 1.0 1 /Herwig/Decays/Hff", split_decay_card.read_text())
             self.assertIn("decaymode h0->b,bbar; 1.0 1 /Herwig/Decays/Hff", direct_decay_card.read_text())
             self.assertEqual(len(summary["commands"]), 6)

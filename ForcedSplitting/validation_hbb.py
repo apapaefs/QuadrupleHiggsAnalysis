@@ -12,7 +12,7 @@ from itertools import combinations, permutations
 from pathlib import Path
 import subprocess
 
-from .herwig_cards import PROCESS_CONFIGS, higgs_decay_lhewriter_card, stage1_lhewriter_card
+from .herwig_cards import DEFAULT_HERWIG_PDF_NAME, PROCESS_CONFIGS, higgs_decay_lhewriter_card, stage1_lhewriter_card
 from .lhe_validation import normalize_lhe_file_process_ids, parse_lhe_events
 from .lhe_weights import apply_weights, verify_weighted_lhe
 from .run_chain import count_lhe_events
@@ -180,6 +180,7 @@ class ValidationRunConfig(object):
     seed_stage1: int = 31122002
     seed_split_decay: int = 44071981
     seed_direct_decay: int = 44071982
+    pdf_name: str = DEFAULT_HERWIG_PDF_NAME
     input_xsec_error: float = None
     allow_zero_probe_successes: bool = False
     allow_input_oversampling: bool = False
@@ -1033,6 +1034,7 @@ def run_validation_chain(config, runner=None):
         probe_trials=config.probe_trials,
         correction_file=split_correction_file.name,
         extra_shower_settings=config.stage1_extra_settings,
+        pdf_name=config.pdf_name,
     )
     _write_text(split_stage1_card, split_stage1_text, config.overwrite)
 
@@ -1074,12 +1076,14 @@ def run_validation_chain(config, runner=None):
         output_prefix=split_decay_name,
         events=config.events,
         seed=config.seed_split_decay,
+        pdf_name=config.pdf_name,
     )
     direct_decay_text = higgs_decay_lhewriter_card(
         input_lhe=direct_input_lhe,
         output_prefix=direct_decay_name,
         events=config.events,
         seed=config.seed_direct_decay,
+        pdf_name=config.pdf_name,
     )
     _write_text(split_decay_card, split_decay_text, config.overwrite)
     _write_text(direct_decay_card, direct_decay_text, config.overwrite)
@@ -1112,6 +1116,7 @@ def run_validation_chain(config, runner=None):
         "direct_input_event_count": int(direct_input_event_count),
         "events": int(config.events),
         "probe_trials": int(config.probe_trials),
+        "pdf_name": str(config.pdf_name),
         "variation_label": str(config.variation_label),
         "stage1_extra_settings": list(config.stage1_extra_settings or []),
         "workdir": str(workdir),
@@ -1253,6 +1258,7 @@ def run_validation_scan(
     seed_stage1=31122002,
     seed_split_decay=44071981,
     seed_direct_decay=44071982,
+    pdf_name=DEFAULT_HERWIG_PDF_NAME,
     input_xsec_error=None,
     allow_zero_probe_successes=False,
     allow_input_oversampling=False,
@@ -1281,6 +1287,7 @@ def run_validation_scan(
                 seed_stage1=seed_stage1 + mode_index,
                 seed_split_decay=seed_split_decay + mode_index,
                 seed_direct_decay=seed_direct_decay + mode_index,
+                pdf_name=pdf_name,
                 input_xsec_error=input_xsec_error,
                 allow_zero_probe_successes=allow_zero_probe_successes,
                 allow_input_oversampling=allow_input_oversampling,
@@ -1387,6 +1394,7 @@ def main(argv=None):
     run.add_argument("--seed-stage1", type=int, default=31122002)
     run.add_argument("--seed-split-decay", type=int, default=44071981)
     run.add_argument("--seed-direct-decay", type=int, default=44071982)
+    run.add_argument("--pdf-name", default=DEFAULT_HERWIG_PDF_NAME)
     run.add_argument("--input-xsec-error", type=float)
     run.add_argument("--allow-zero-probe-successes", action="store_true")
     run.add_argument("--allow-input-oversampling", action="store_true")
@@ -1420,6 +1428,7 @@ def main(argv=None):
     scan.add_argument("--seed-stage1", type=int, default=31122002)
     scan.add_argument("--seed-split-decay", type=int, default=44071981)
     scan.add_argument("--seed-direct-decay", type=int, default=44071982)
+    scan.add_argument("--pdf-name", default=DEFAULT_HERWIG_PDF_NAME)
     scan.add_argument("--input-xsec-error", type=float)
     scan.add_argument("--allow-zero-probe-successes", action="store_true")
     scan.add_argument("--allow-input-oversampling", action="store_true")
@@ -1458,6 +1467,7 @@ def main(argv=None):
                 seed_stage1=args.seed_stage1,
                 seed_split_decay=args.seed_split_decay,
                 seed_direct_decay=args.seed_direct_decay,
+                pdf_name=args.pdf_name,
                 input_xsec_error=args.input_xsec_error,
                 allow_zero_probe_successes=args.allow_zero_probe_successes,
                 allow_input_oversampling=args.allow_input_oversampling,
@@ -1494,6 +1504,7 @@ def main(argv=None):
             seed_stage1=args.seed_stage1,
             seed_split_decay=args.seed_split_decay,
             seed_direct_decay=args.seed_direct_decay,
+            pdf_name=args.pdf_name,
             input_xsec_error=args.input_xsec_error,
             allow_zero_probe_successes=args.allow_zero_probe_successes,
             allow_input_oversampling=args.allow_input_oversampling,

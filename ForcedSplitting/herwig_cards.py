@@ -53,6 +53,8 @@ PROCESS_CONFIGS = {
     ),
 }
 
+DEFAULT_HERWIG_PDF_NAME = "NNPDF23_nlo_as_0119"
+
 
 FINAL_STATE_SPLITTING_DELETIONS = """\
 do SplittingGenerator:DeleteFinalSplitting u->u,g; QtoQGSudakovFSR
@@ -102,6 +104,7 @@ def stage1_lhewriter_card(
     reset_after_attempts=100000,
     max_try=100000,
     extra_shower_settings=None,
+    pdf_name=DEFAULT_HERWIG_PDF_NAME,
 ):
     """Return a Herwig Stage-1 card that writes split parton-level LHE events."""
     if correction_file is None:
@@ -136,7 +139,7 @@ set LesHouchesHandler:DecayHandler NULL
 set theLHReader:FileName {input_lhe}
 
 cd /Herwig/Partons
-set /Herwig/Partons/thePDFset:PDFName NNPDF23_nlo_as_0119
+set /Herwig/Partons/thePDFset:PDFName {pdf_name}
 set /Herwig/Partons/RemnantDecayer:AllowTop Yes
 set /Herwig/EventHandlers/theLHReader:PDFA /Herwig/Partons/thePDFset
 set /Herwig/EventHandlers/theLHReader:PDFB /Herwig/Partons/thePDFset
@@ -226,10 +229,11 @@ saverun {output_prefix} theGenerator
         extra_shower_settings=_extra_settings_block(extra_shower_settings),
         final_state_splitting_deletions=FINAL_STATE_SPLITTING_DELETIONS,
         output_prefix=output_prefix,
+        pdf_name=pdf_name,
     )
 
 
-def stage2_hwsim_card(input_lhe, output_location, events, run_name, seed=89968250):
+def stage2_hwsim_card(input_lhe, output_location, events, run_name, seed=89968250, pdf_name=DEFAULT_HERWIG_PDF_NAME):
     """Return a Herwig Stage-2 card that decays Higgs bosons and runs HwSim."""
     output_location = _output_location_for_hwsim(output_location)
     return """\
@@ -260,7 +264,7 @@ set LesHouchesHandler:DecayHandler /Herwig/Decays/DecayHandler
 set theLHReader:FileName {input_lhe}
 
 cd /Herwig/Partons
-set /Herwig/Partons/thePDFset:PDFName NNPDF23_nlo_as_0119
+set /Herwig/Partons/thePDFset:PDFName {pdf_name}
 set /Herwig/Partons/RemnantDecayer:AllowTop Yes
 set /Herwig/EventHandlers/theLHReader:PDFA /Herwig/Partons/thePDFset
 set /Herwig/EventHandlers/theLHReader:PDFB /Herwig/Partons/thePDFset
@@ -316,10 +320,11 @@ saverun {run_name} theGenerator
         events=int(events),
         seed=int(seed),
         run_name=run_name,
+        pdf_name=pdf_name,
     )
 
 
-def higgs_decay_lhewriter_card(input_lhe, output_prefix, events, seed=44071981):
+def higgs_decay_lhewriter_card(input_lhe, output_prefix, events, seed=44071981, pdf_name=DEFAULT_HERWIG_PDF_NAME):
     """Return a validation card that forces h0 -> b,bbar and writes LHE."""
     return """\
 ##############################################################
@@ -350,7 +355,7 @@ set LesHouchesHandler:DecayHandler /Herwig/Decays/DecayHandler
 set theLHReader:FileName {input_lhe}
 
 cd /Herwig/Partons
-set /Herwig/Partons/thePDFset:PDFName NNPDF23_nlo_as_0119
+set /Herwig/Partons/thePDFset:PDFName {pdf_name}
 set /Herwig/Partons/RemnantDecayer:AllowTop Yes
 set /Herwig/EventHandlers/theLHReader:PDFA /Herwig/Partons/thePDFset
 set /Herwig/EventHandlers/theLHReader:PDFB /Herwig/Partons/thePDFset
@@ -399,6 +404,7 @@ saverun {output_prefix} theGenerator
         output_prefix=output_prefix,
         events=int(events),
         seed=int(seed),
+        pdf_name=pdf_name,
     )
 
 
@@ -422,6 +428,7 @@ def main(argv=None):
     stage1.add_argument("--probe-trials", type=int, default=0)
     stage1.add_argument("--correction-file")
     stage1.add_argument("--extra-shower-setting", action="append", default=[])
+    stage1.add_argument("--pdf-name", default=DEFAULT_HERWIG_PDF_NAME)
     stage1.add_argument("--card-out")
 
     stage2 = subparsers.add_parser("stage2", help="write a Stage-2 HwSim card")
@@ -430,6 +437,7 @@ def main(argv=None):
     stage2.add_argument("--events", type=int, required=True)
     stage2.add_argument("--run-name", required=True)
     stage2.add_argument("--seed", type=int, default=89968250)
+    stage2.add_argument("--pdf-name", default=DEFAULT_HERWIG_PDF_NAME)
     stage2.add_argument("--card-out")
 
     hdecay = subparsers.add_parser("hdecay-lhe", help="write a validation h0 -> b,bbar LHEWriter card")
@@ -437,6 +445,7 @@ def main(argv=None):
     hdecay.add_argument("--output-prefix", required=True)
     hdecay.add_argument("--events", type=int, required=True)
     hdecay.add_argument("--seed", type=int, default=44071981)
+    hdecay.add_argument("--pdf-name", default=DEFAULT_HERWIG_PDF_NAME)
     hdecay.add_argument("--card-out")
 
     args = parser.parse_args(argv)
@@ -450,6 +459,7 @@ def main(argv=None):
             probe_trials=args.probe_trials,
             correction_file=args.correction_file,
             extra_shower_settings=args.extra_shower_setting,
+            pdf_name=args.pdf_name,
         )
         _write_or_print(card, args.card_out)
     elif args.command == "stage2":
@@ -459,6 +469,7 @@ def main(argv=None):
             events=args.events,
             run_name=args.run_name,
             seed=args.seed,
+            pdf_name=args.pdf_name,
         )
         _write_or_print(card, args.card_out)
     elif args.command == "hdecay-lhe":
@@ -467,6 +478,7 @@ def main(argv=None):
             output_prefix=args.output_prefix,
             events=args.events,
             seed=args.seed,
+            pdf_name=args.pdf_name,
         )
         _write_or_print(card, args.card_out)
     else:

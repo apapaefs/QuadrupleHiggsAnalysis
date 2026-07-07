@@ -15,6 +15,7 @@ sys.path.insert(0, str(REPO_DIR))
 
 from ForcedSplitting.herwig_cards import (  # noqa: E402
     PROCESS_CONFIGS,
+    higgs_decay_lhewriter_card,
     stage1_lhewriter_card,
     stage2_hwsim_card,
 )
@@ -158,6 +159,32 @@ class ForcedSplittingTests(unittest.TestCase):
             card.index("set ShowerHandler:RenormalizationScaleFactor 0.5"),
             card.index("library HwMinBShowerVeto.so"),
         )
+
+    def test_herwig_cards_allow_pdf_name_override(self):
+        stage1_card = stage1_lhewriter_card(
+            PROCESS_CONFIGS["gg_hg"],
+            input_lhe="/data/gg_hg/unweighted_events.lhe.gz",
+            output_prefix="gg_hg_split",
+            events=1000,
+            pdf_name="CT10nlo_as_0119",
+        )
+        stage2_card = stage2_hwsim_card(
+            input_lhe="gg_hg_split.lhe",
+            output_location="events",
+            events=1000,
+            run_name="gg_hg_stage2",
+            pdf_name="CT10nlo_as_0119",
+        )
+        decay_card = higgs_decay_lhewriter_card(
+            input_lhe="gg_hg_split.lhe",
+            output_prefix="gg_hg_final4b",
+            events=1000,
+            pdf_name="CT10nlo_as_0119",
+        )
+
+        for card in (stage1_card, stage2_card, decay_card):
+            self.assertIn("set /Herwig/Partons/thePDFset:PDFName CT10nlo_as_0119", card)
+            self.assertNotIn("set /Herwig/Partons/thePDFset:PDFName NNPDF23_nlo_as_0119", card)
 
     def test_hhgg_stage1_card_requires_two_distinct_split_pairs(self):
         card = stage1_lhewriter_card(
