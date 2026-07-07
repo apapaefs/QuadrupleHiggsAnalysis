@@ -18,9 +18,11 @@ from sample_report import (  # noqa: E402
     background_tag_rate_factor,
     cutflow_rates,
     event_interval_text,
+    group_stacked_input_samples,
     poisson_event_interval,
     signal_generation_rate_factor,
     signal_tag_rate_factor,
+    stacked_input_bin_edges,
     stacked_input_cross_section_histogram,
     stacked_sample_order,
     terminal_cutflow_table,
@@ -369,6 +371,158 @@ class SampleReportFactorTests(unittest.TestCase):
         self.assertTrue(math.isclose(sum(y), 12.0))
         self.assertTrue(yerr[0] > 0.0)
 
+    def test_stacked_input_histogram_can_keep_overflow_out_of_visible_normalisation(self):
+        edges = stacked_input_bin_edges("m8b", values=[1000.0, 3500.0], sample_weights=[[1.0, 1.0]])
+
+        y, _ = stacked_input_cross_section_histogram(
+            values=[1000.0, 3500.0],
+            weights=[1.0, 1.0],
+            edges=edges,
+            input_xsec_fb=10.0,
+            normalisation_weight_sum=2.0,
+        )
+
+        self.assertTrue(math.isclose(float(sum(y)), 5.0))
+
+    def test_stacked_input_m8b_uses_sixty_bins_to_three_tev(self):
+        edges = stacked_input_bin_edges("m8b", values=[0.0, 4000.0], sample_weights=[[1.0, 1.0]])
+
+        self.assertEqual(len(edges), 61)
+        self.assertTrue(math.isclose(float(edges[0]), 0.0))
+        self.assertTrue(math.isclose(float(edges[-1]), 3000.0))
+
+    def test_stacked_input_non_m8b_keeps_adaptive_binning(self):
+        edges = stacked_input_bin_edges("bjet1_pt", values=[10.0, 20.0, 30.0], sample_weights=[[1.0, 1.0, 1.0]])
+
+        self.assertNotEqual(len(edges), 61)
+        self.assertTrue(math.isclose(float(edges[0]), 10.0))
+        self.assertTrue(math.isclose(float(edges[-1]), 30.0))
+
+    def test_stacked_input_grouping_merges_requested_backgrounds_with_latex_labels(self):
+        grouped = group_stacked_input_samples(
+            [
+                {
+                    "label": "SM",
+                    "process_id": "sm_4h",
+                    "values": [100.0],
+                    "weights": [1.0],
+                    "input_xsec_fb": 0.01,
+                    "is_signal": True,
+                },
+                {
+                    "label": "6b 2j",
+                    "process_id": "gg_to_6b_2j",
+                    "values": [1.0],
+                    "weights": [2.0],
+                    "input_xsec_fb": 10.0,
+                    "is_signal": False,
+                },
+                {
+                    "label": "6b 2c",
+                    "metadata": {"process_id": "gg_to_6b_2c"},
+                    "values": [2.0],
+                    "weights": [3.0],
+                    "input_xsec_fb": 20.0,
+                    "is_signal": False,
+                },
+                {
+                    "label": "4b 2c 2j",
+                    "process_id": "gg_to_4b_2c_2j",
+                    "values": [3.0],
+                    "weights": [4.0],
+                    "input_xsec_fb": 30.0,
+                    "is_signal": False,
+                },
+                {
+                    "label": "4b 4j",
+                    "process_id": "gg_to_4b_4j",
+                    "values": [4.0],
+                    "weights": [5.0],
+                    "input_xsec_fb": 40.0,
+                    "is_signal": False,
+                },
+                {
+                    "label": "4b 4c",
+                    "process_id": "gg_to_4b_4c",
+                    "values": [5.0],
+                    "weights": [6.0],
+                    "input_xsec_fb": 50.0,
+                    "is_signal": False,
+                },
+                {
+                    "label": "ttbar 1",
+                    "process_id": "ttbar4b_1c3j",
+                    "values": [6.0],
+                    "weights": [7.0],
+                    "input_xsec_fb": 60.0,
+                    "is_signal": False,
+                },
+                {
+                    "label": "ttbar 2",
+                    "process_id": "ttbar4b_2c2j",
+                    "values": [7.0],
+                    "weights": [8.0],
+                    "input_xsec_fb": 70.0,
+                    "is_signal": False,
+                },
+                {
+                    "label": "ttbar 3",
+                    "process_id": "ttbar4b_0c4j",
+                    "values": [8.0],
+                    "weights": [9.0],
+                    "input_xsec_fb": 80.0,
+                    "is_signal": False,
+                },
+                {
+                    "label": "8b",
+                    "process_id": "gg_to_8b",
+                    "values": [9.0],
+                    "weights": [10.0],
+                    "input_xsec_fb": 90.0,
+                    "is_signal": False,
+                },
+                {
+                    "label": "Z6b",
+                    "process_id": "pp_to_z_6b_z_to_bb",
+                    "values": [10.0],
+                    "weights": [11.0],
+                    "input_xsec_fb": 100.0,
+                    "is_signal": False,
+                },
+                {
+                    "label": "h6b",
+                    "process_id": "gg_h6b_heft",
+                    "values": [11.0],
+                    "weights": [12.0],
+                    "input_xsec_fb": 110.0,
+                    "is_signal": False,
+                },
+            ]
+        )
+
+        by_label = {sample["label"]: sample for sample in grouped}
+        expected_labels = [
+            r"$gg \rightarrow 8b$",
+            r"$gg \rightarrow 6b + 2\slash{b}$",
+            r"$gg \rightarrow 4b + 4\slash{b}$",
+            r"$gg \rightarrow t\bar{t} + 4b$",
+            r"$pp \rightarrow Z+6b$",
+            r"$gg \rightarrow h + 6b\ (m_t \rightarrow \infty)$",
+            r"$\mathrm{SM}\ gg \rightarrow hhhh \rightarrow 8b$",
+        ]
+
+        for label in expected_labels:
+            self.assertIn(label, by_label)
+            self.assertNotIn("->", label)
+        self.assertEqual(list(by_label[r"$gg \rightarrow 6b + 2\slash{b}$"]["values"]), [1.0, 2.0])
+        self.assertEqual(list(by_label[r"$gg \rightarrow 6b + 2\slash{b}$"]["weights"]), [2.0, 3.0])
+        self.assertTrue(math.isclose(by_label[r"$gg \rightarrow 6b + 2\slash{b}$"]["input_xsec_fb"], 30.0))
+        self.assertEqual(list(by_label[r"$gg \rightarrow 4b + 4\slash{b}$"]["values"]), [3.0, 4.0, 5.0])
+        self.assertTrue(math.isclose(by_label[r"$gg \rightarrow 4b + 4\slash{b}$"]["input_xsec_fb"], 120.0))
+        self.assertEqual(list(by_label[r"$gg \rightarrow t\bar{t} + 4b$"]["values"]), [6.0, 7.0, 8.0])
+        self.assertTrue(math.isclose(by_label[r"$gg \rightarrow t\bar{t} + 4b$"]["input_xsec_fb"], 210.0))
+        self.assertTrue(grouped[-1]["is_signal"])
+
     def test_stacked_sample_order_keeps_signal_last(self):
         ordered = stacked_sample_order(
             [
@@ -415,6 +569,50 @@ class SampleReportFactorTests(unittest.TestCase):
             self.assertTrue(plot_path.exists())
             self.assertEqual(metadata["kind"], "stacked_input_xsec")
             self.assertEqual(metadata["signal_scale"], 1000.0)
+
+    def test_stacked_input_plot_writer_reports_group_labels_and_bold_signal_scale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plot_path = Path(tmp) / "m8b_stacked_input_xsec.png"
+
+            metadata = write_stacked_input_cross_section_plot(
+                plot_path,
+                "m8b",
+                [
+                    {
+                        "label": "6b 2j",
+                        "process_id": "gg_to_6b_2j",
+                        "values": [500.0, 3500.0],
+                        "weights": [1.0, 1.0],
+                        "input_xsec_fb": 2.0,
+                        "is_signal": False,
+                    },
+                    {
+                        "label": "6b 2c",
+                        "process_id": "gg_to_6b_2c",
+                        "values": [600.0],
+                        "weights": [1.0],
+                        "input_xsec_fb": 3.0,
+                        "is_signal": False,
+                    },
+                    {
+                        "label": "SM",
+                        "process_id": "sm_4h",
+                        "values": [700.0],
+                        "weights": [1.0],
+                        "input_xsec_fb": 0.01,
+                        "is_signal": True,
+                    },
+                ],
+            )
+
+            self.assertTrue(plot_path.exists())
+            self.assertEqual(len(metadata["bin_edges"]), 61)
+            self.assertTrue(math.isclose(metadata["bin_edges"][-1], 3000.0))
+            labels = [group["label"] for group in metadata["stacked_groups"]]
+            display_labels = [group["display_label"] for group in metadata["stacked_groups"]]
+            self.assertIn(r"$gg \rightarrow 6b + 2\slash{b}$", labels)
+            self.assertIn(r"$\mathrm{SM}\ gg \rightarrow hhhh \rightarrow 8b$", labels)
+            self.assertTrue(any(r"\mathbf{\times 1000}" in label for label in display_labels))
 
 
 if __name__ == "__main__":

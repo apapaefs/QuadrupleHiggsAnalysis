@@ -457,6 +457,108 @@ def feature_bin_edges(values, sample_weights, min_bins=5, max_bins=60, entries_p
     return np.linspace(low, high, bins + 1)
 
 
+STACKED_INPUT_SM_LABEL = r"$\mathrm{SM}\ gg \rightarrow hhhh \rightarrow 8b$"
+STACKED_INPUT_GROUP_LABELS = {
+    "gg_to_8b": r"$gg \rightarrow 8b$",
+    "gg_to_6b_2nonb": r"$gg \rightarrow 6b + 2\slash{b}$",
+    "gg_to_4b_4nonb": r"$gg \rightarrow 4b + 4\slash{b}$",
+    "ttbar4b": r"$gg \rightarrow t\bar{t} + 4b$",
+    "pp_to_z_6b_z_to_bb": r"$pp \rightarrow Z+6b$",
+    "gg_h6b_heft": r"$gg \rightarrow h + 6b\ (m_t \rightarrow \infty)$",
+}
+STACKED_INPUT_PROCESS_GROUPS = {
+    "gg_to_8b": "gg_to_8b",
+    "gg_to_6b_2j": "gg_to_6b_2nonb",
+    "gg_to_6b_2c": "gg_to_6b_2nonb",
+    "gg_to_4b_2c_2j": "gg_to_4b_4nonb",
+    "gg_to_4b_4j": "gg_to_4b_4nonb",
+    "gg_to_4b_4c": "gg_to_4b_4nonb",
+    "ttbar4b_1c3j": "ttbar4b",
+    "ttbar4b_2c2j": "ttbar4b",
+    "ttbar4b_0c4j": "ttbar4b",
+    "pp_to_z_6b_z_to_bb": "pp_to_z_6b_z_to_bb",
+    "gg_h6b_heft": "gg_h6b_heft",
+}
+
+
+def _sample_process_id(sample):
+    metadata = sample.get("metadata") or {}
+    return str(sample.get("process_id") or metadata.get("process_id") or "").lower()
+
+
+def _stacked_input_group_key_and_label(sample, index):
+    if sample.get("is_signal"):
+        return "signal", STACKED_INPUT_SM_LABEL
+    process_id = _sample_process_id(sample)
+    group_key = STACKED_INPUT_PROCESS_GROUPS.get(process_id)
+    if group_key:
+        return group_key, STACKED_INPUT_GROUP_LABELS[group_key]
+    label = str(sample.get("label", "background"))
+    return f"background_{index}", label
+
+
+def group_stacked_input_samples(samples):
+    """Merge related stacked-plot samples into physics categories."""
+
+    import numpy as np
+
+    groups = []
+    by_key = {}
+    for index, sample in enumerate(samples):
+        key, label = _stacked_input_group_key_and_label(sample, index)
+        group = by_key.get(key)
+        if group is None:
+            group = {
+                "group_key": key,
+                "label": label,
+                "values_parts": [],
+                "weights_parts": [],
+                "input_xsec_fb": 0.0,
+                "normalisation_weight_sum": 0.0,
+                "is_signal": bool(sample.get("is_signal")),
+                "process_ids": [],
+                "metadata": [],
+            }
+            by_key[key] = group
+            groups.append(group)
+
+        values = np.asarray(sample.get("values", []), dtype=float)
+        weights = np.asarray(sample.get("weights", []), dtype=float)
+        group["values_parts"].append(values)
+        group["weights_parts"].append(weights)
+        group["input_xsec_fb"] += float(sample.get("input_xsec_fb", 0.0) or 0.0)
+        if sample.get("normalisation_weight_sum") is not None:
+            group["normalisation_weight_sum"] += float(sample.get("normalisation_weight_sum") or 0.0)
+        else:
+            finite_weights = weights[np.isfinite(weights)]
+            group["normalisation_weight_sum"] += float(np.sum(finite_weights)) if finite_weights.size else 0.0
+
+        process_id = _sample_process_id(sample)
+        if process_id and process_id not in group["process_ids"]:
+            group["process_ids"].append(process_id)
+        metadata = sample.get("metadata")
+        if metadata:
+            group["metadata"].append(dict(metadata))
+
+    grouped_samples = []
+    for group in groups:
+        values_parts = [part for part in group.pop("values_parts") if part.size]
+        weights_parts = [part for part in group.pop("weights_parts") if part.size]
+        group["values"] = np.concatenate(values_parts) if values_parts else np.asarray([], dtype=float)
+        group["weights"] = np.concatenate(weights_parts) if weights_parts else np.asarray([], dtype=float)
+        grouped_samples.append(group)
+
+    return stacked_sample_order(grouped_samples)
+
+
+def stacked_input_bin_edges(observable_name, values, sample_weights):
+    import numpy as np
+
+    if str(observable_name) == "m8b":
+        return np.linspace(0.0, 3000.0, 61)
+    return feature_bin_edges(values, sample_weights)
+
+
 def normalised_histogram(values, weights, edges):
     import numpy as np
 
@@ -480,7 +582,7 @@ def normalised_histogram(values, weights, edges):
     return counts / norm, np.sqrt(sumw2) / abs(norm)
 
 
-def stacked_input_cross_section_histogram(values, weights, edges, input_xsec_fb):
+def stacked_input_cross_section_histogram(values, weights, edges, input_xsec_fb, normalisation_weight_sum=None):
     """Return bin cross sections whose sum is the sample input cross section."""
 
     import numpy as np
@@ -499,9 +601,13 @@ def stacked_input_cross_section_histogram(values, weights, edges, input_xsec_fb)
 
     counts, _ = np.histogram(values, bins=edges, weights=weights)
     sumw2, _ = np.histogram(values, bins=edges, weights=np.square(weights))
-    norm = float(np.sum(counts))
+    norm = None
+    if normalisation_weight_sum is not None:
+        norm = float(normalisation_weight_sum or 0.0)
+    if norm is None or norm == 0.0:
+        norm = float(np.sum(counts))
     if norm == 0.0:
-        norm = float(np.sum(np.abs(counts)))
+        norm = float(np.sum(np.abs(weights)))
     if norm == 0.0:
         return zeros, zeros
 
@@ -575,28 +681,28 @@ def write_stacked_input_cross_section_plot(path, observable_name, samples, signa
     import numpy as np
 
     prepared_samples = []
-    pooled_values = []
-    sample_weights = []
     for sample in samples:
         values = np.asarray(sample.get("values", []), dtype=float)
         weights = np.asarray(sample.get("weights", []), dtype=float)
         mask = np.isfinite(values) & np.isfinite(weights)
         values = values[mask]
         weights = weights[mask]
-        if values.size:
-            pooled_values.append(values)
-        sample_weights.append(weights)
         prepared = dict(sample)
         prepared["values"] = values
         prepared["weights"] = weights
+        prepared["normalisation_weight_sum"] = float(np.sum(weights)) if weights.size else 0.0
         prepared_samples.append(prepared)
 
+    prepared_samples = group_stacked_input_samples(prepared_samples)
+    pooled_values = [sample["values"] for sample in prepared_samples if sample["values"].size]
+    sample_weights = [sample["weights"] for sample in prepared_samples]
     pooled = np.concatenate(pooled_values) if pooled_values else np.asarray([])
-    edges = feature_bin_edges(pooled, sample_weights)
+    edges = stacked_input_bin_edges(observable_name, pooled, sample_weights)
     bottoms = np.zeros(len(edges) - 1, dtype=float)
     visible_heights = []
     plotted = False
     background_index = 0
+    stacked_groups = []
 
     fig, ax = plt.subplots(figsize=(6.8, 5.1))
     for sample in stacked_sample_order(prepared_samples):
@@ -609,6 +715,7 @@ def write_stacked_input_cross_section_plot(path, observable_name, samples, signa
             weights,
             edges,
             sample.get("input_xsec_fb", 0.0),
+            normalisation_weight_sum=sample.get("normalisation_weight_sum"),
         )
         display_scale = float(signal_scale) if sample.get("is_signal") else 1.0
         displayed = y_values * display_scale
@@ -619,7 +726,17 @@ def write_stacked_input_cross_section_plot(path, observable_name, samples, signa
 
         label = str(sample.get("label", "sample"))
         if not math.isclose(display_scale, 1.0):
-            label = f"{label} x{_format_scale(display_scale)}"
+            label = f"{label} $\\mathbf{{\\times {_format_scale(display_scale)}}}$"
+        stacked_groups.append(
+            {
+                "group_key": sample.get("group_key"),
+                "label": str(sample.get("label", "sample")),
+                "display_label": label,
+                "input_xsec_fb": float(sample.get("input_xsec_fb", 0.0) or 0.0),
+                "is_signal": bool(sample.get("is_signal")),
+                "process_ids": list(sample.get("process_ids", [])),
+            }
+        )
         fill_alpha = 0.92 if sample.get("is_signal") else 0.96
         outline_color = "#1f77b4" if sample.get("is_signal") else "black"
         outline_width = 1.15 if sample.get("is_signal") else 0.7
@@ -673,6 +790,8 @@ def write_stacked_input_cross_section_plot(path, observable_name, samples, signa
         "path": str(path),
         "kind": "stacked_input_xsec",
         "signal_scale": float(signal_scale),
+        "bin_edges": [float(edge) for edge in edges],
+        "stacked_groups": stacked_groups,
     }
 
 

@@ -864,6 +864,8 @@ def write_sample_report(
             plot_samples.append(
                 {
                     "label": label,
+                    "process_id": str((metadata or {}).get("process_id", "")),
+                    "metadata": dict(metadata or {}),
                     "features": features,
                     "raw_weights": raw_weights,
                     "input_xsec_fb": float(input_xsec),
@@ -928,6 +930,8 @@ def write_sample_report(
                     "weights": sample["raw_weights"],
                     "input_xsec_fb": sample["input_xsec_fb"],
                     "is_signal": sample["is_signal"],
+                    "process_id": sample.get("process_id", ""),
+                    "metadata": sample.get("metadata", {}),
                 }
             )
         stacked_info = write_stacked_input_cross_section_plot(
