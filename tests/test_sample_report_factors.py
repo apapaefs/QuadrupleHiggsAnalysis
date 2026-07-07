@@ -14,6 +14,7 @@ from sample_report import (  # noqa: E402
     background_generation_rate_factor,
     background_tag_rate_factor,
     cutflow_rates,
+    event_interval_text,
     poisson_event_interval,
     signal_generation_rate_factor,
     signal_tag_rate_factor,
@@ -221,6 +222,15 @@ class SampleReportFactorTests(unittest.TestCase):
 
         self.assertTrue(row["selected_events_is_upper_limit"])
         self.assertTrue(math.isclose(row["selected_events_upper_limit_95cl"], -math.log(0.05) * 0.1))
+
+    def test_event_interval_text_formats_poisson_upper_limit(self):
+        row = {
+            "expected_selected_events": 0.0,
+            "expected_selected_events_is_upper_limit": True,
+            "expected_selected_events_upper_limit_95cl": 0.299573,
+        }
+
+        self.assertEqual(event_interval_text(row, "expected_selected_events"), "< 0.2996")
 
     def test_stacked_input_histogram_integrates_to_input_cross_section(self):
         y, yerr = stacked_input_cross_section_histogram(

@@ -741,6 +741,48 @@ def terminal_label(label):
     return label
 
 
+def _row_interval_value(row, prefix):
+    value = row.get(prefix)
+    if value is None and prefix == "expected_selected_events":
+        value = row.get("xgboost_events")
+    return value
+
+
+def event_interval_text(row, prefix, latex=False):
+    row = row or {}
+    value = _row_interval_value(row, prefix)
+    if value is None:
+        return "--"
+
+    upper_limit = row.get(f"{prefix}_upper_limit_95cl")
+    is_upper_limit = bool(row.get(f"{prefix}_is_upper_limit", False))
+    if is_upper_limit and upper_limit is not None:
+        if latex:
+            return rf"$< {latex_number(upper_limit)}$"
+        return f"< {terminal_number(upper_limit)}"
+
+    error_low = row.get(f"{prefix}_error_low_95cl")
+    error_high = row.get(f"{prefix}_error_high_95cl")
+    if error_low is not None and error_high is not None:
+        if latex:
+            return rf"${latex_number(value)}^{{+{latex_number(error_high)}}}_{{-{latex_number(error_low)}}}$"
+        return f"{terminal_number(value)} -{terminal_number(error_low)} +{terminal_number(error_high)}"
+
+    error = row.get(f"{prefix}_error")
+    if error is None and prefix == "expected_selected_events":
+        error = row.get("expected_selected_error")
+    if error is None and prefix == "xgboost_events":
+        error = row.get("xgboost_events_error")
+    if error is not None:
+        if latex:
+            return rf"${latex_number(value)}\pm {latex_number(error)}$"
+        return f"{terminal_number(value)} +/- {terminal_number(error)}"
+
+    if latex:
+        return f"${latex_number(value)}$"
+    return terminal_number(value)
+
+
 def _terminal_separator(widths):
     return "+" + "+".join("-" * (width + 2) for width in widths) + "+"
 
