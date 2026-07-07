@@ -644,10 +644,6 @@ def _format_scale(scale):
     return f"{scale:.3g}"
 
 
-def _matplotlib_mathtext_label(label):
-    return str(label).replace(r"\slashed{b}", r"\not{b}")
-
-
 def write_stacked_input_cross_section_plot(path, observable_name, samples, signal_scale=1000.0):
     """Write a HiggsSSC-style stacked input cross-section plot."""
 
@@ -657,30 +653,32 @@ def write_stacked_input_cross_section_plot(path, observable_name, samples, signa
     import matplotlib
 
     matplotlib.use("Agg")
-    matplotlib.rcParams.update(
-        {
-            "figure.facecolor": "white",
-            "axes.facecolor": "white",
-            "axes.edgecolor": "black",
-            "axes.linewidth": 1.15,
-            "axes.grid": False,
-            "axes.labelsize": 13,
-            "axes.titlesize": 13,
-            "font.family": "DejaVu Sans",
-            "font.size": 11,
-            "legend.fontsize": 9,
-            "xtick.direction": "in",
-            "ytick.direction": "in",
-            "xtick.major.size": 6,
-            "ytick.major.size": 6,
-            "xtick.minor.size": 3,
-            "ytick.minor.size": 3,
-            "xtick.top": True,
-            "ytick.right": True,
-            "savefig.facecolor": "white",
-            "savefig.bbox": "tight",
-        }
-    )
+    rc_updates = {
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
+        "axes.edgecolor": "black",
+        "axes.linewidth": 1.15,
+        "axes.grid": False,
+        "axes.labelsize": 13,
+        "axes.titlesize": 13,
+        "font.family": "DejaVu Sans",
+        "font.size": 11,
+        "legend.fontsize": 9,
+        "text.usetex": True,
+        "text.latex.preamble": r"\usepackage{slashed}",
+        "xtick.direction": "in",
+        "ytick.direction": "in",
+        "xtick.major.size": 6,
+        "ytick.major.size": 6,
+        "xtick.minor.size": 3,
+        "ytick.minor.size": 3,
+        "xtick.top": True,
+        "ytick.right": True,
+        "savefig.facecolor": "white",
+        "savefig.bbox": "tight",
+    }
+    old_rc_params = {key: matplotlib.rcParams[key] for key in rc_updates}
+    matplotlib.rcParams.update(rc_updates)
     import matplotlib.pyplot as plt
     import numpy as np
 
@@ -731,7 +729,7 @@ def write_stacked_input_cross_section_plot(path, observable_name, samples, signa
         label = str(sample.get("label", "sample"))
         if not math.isclose(display_scale, 1.0):
             label = f"{label} $\\mathbf{{\\times {_format_scale(display_scale)}}}$"
-        plot_label = _matplotlib_mathtext_label(label)
+        plot_label = label
         stacked_groups.append(
             {
                 "group_key": sample.get("group_key"),
@@ -791,6 +789,7 @@ def write_stacked_input_cross_section_plot(path, observable_name, samples, signa
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
+    matplotlib.rcParams.update(old_rc_params)
     return {
         "feature": observable_name,
         "path": str(path),

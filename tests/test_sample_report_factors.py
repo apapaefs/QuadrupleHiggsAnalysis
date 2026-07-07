@@ -614,8 +614,39 @@ class SampleReportFactorTests(unittest.TestCase):
             self.assertIn(r"$gg \rightarrow 6b + 2\slashed{b}$", labels)
             self.assertIn(r"$\mathrm{SM}\ gg \rightarrow hhhh \rightarrow 8b$", labels)
             self.assertFalse(any(r"\slash{b}" in label for label in labels + display_labels))
-            self.assertTrue(any(r"\not{b}" in label for label in plot_labels))
+            self.assertTrue(any(r"\slashed{b}" in label for label in plot_labels))
+            self.assertFalse(any(r"\not{b}" in label for label in plot_labels))
             self.assertTrue(any(r"\mathbf{\times 1000}" in label for label in display_labels))
+
+    def test_stacked_input_plot_writer_restores_matplotlib_text_renderer(self):
+        import matplotlib
+
+        original_usetex = matplotlib.rcParams["text.usetex"]
+        original_preamble = matplotlib.rcParams["text.latex.preamble"]
+        matplotlib.rcParams["text.usetex"] = False
+        matplotlib.rcParams["text.latex.preamble"] = ""
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                write_stacked_input_cross_section_plot(
+                    Path(tmp) / "m8b_stacked_input_xsec.png",
+                    "m8b",
+                    [
+                        {
+                            "label": "6b 2j",
+                            "process_id": "gg_to_6b_2j",
+                            "values": [500.0],
+                            "weights": [1.0],
+                            "input_xsec_fb": 2.0,
+                            "is_signal": False,
+                        },
+                    ],
+                )
+
+            self.assertFalse(matplotlib.rcParams["text.usetex"])
+            self.assertEqual(matplotlib.rcParams["text.latex.preamble"], "")
+        finally:
+            matplotlib.rcParams["text.usetex"] = original_usetex
+            matplotlib.rcParams["text.latex.preamble"] = original_preamble
 
 
 if __name__ == "__main__":
