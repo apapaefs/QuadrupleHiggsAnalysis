@@ -474,26 +474,36 @@ def _write_feature_importance_plot(path, model, feature_names, top_n=20):
     plt.close()
 
 
+def _remove_prefix(value, prefix):
+    value = str(value)
+    return value[len(prefix) :] if value.startswith(prefix) else value
+
+
+def _remove_suffix(value, suffix):
+    value = str(value)
+    return value[: -len(suffix)] if suffix and value.endswith(suffix) else value
+
+
 def _feature_axis_label(name):
     if name.startswith("bjet") and name.endswith("_pt"):
-        index = name.removeprefix("bjet").removesuffix("_pt")
+        index = _remove_suffix(_remove_prefix(name, "bjet"), "_pt")
         return rf"$p_T(b_{index})$ [GeV]"
     if name == "m8b":
         return r"$m_{8b}$ [GeV]"
     if name == "chi8":
         return r"$\chi^2_{8b}$"
     if name.startswith("delta_m_"):
-        label = name.removeprefix("delta_m_").replace("_", r"\,")
+        label = _remove_prefix(name, "delta_m_").replace("_", r"\,")
         return rf"$\Delta m_{{{label}}}$ [GeV]"
     if name.startswith("higgs") and name.endswith("_pt"):
-        index = name.removeprefix("higgs").removesuffix("_pt")
+        index = _remove_suffix(_remove_prefix(name, "higgs"), "_pt")
         return rf"$p_T(h_{index})$ [GeV]"
     if name.startswith("dr_hh_"):
-        indices = name.removeprefix("dr_hh_").split("_")
+        indices = _remove_prefix(name, "dr_hh_").split("_")
         if len(indices) == 2:
             return rf"$\Delta R(h_{indices[0]},h_{indices[1]})$"
     if name.startswith("dr_bb_h"):
-        index = name.removeprefix("dr_bb_h")
+        index = _remove_prefix(name, "dr_bb_h")
         return rf"$\Delta R(b,b)_{{h_{index}}}$"
     return name.replace("_", r"\_")
 

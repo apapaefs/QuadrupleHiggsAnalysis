@@ -28,6 +28,21 @@ from sample_report import (  # noqa: E402
 
 
 class SampleReportFactorTests(unittest.TestCase):
+    def test_report_helpers_avoid_python39_string_methods(self):
+        for relative_path in [
+            "Code/sample_report.py",
+            "Code/xgboost_root_varfiles_module.py",
+        ]:
+            source = (REPO_DIR / relative_path).read_text()
+            tree = ast.parse(source)
+            forbidden_calls = [
+                node.attr
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Attribute) and node.attr in {"removeprefix", "removesuffix"}
+            ]
+
+            self.assertEqual([], forbidden_calls, relative_path)
+
     def test_signal_generation_factor_excludes_btagging(self):
         self.assertTrue(
             math.isclose(
