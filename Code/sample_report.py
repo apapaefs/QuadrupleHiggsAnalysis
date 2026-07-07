@@ -463,6 +463,202 @@ def normalised_histogram(values, weights, edges):
     return counts / norm, np.sqrt(sumw2) / abs(norm)
 
 
+def stacked_input_cross_section_histogram(values, weights, edges, input_xsec_fb):
+    """Return bin cross sections whose sum is the sample input cross section."""
+
+    import numpy as np
+
+    values = np.asarray(values, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    edges = np.asarray(edges, dtype=float)
+    if edges.size < 2:
+        raise ValueError("histogram edges must contain at least two values")
+    mask = np.isfinite(values) & np.isfinite(weights)
+    values = values[mask]
+    weights = weights[mask]
+    zeros = np.zeros(edges.size - 1, dtype=float)
+    if values.size == 0:
+        return zeros, zeros
+
+    counts, _ = np.histogram(values, bins=edges, weights=weights)
+    sumw2, _ = np.histogram(values, bins=edges, weights=np.square(weights))
+    norm = float(np.sum(counts))
+    if norm == 0.0:
+        norm = float(np.sum(np.abs(counts)))
+    if norm == 0.0:
+        return zeros, zeros
+
+    scale = float(input_xsec_fb or 0.0) / norm
+    return counts * scale, np.sqrt(sumw2) * abs(scale)
+
+
+def stacked_sample_order(samples):
+    """Order samples for stacked plots: backgrounds first, signal last."""
+
+    backgrounds = [sample for sample in samples if not sample.get("is_signal")]
+    signals = [sample for sample in samples if sample.get("is_signal")]
+    return backgrounds + signals
+
+
+def _step_values(values):
+    values = list(values)
+    if not values:
+        return []
+    return [*values, values[-1]]
+
+
+def _stacked_publication_color(sample, background_index):
+    if sample.get("is_signal"):
+        return "#9ecae1"
+    background_colors = ["#e41a1c", "#984ea3", "#ff7f00", "#4daf4a", "#a65628", "#f781bf"]
+    return background_colors[background_index % len(background_colors)]
+
+
+def _format_scale(scale):
+    scale = float(scale)
+    if math.isclose(scale, round(scale)):
+        return str(int(round(scale)))
+    return f"{scale:.3g}"
+
+
+def write_stacked_input_cross_section_plot(path, observable_name, samples, signal_scale=1000.0):
+    """Write a HiggsSSC-style stacked input cross-section plot."""
+
+    import os
+
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+    import matplotlib
+
+    matplotlib.use("Agg")
+    matplotlib.rcParams.update(
+        {
+            "figure.facecolor": "white",
+            "axes.facecolor": "white",
+            "axes.edgecolor": "black",
+            "axes.linewidth": 1.15,
+            "axes.grid": False,
+            "axes.labelsize": 13,
+            "axes.titlesize": 13,
+            "font.family": "DejaVu Sans",
+            "font.size": 11,
+            "legend.fontsize": 9,
+            "xtick.direction": "in",
+            "ytick.direction": "in",
+            "xtick.major.size": 6,
+            "ytick.major.size": 6,
+            "xtick.minor.size": 3,
+            "ytick.minor.size": 3,
+            "xtick.top": True,
+            "ytick.right": True,
+            "savefig.facecolor": "white",
+            "savefig.bbox": "tight",
+        }
+    )
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    prepared_samples = []
+    pooled_values = []
+    sample_weights = []
+    for sample in samples:
+        values = np.asarray(sample.get("values", []), dtype=float)
+        weights = np.asarray(sample.get("weights", []), dtype=float)
+        mask = np.isfinite(values) & np.isfinite(weights)
+        values = values[mask]
+        weights = weights[mask]
+        if values.size:
+            pooled_values.append(values)
+        sample_weights.append(weights)
+        prepared = dict(sample)
+        prepared["values"] = values
+        prepared["weights"] = weights
+        prepared_samples.append(prepared)
+
+    pooled = np.concatenate(pooled_values) if pooled_values else np.asarray([])
+    edges = feature_bin_edges(pooled, sample_weights)
+    bottoms = np.zeros(len(edges) - 1, dtype=float)
+    visible_heights = []
+    plotted = False
+    background_index = 0
+
+    fig, ax = plt.subplots(figsize=(6.8, 5.1))
+    for sample in stacked_sample_order(prepared_samples):
+        values = sample["values"]
+        weights = sample["weights"]
+        if values.size == 0:
+            continue
+        y_values, _ = stacked_input_cross_section_histogram(
+            values,
+            weights,
+            edges,
+            sample.get("input_xsec_fb", 0.0),
+        )
+        display_scale = float(signal_scale) if sample.get("is_signal") else 1.0
+        displayed = y_values * display_scale
+        tops = bottoms + displayed
+        color = _stacked_publication_color(sample, background_index)
+        if not sample.get("is_signal"):
+            background_index += 1
+
+        label = str(sample.get("label", "sample"))
+        if not math.isclose(display_scale, 1.0):
+            label = f"{label} x{_format_scale(display_scale)}"
+        fill_alpha = 0.92 if sample.get("is_signal") else 0.96
+        outline_color = "#1f77b4" if sample.get("is_signal") else "black"
+        outline_width = 1.15 if sample.get("is_signal") else 0.7
+
+        ax.fill_between(
+            edges,
+            _step_values(bottoms),
+            _step_values(tops),
+            step="post",
+            label=label,
+            color=color,
+            alpha=fill_alpha,
+            linewidth=0.0,
+        )
+        ax.step(
+            edges,
+            _step_values(tops),
+            where="post",
+            color=outline_color,
+            linewidth=outline_width,
+            label="_nolegend_",
+        )
+        visible_heights.extend(float(value) for value in tops if math.isfinite(float(value)))
+        bottoms = tops
+        plotted = True
+
+    if plotted and np.any(np.isfinite(bottoms)):
+        ax.step(edges, _step_values(bottoms), where="post", color="black", linewidth=1.05, label="_nolegend_")
+
+    ax.set_xlabel(observable_axis_label(observable_name))
+    ax.set_ylabel(r"Input cross section / bin [fb]")
+    ax.minorticks_on()
+    ax.tick_params(which="both", direction="in", top=True, right=True)
+    ymax = max(visible_heights) if visible_heights else 0.0
+    if ymax > 0.0:
+        ax.set_ylim(0.0, ymax * 1.35)
+    if plotted:
+        ax.text(0.06, 0.94, "4H analysis", transform=ax.transAxes, ha="left", va="top", fontweight="bold", fontstyle="italic", fontsize=14)
+        ax.text(0.06, 0.875, "Input-level samples", transform=ax.transAxes, ha="left", va="top", fontsize=10)
+        ax.text(0.06, 0.065, r"Norm: $\sigma_\mathrm{input}$ per bin", transform=ax.transAxes, ha="left", va="bottom", fontsize=9)
+        ax.legend(frameon=False, loc="upper right", handlelength=1.6, borderaxespad=0.6)
+    else:
+        ax.text(0.5, 0.5, "No finite entries", transform=ax.transAxes, ha="center", va="center")
+
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return {
+        "feature": observable_name,
+        "path": str(path),
+        "kind": "stacked_input_xsec",
+        "signal_scale": float(signal_scale),
+    }
+
+
 def sample_style(index):
     colors = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E9", "#000000", "#F0E442"]
     linestyles = ["-", "--", "-.", ":", (0, (5, 1)), (0, (3, 1, 1, 1)), (0, (1, 1)), (0, (5, 2, 1, 2))]
