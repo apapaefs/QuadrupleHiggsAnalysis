@@ -109,6 +109,116 @@ def cutflow_rates(
     }
 
 
+def _chi2_ppf(probability, degrees_of_freedom):
+    try:
+        from scipy.stats import chi2
+
+        return float(chi2.ppf(float(probability), float(degrees_of_freedom)))
+    except Exception:
+        from statistics import NormalDist
+
+        probability = min(max(float(probability), 1.0e-12), 1.0 - 1.0e-12)
+        degrees_of_freedom = float(degrees_of_freedom)
+        z = NormalDist().inv_cdf(probability)
+        # Wilson-Hilferty approximation, used only when scipy is unavailable.
+        return degrees_of_freedom * (
+            1.0
+            - 2.0 / (9.0 * degrees_of_freedom)
+            + z * math.sqrt(2.0 / (9.0 * degrees_of_freedom))
+        ) ** 3
+
+
+def poisson_count_interval(count, confidence_level=0.95):
+    """Garwood Poisson count interval."""
+
+    count = int(count)
+    if count < 0:
+        raise ValueError("Poisson count must be non-negative")
+    confidence_level = float(confidence_level)
+    if not 0.0 < confidence_level < 1.0:
+        raise ValueError("confidence_level must be between 0 and 1")
+
+    alpha = 1.0 - confidence_level
+    if count == 0:
+        return 0.0, -math.log(alpha)
+    lower = 0.5 * _chi2_ppf(alpha / 2.0, 2 * count)
+    upper = 0.5 * _chi2_ppf(1.0 - alpha / 2.0, 2 * (count + 1))
+    return float(lower), float(upper)
+
+
+def poisson_event_interval(
+    selected_entries,
+    expected_events,
+    input_entries=None,
+    expected_input_events=None,
+    confidence_level=0.95,
+):
+    """Scale a Poisson count interval to a luminosity-normalized yield."""
+
+    selected_entries = int(selected_entries)
+    expected_events = float(expected_events or 0.0)
+    count_lower, count_upper = poisson_count_interval(selected_entries, confidence_level)
+
+    if selected_entries > 0:
+        event_scale = expected_events / float(selected_entries)
+        event_lower = count_lower * event_scale
+        event_upper = count_upper * event_scale
+        return {
+            "confidence_level": float(confidence_level),
+            "is_upper_limit": False,
+            "count_lower": count_lower,
+            "count_upper": count_upper,
+            "event_lower": float(event_lower),
+            "event_upper": float(event_upper),
+            "event_error_low": float(max(0.0, expected_events - event_lower)),
+            "event_error_high": float(max(0.0, event_upper - expected_events)),
+        }
+
+    input_entries = int(input_entries or 0)
+    expected_input_events = float(expected_input_events or 0.0)
+    event_scale = expected_input_events / float(input_entries) if input_entries > 0 else 0.0
+    event_upper = count_upper * event_scale
+    return {
+        "confidence_level": float(confidence_level),
+        "is_upper_limit": True,
+        "count_lower": count_lower,
+        "count_upper": count_upper,
+        "event_lower": 0.0,
+        "event_upper": float(event_upper),
+        "event_error_low": 0.0,
+        "event_error_high": float(event_upper),
+    }
+
+
+def attach_poisson_event_interval(
+    row,
+    selected_entries_key,
+    expected_events_key,
+    input_entries_key,
+    expected_input_events_key,
+    output_prefix,
+    confidence_level=0.95,
+):
+    """Add Poisson yield interval fields to a result row."""
+
+    interval = poisson_event_interval(
+        selected_entries=row.get(selected_entries_key, 0),
+        expected_events=row.get(expected_events_key, 0.0),
+        input_entries=row.get(input_entries_key, 0),
+        expected_input_events=row.get(expected_input_events_key, 0.0),
+        confidence_level=confidence_level,
+    )
+    row[f"{output_prefix}_lower_95cl"] = interval["event_lower"]
+    row[f"{output_prefix}_upper_95cl"] = interval["event_upper"]
+    row[f"{output_prefix}_error_low_95cl"] = interval["event_error_low"]
+    row[f"{output_prefix}_error_high_95cl"] = interval["event_error_high"]
+    row[f"{output_prefix}_is_upper_limit"] = interval["is_upper_limit"]
+    row[f"{output_prefix}_confidence_level"] = interval["confidence_level"]
+    if interval["is_upper_limit"]:
+        row[f"{output_prefix}_upper_limit_95cl"] = interval["event_upper"]
+    return row
+
+
 def safe_feature_filename(name):
     stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(name)).strip("_")
     return stem or "feature"

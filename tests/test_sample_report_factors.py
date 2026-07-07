@@ -10,9 +10,11 @@ CODE_DIR = REPO_DIR / "Code"
 sys.path.insert(0, str(CODE_DIR))
 
 from sample_report import (  # noqa: E402
+    attach_poisson_event_interval,
     background_generation_rate_factor,
     background_tag_rate_factor,
     cutflow_rates,
+    poisson_event_interval,
     signal_generation_rate_factor,
     signal_tag_rate_factor,
     stacked_input_cross_section_histogram,
@@ -185,6 +187,40 @@ class SampleReportFactorTests(unittest.TestCase):
         self.assertIn("SM gg->hhhh->8b", table)
         self.assertIn("gg->6b+c cbar", table)
         self.assertNotIn("$", table)
+
+    def test_poisson_event_interval_reports_zero_count_upper_limit(self):
+        interval = poisson_event_interval(
+            selected_entries=0,
+            expected_events=0.0,
+            input_entries=100,
+            expected_input_events=10.0,
+            confidence_level=0.95,
+        )
+
+        self.assertTrue(interval["is_upper_limit"])
+        self.assertTrue(math.isclose(interval["count_lower"], 0.0))
+        self.assertTrue(math.isclose(interval["count_upper"], -math.log(0.05), rel_tol=1.0e-12))
+        self.assertTrue(math.isclose(interval["count_upper"] * 0.1, interval["event_upper"], rel_tol=1.0e-12))
+
+    def test_attach_poisson_event_interval_adds_prefixed_fields(self):
+        row = {
+            "selected_entries": 0,
+            "expected_selected_events": 0.0,
+            "entries": 100,
+            "expected_input_events": 10.0,
+        }
+
+        attach_poisson_event_interval(
+            row,
+            "selected_entries",
+            "expected_selected_events",
+            "entries",
+            "expected_input_events",
+            "selected_events",
+        )
+
+        self.assertTrue(row["selected_events_is_upper_limit"])
+        self.assertTrue(math.isclose(row["selected_events_upper_limit_95cl"], -math.log(0.05) * 0.1))
 
     def test_stacked_input_histogram_integrates_to_input_cross_section(self):
         y, yerr = stacked_input_cross_section_histogram(
