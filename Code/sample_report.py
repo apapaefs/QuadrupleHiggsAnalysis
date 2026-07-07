@@ -460,8 +460,8 @@ def feature_bin_edges(values, sample_weights, min_bins=5, max_bins=60, entries_p
 STACKED_INPUT_SM_LABEL = r"$\mathrm{SM}\ gg \rightarrow hhhh \rightarrow 8b$"
 STACKED_INPUT_GROUP_LABELS = {
     "gg_to_8b": r"$gg \rightarrow 8b$",
-    "gg_to_6b_2nonb": r"$gg \rightarrow 6b + 2\slash{b}$",
-    "gg_to_4b_4nonb": r"$gg \rightarrow 4b + 4\slash{b}$",
+    "gg_to_6b_2nonb": r"$gg \rightarrow 6b + 2\slashed{b}$",
+    "gg_to_4b_4nonb": r"$gg \rightarrow 4b + 4\slashed{b}$",
     "ttbar4b": r"$gg \rightarrow t\bar{t} + 4b$",
     "pp_to_z_6b_z_to_bb": r"$pp \rightarrow Z+6b$",
     "gg_h6b_heft": r"$gg \rightarrow h + 6b\ (m_t \rightarrow \infty)$",
@@ -644,6 +644,10 @@ def _format_scale(scale):
     return f"{scale:.3g}"
 
 
+def _matplotlib_mathtext_label(label):
+    return str(label).replace(r"\slashed{b}", r"\not{b}")
+
+
 def write_stacked_input_cross_section_plot(path, observable_name, samples, signal_scale=1000.0):
     """Write a HiggsSSC-style stacked input cross-section plot."""
 
@@ -727,11 +731,13 @@ def write_stacked_input_cross_section_plot(path, observable_name, samples, signa
         label = str(sample.get("label", "sample"))
         if not math.isclose(display_scale, 1.0):
             label = f"{label} $\\mathbf{{\\times {_format_scale(display_scale)}}}$"
+        plot_label = _matplotlib_mathtext_label(label)
         stacked_groups.append(
             {
                 "group_key": sample.get("group_key"),
                 "label": str(sample.get("label", "sample")),
                 "display_label": label,
+                "plot_label": plot_label,
                 "input_xsec_fb": float(sample.get("input_xsec_fb", 0.0) or 0.0),
                 "is_signal": bool(sample.get("is_signal")),
                 "process_ids": list(sample.get("process_ids", [])),
@@ -746,7 +752,7 @@ def write_stacked_input_cross_section_plot(path, observable_name, samples, signa
             _step_values(bottoms),
             _step_values(tops),
             step="post",
-            label=label,
+            label=plot_label,
             color=color,
             alpha=fill_alpha,
             linewidth=0.0,

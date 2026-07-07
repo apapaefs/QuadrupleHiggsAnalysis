@@ -503,8 +503,8 @@ class SampleReportFactorTests(unittest.TestCase):
         by_label = {sample["label"]: sample for sample in grouped}
         expected_labels = [
             r"$gg \rightarrow 8b$",
-            r"$gg \rightarrow 6b + 2\slash{b}$",
-            r"$gg \rightarrow 4b + 4\slash{b}$",
+            r"$gg \rightarrow 6b + 2\slashed{b}$",
+            r"$gg \rightarrow 4b + 4\slashed{b}$",
             r"$gg \rightarrow t\bar{t} + 4b$",
             r"$pp \rightarrow Z+6b$",
             r"$gg \rightarrow h + 6b\ (m_t \rightarrow \infty)$",
@@ -514,11 +514,11 @@ class SampleReportFactorTests(unittest.TestCase):
         for label in expected_labels:
             self.assertIn(label, by_label)
             self.assertNotIn("->", label)
-        self.assertEqual(list(by_label[r"$gg \rightarrow 6b + 2\slash{b}$"]["values"]), [1.0, 2.0])
-        self.assertEqual(list(by_label[r"$gg \rightarrow 6b + 2\slash{b}$"]["weights"]), [2.0, 3.0])
-        self.assertTrue(math.isclose(by_label[r"$gg \rightarrow 6b + 2\slash{b}$"]["input_xsec_fb"], 30.0))
-        self.assertEqual(list(by_label[r"$gg \rightarrow 4b + 4\slash{b}$"]["values"]), [3.0, 4.0, 5.0])
-        self.assertTrue(math.isclose(by_label[r"$gg \rightarrow 4b + 4\slash{b}$"]["input_xsec_fb"], 120.0))
+        self.assertEqual(list(by_label[r"$gg \rightarrow 6b + 2\slashed{b}$"]["values"]), [1.0, 2.0])
+        self.assertEqual(list(by_label[r"$gg \rightarrow 6b + 2\slashed{b}$"]["weights"]), [2.0, 3.0])
+        self.assertTrue(math.isclose(by_label[r"$gg \rightarrow 6b + 2\slashed{b}$"]["input_xsec_fb"], 30.0))
+        self.assertEqual(list(by_label[r"$gg \rightarrow 4b + 4\slashed{b}$"]["values"]), [3.0, 4.0, 5.0])
+        self.assertTrue(math.isclose(by_label[r"$gg \rightarrow 4b + 4\slashed{b}$"]["input_xsec_fb"], 120.0))
         self.assertEqual(list(by_label[r"$gg \rightarrow t\bar{t} + 4b$"]["values"]), [6.0, 7.0, 8.0])
         self.assertTrue(math.isclose(by_label[r"$gg \rightarrow t\bar{t} + 4b$"]["input_xsec_fb"], 210.0))
         self.assertTrue(grouped[-1]["is_signal"])
@@ -610,8 +610,11 @@ class SampleReportFactorTests(unittest.TestCase):
             self.assertTrue(math.isclose(metadata["bin_edges"][-1], 3000.0))
             labels = [group["label"] for group in metadata["stacked_groups"]]
             display_labels = [group["display_label"] for group in metadata["stacked_groups"]]
-            self.assertIn(r"$gg \rightarrow 6b + 2\slash{b}$", labels)
+            plot_labels = [group["plot_label"] for group in metadata["stacked_groups"]]
+            self.assertIn(r"$gg \rightarrow 6b + 2\slashed{b}$", labels)
             self.assertIn(r"$\mathrm{SM}\ gg \rightarrow hhhh \rightarrow 8b$", labels)
+            self.assertFalse(any(r"\slash{b}" in label for label in labels + display_labels))
+            self.assertTrue(any(r"\not{b}" in label for label in plot_labels))
             self.assertTrue(any(r"\mathbf{\times 1000}" in label for label in display_labels))
 
 
