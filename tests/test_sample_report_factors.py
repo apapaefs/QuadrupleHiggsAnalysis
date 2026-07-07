@@ -1,5 +1,6 @@
 import math
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -14,8 +15,11 @@ from sample_report import (  # noqa: E402
     cutflow_rates,
     signal_generation_rate_factor,
     signal_tag_rate_factor,
+    stacked_input_cross_section_histogram,
+    stacked_sample_order,
     terminal_cutflow_table,
     terminal_xgboost_mc_table,
+    write_stacked_input_cross_section_plot,
 )
 
 
@@ -181,6 +185,65 @@ class SampleReportFactorTests(unittest.TestCase):
         self.assertIn("SM gg->hhhh->8b", table)
         self.assertIn("gg->6b+c cbar", table)
         self.assertNotIn("$", table)
+
+    def test_stacked_input_histogram_integrates_to_input_cross_section(self):
+        y, yerr = stacked_input_cross_section_histogram(
+            values=[0.2, 0.8, 1.2],
+            weights=[1.0, 3.0, 2.0],
+            edges=[0.0, 1.0, 2.0],
+            input_xsec_fb=12.0,
+        )
+
+        self.assertEqual(list(y), [8.0, 4.0])
+        self.assertTrue(math.isclose(sum(y), 12.0))
+        self.assertTrue(yerr[0] > 0.0)
+
+    def test_stacked_sample_order_keeps_signal_last(self):
+        ordered = stacked_sample_order(
+            [
+                {"label": "SM", "is_signal": True},
+                {"label": "gg->8b", "is_signal": False},
+                {"label": "gg->6b+2c", "is_signal": False},
+            ]
+        )
+
+        self.assertEqual([sample["label"] for sample in ordered], ["gg->8b", "gg->6b+2c", "SM"])
+
+    def test_sample_report_wires_stacked_input_plots_into_index_metadata(self):
+        module_text = (CODE_DIR / "xgboost_root_varfiles_module.py").read_text()
+
+        self.assertIn("write_stacked_input_cross_section_plot", module_text)
+        self.assertIn("_stacked_input_xsec.png", module_text)
+        self.assertIn("stacked_input_xsec", module_text)
+
+    def test_stacked_input_plot_writer_creates_png_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plot_path = Path(tmp) / "bjet1_pt_stacked_input_xsec.png"
+
+            metadata = write_stacked_input_cross_section_plot(
+                plot_path,
+                "bjet1_pt",
+                [
+                    {
+                        "label": "background",
+                        "values": [10.0, 20.0],
+                        "weights": [1.0, 1.0],
+                        "input_xsec_fb": 2.0,
+                        "is_signal": False,
+                    },
+                    {
+                        "label": "SM",
+                        "values": [15.0, 25.0],
+                        "weights": [1.0, 1.0],
+                        "input_xsec_fb": 0.01,
+                        "is_signal": True,
+                    },
+                ],
+            )
+
+            self.assertTrue(plot_path.exists())
+            self.assertEqual(metadata["kind"], "stacked_input_xsec")
+            self.assertEqual(metadata["signal_scale"], 1000.0)
 
 
 if __name__ == "__main__":

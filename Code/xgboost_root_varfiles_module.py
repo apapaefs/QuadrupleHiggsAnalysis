@@ -25,7 +25,15 @@ from tqdm.auto import tqdm
 
 # functions to load root varfiles from HwSim
 from read_root_varfiles import *
-from sample_report import cutflow_rates, html_escape, latex_number, safe_feature_filename, sample_latex_label, terminal_cutflow_table
+from sample_report import (
+    cutflow_rates,
+    html_escape,
+    latex_number,
+    safe_feature_filename,
+    sample_latex_label,
+    terminal_cutflow_table,
+    write_stacked_input_cross_section_plot,
+)
     
 ###############
 # FUNCTIONS   #
@@ -601,11 +609,15 @@ def _write_report_index(path, plot_rows, table_path, metadata):
     cards = []
     for row in plot_rows:
         plot_rel = Path("plots") / Path(row["path"]).name
+        if row.get("kind") == "stacked_input_xsec":
+            detail = row.get("detail", "input cross section / bin")
+        else:
+            detail = f"importance = {row['importance']:.6g}"
         cards.append(
             "<article>"
             f"<a href=\"{html_escape(plot_rel)}\"><img src=\"{html_escape(plot_rel)}\" alt=\"{html_escape(row['feature'])}\"></a>"
             f"<h2>{html_escape(row['feature'])}</h2>"
-            f"<p>importance = {row['importance']:.6g}</p>"
+            f"<p>{html_escape(detail)}</p>"
             "</article>"
         )
 
@@ -782,6 +794,8 @@ def write_sample_report(
                     "label": label,
                     "features": features,
                     "raw_weights": raw_weights,
+                    "input_xsec_fb": float(input_xsec),
+                    "is_signal": bool(is_signal),
                     "style": _sample_style(start_index + index),
                 }
             )
@@ -827,6 +841,38 @@ def write_sample_report(
                 "importance": float(importances[feature_index]),
             }
         )
+        stacked_path = plots_dir / f"{safe_feature_filename(feature)}_stacked_input_xsec.png"
+        stacked_samples = []
+        for sample in plot_samples:
+            features = sample["features"]
+            if features.size == 0 or feature_index >= features.shape[1]:
+                values = np.asarray([], dtype=float)
+            else:
+                values = features[:, feature_index]
+            stacked_samples.append(
+                {
+                    "label": sample["label"],
+                    "values": values,
+                    "weights": sample["raw_weights"],
+                    "input_xsec_fb": sample["input_xsec_fb"],
+                    "is_signal": sample["is_signal"],
+                }
+            )
+        stacked_info = write_stacked_input_cross_section_plot(
+            stacked_path,
+            feature,
+            stacked_samples,
+            signal_scale=1000.0,
+        )
+        stacked_info.update(
+            {
+                "feature": f"{feature} (stacked input xsec)",
+                "observable": feature,
+                "importance": float(importances[feature_index]),
+                "detail": "input cross section / bin; SM signal x1000",
+            }
+        )
+        plot_rows.append(stacked_info)
 
     table_path = output_dir / "cutflow_table.txt"
     index_path = output_dir / "index.html"
