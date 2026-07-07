@@ -1,3 +1,4 @@
+import ast
 import math
 import sys
 import tempfile
@@ -108,6 +109,7 @@ class SampleReportFactorTests(unittest.TestCase):
         rows = [
             {
                 "label": r"SM $gg\to hhhh\to 8b$",
+                "is_signal": True,
                 "generation_xsec_fb": 0.023,
                 "generation_events": 69.0,
                 "input_xsec_fb": 0.0012,
@@ -136,10 +138,48 @@ class SampleReportFactorTests(unittest.TestCase):
         self.assertNotIn("$", table)
         self.assertIn("+", table)
 
+    def test_terminal_cutflow_table_keeps_sm_first_then_orders_by_xgboost_yield(self):
+        rows = [
+            {
+                "label": "low background",
+                "generation_xsec_fb": 10.0,
+                "generation_events": 30000.0,
+                "input_xsec_fb": 1.0,
+                "input_events": 3000.0,
+                "xgboost_xsec_fb": 0.01,
+                "xgboost_events": 30.0,
+            },
+            {
+                "label": r"SM $gg\to hhhh\to 8b$",
+                "is_signal": True,
+                "generation_xsec_fb": 0.023,
+                "generation_events": 69.0,
+                "input_xsec_fb": 0.0012,
+                "input_events": 3.6,
+                "xgboost_xsec_fb": 4.2e-5,
+                "xgboost_events": 0.126,
+            },
+            {
+                "label": "high background",
+                "generation_xsec_fb": 10.0,
+                "generation_events": 30000.0,
+                "input_xsec_fb": 1.0,
+                "input_events": 3000.0,
+                "xgboost_xsec_fb": 0.1,
+                "xgboost_events": 300.0,
+            },
+        ]
+
+        table = terminal_cutflow_table(rows, luminosity=3000.0, threshold=0.5)
+
+        self.assertLess(table.index("SM gg->hhhh->8b"), table.index("high background"))
+        self.assertLess(table.index("high background"), table.index("low background"))
+
     def test_terminal_xgboost_mc_table_renders_per_sample_counts(self):
         rows = [
             {
                 "process_id": "sm_4h",
+                "is_signal": True,
                 "description": r"SM $gg\to hhhh\to 8b$",
                 "entries": 120,
                 "selected_entries": 7,
@@ -170,6 +210,43 @@ class SampleReportFactorTests(unittest.TestCase):
         self.assertIn("SM gg->hhhh->8b", table)
         self.assertIn("gg->6b+c cbar", table)
         self.assertNotIn("$", table)
+
+    def test_terminal_xgboost_mc_table_orders_by_expected_selected_events(self):
+        rows = [
+            {
+                "description": "low background",
+                "entries": 50000,
+                "selected_entries": 1,
+                "expected_selected_events": 0.1,
+            },
+            {
+                "description": "high background",
+                "entries": 50000,
+                "selected_entries": 20,
+                "expected_selected_events": 2.0,
+            },
+        ]
+
+        table = terminal_xgboost_mc_table(rows, threshold=0.5)
+
+        self.assertLess(table.index("high background"), table.index("low background"))
+
+    def test_latex_cutflow_writer_sorts_rows_by_importance(self):
+        module_path = CODE_DIR / "xgboost_root_varfiles_module.py"
+        tree = ast.parse(module_path.read_text())
+        writer = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_write_cutflow_latex_table"
+        )
+        calls_sorter = any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "sort_rows_by_importance"
+            for node in ast.walk(writer)
+        )
+
+        self.assertTrue(calls_sorter)
 
     def test_poisson_event_interval_reports_zero_count_upper_limit(self):
         interval = poisson_event_interval(

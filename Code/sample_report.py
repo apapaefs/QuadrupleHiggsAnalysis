@@ -864,6 +864,83 @@ def terminal_label(label):
     return label
 
 
+def _finite_abs_value(row, key):
+    value = (row or {}).get(key)
+    if value is None:
+        return None
+    try:
+        value = abs(float(value))
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _is_signal_row(row):
+    row = row or {}
+    if "is_signal" in row:
+        return bool(row.get("is_signal"))
+    process_id = str(row.get("process_id", "")).lower()
+    if process_id in {"sm", "sm_4h", "gg_hhhh_sm", "gg_to_hhhh_sm"}:
+        return True
+    label = terminal_label(row.get("label") or row.get("description") or "")
+    label = label.lower().replace(" ", "")
+    return "sm" in label and "gg->hhhh" in label
+
+
+def _row_importance(row):
+    primary_keys = ("expected_selected_events", "xgboost_events")
+    for key in primary_keys:
+        value = _finite_abs_value(row, key)
+        if value is not None and value > 0.0:
+            return value
+
+    zero_selected_limit_keys = (
+        "expected_selected_events_upper_limit_95cl",
+        "xgboost_events_upper_limit_95cl",
+    )
+    for key in zero_selected_limit_keys:
+        value = _finite_abs_value(row, key)
+        if value is not None and value > 0.0:
+            return value
+
+    fallback_keys = (
+        *primary_keys,
+        "expected_input_events",
+        "input_events",
+        "generation_events",
+        "expected_selected_xsec_fb",
+        "xgboost_xsec_fb",
+        "input_xsec_fb",
+        "generation_xsec_fb",
+    )
+    for key in fallback_keys:
+        value = _finite_abs_value(row, key)
+        if value is not None:
+            return value
+    return 0.0
+
+
+def sort_rows_by_importance(rows, keep_signal_first=True):
+    """Order report rows by analysis importance, with SM signal pinned first."""
+
+    enumerated = list(enumerate(rows or []))
+
+    def sorted_items(items):
+        return sorted(items, key=lambda item: (-_row_importance(item[1]), item[0]))
+
+    if not keep_signal_first:
+        return [row for _, row in sorted_items(enumerated)]
+
+    signal_items = []
+    other_items = []
+    for item in enumerated:
+        if _is_signal_row(item[1]):
+            signal_items.append(item)
+        else:
+            other_items.append(item)
+    return [row for _, row in signal_items] + [row for _, row in sorted_items(other_items)]
+
+
 def _row_interval_value(row, prefix):
     value = row.get(prefix)
     if value is None and prefix == "expected_selected_events":
@@ -936,6 +1013,7 @@ def _terminal_table(headers, rows, right_aligned=None):
 
 
 def terminal_cutflow_table(rows, luminosity, threshold):
+    rows = sort_rows_by_importance(rows)
     headers = [
         "Sample",
         "sigma_gen [fb]",
@@ -991,7 +1069,7 @@ def _expected_with_error(row):
 
 
 def terminal_xgboost_mc_table(rows, title="Per-sample XGBoost MC event counts", threshold=None):
-    rows = list(rows or [])
+    rows = sort_rows_by_importance(rows)
     headers = ["Sample", "MC selected / input", "N_XGB (95% CL)"]
     table_rows = [
         [

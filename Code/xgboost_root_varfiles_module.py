@@ -35,6 +35,7 @@ from sample_report import (
     latex_number,
     safe_feature_filename,
     sample_latex_label,
+    sort_rows_by_importance,
     terminal_cutflow_table,
     write_stacked_input_cross_section_plot,
 )
@@ -374,8 +375,83 @@ def _write_scores_csv(path, labels, scores, physical_weights, sources):
             writer.writerow([int(label), float(score), float(weight), source])
 
 
+def _nonnegative_metric_weights(sample_weight):
+    """Return non-negative weights for classifier efficiency diagnostics."""
+
+    weights = np.asarray(sample_weight, dtype=float).ravel()
+    if not np.all(np.isfinite(weights)):
+        raise ValueError("classifier metric weights received non-finite sample weights")
+    return np.abs(weights)
+
+
+def _weighted_binary_auc(labels, scores, sample_weight=None):
+    """Weighted binary AUC from the rank-sum definition.
+
+    sklearn's weighted ROC integration can fail when the cumulative weighted FPR
+    has tiny floating-point reversals from very uneven positive weights. The
+    rank definition is equivalent for non-negative weights and avoids that
+    monotonicity check.
+    """
+
+    labels = np.asarray(labels, dtype=int).ravel()
+    scores = np.asarray(scores, dtype=float).ravel()
+    if sample_weight is None:
+        weights = np.ones_like(scores, dtype=float)
+    else:
+        weights = np.asarray(sample_weight, dtype=float).ravel()
+
+    if labels.shape != scores.shape or labels.shape != weights.shape:
+        raise ValueError("labels, scores, and sample_weight must have matching shapes")
+    if np.any((labels != 0) & (labels != 1)):
+        raise ValueError("weighted binary AUC expects labels encoded as 0 and 1")
+    if not np.all(np.isfinite(scores)):
+        raise ValueError("weighted binary AUC received non-finite scores")
+    if not np.all(np.isfinite(weights)):
+        raise ValueError("weighted binary AUC received non-finite sample weights")
+    if np.any(weights < 0):
+        raise ValueError("weighted binary AUC requires non-negative sample weights")
+
+    positive_weight_mask = weights > 0
+    labels = labels[positive_weight_mask]
+    scores = scores[positive_weight_mask]
+    weights = weights[positive_weight_mask]
+
+    pos_total = np.sum(weights[labels == 1], dtype=np.longdouble)
+    neg_total = np.sum(weights[labels == 0], dtype=np.longdouble)
+    if pos_total <= 0 or neg_total <= 0:
+        raise ValueError("weighted binary AUC requires positive signal and background weights")
+
+    order = np.argsort(scores, kind="mergesort")
+    sorted_scores = scores[order]
+    sorted_labels = labels[order]
+    sorted_weights = weights[order].astype(np.longdouble, copy=False)
+
+    neg_weight_below = np.longdouble(0.0)
+    concordant_weight = np.longdouble(0.0)
+    start = 0
+    n_scores = len(sorted_scores)
+    while start < n_scores:
+        end = start + 1
+        while end < n_scores and sorted_scores[end] == sorted_scores[start]:
+            end += 1
+        group_labels = sorted_labels[start:end]
+        group_weights = sorted_weights[start:end]
+        pos_weight = np.sum(group_weights[group_labels == 1], dtype=np.longdouble)
+        neg_weight = np.sum(group_weights[group_labels == 0], dtype=np.longdouble)
+        concordant_weight += pos_weight * (neg_weight_below + np.longdouble(0.5) * neg_weight)
+        neg_weight_below += neg_weight
+        start = end
+
+    auc_value = concordant_weight / (pos_total * neg_total)
+    return float(np.clip(auc_value, 0.0, 1.0))
+
+
+def _weighted_auc_for_diagnostics(labels, scores, sample_weight):
+    return _weighted_binary_auc(labels, scores, _nonnegative_metric_weights(sample_weight))
+
+
 def _write_roc_plot(path, labels, scores, physical_weights):
-    fpr, tpr, _ = roc_curve(labels, scores, sample_weight=physical_weights)
+    fpr, tpr, _ = roc_curve(labels, scores, sample_weight=_nonnegative_metric_weights(physical_weights))
     plt.figure(figsize=(6, 5))
     plt.plot(fpr, tpr, label="XGBoost")
     plt.plot([0, 1], [0, 1], "k--", linewidth=1)
@@ -560,6 +636,7 @@ def _write_feature_shape_plot(path, feature_index, feature_name, samples):
 
 
 def _write_cutflow_latex_table(path, rows, luminosity, threshold):
+    rows = sort_rows_by_importance(rows)
     lines = [
         rf"% Luminosity: {luminosity:g} fb^{{-1}}",
         rf"% XGBoost threshold: {threshold:g}",
@@ -871,7 +948,8 @@ def write_sample_report(
     table_path = output_dir / "cutflow_table.txt"
     index_path = output_dir / "index.html"
     metadata_path = output_dir / "report_metadata.json"
-    _write_cutflow_latex_table(table_path, rows, luminosity, threshold)
+    report_rows = sort_rows_by_importance(rows)
+    _write_cutflow_latex_table(table_path, report_rows, luminosity, threshold)
     metadata = {
         "luminosity_fb_inverse": luminosity,
         "threshold": threshold,
@@ -879,7 +957,7 @@ def write_sample_report(
         "table": str(table_path),
         "index": str(index_path),
         "plots": plot_rows,
-        "samples": rows,
+        "samples": report_rows,
         "normalisation": {
             "generation_columns": "K-factors and decay branching ratios",
             "input_and_xgboost_columns": "K-factors, decay branching ratios, and b-tag/mistag factors",
@@ -892,7 +970,7 @@ def write_sample_report(
     print("Wrote sample report table:", table_path)
     print("Wrote sample report index:", index_path)
     print()
-    print(terminal_cutflow_table(rows, luminosity, threshold))
+    print(terminal_cutflow_table(report_rows, luminosity, threshold))
     return metadata
 
 
@@ -1010,7 +1088,7 @@ def run_signal_background_analysis(
     predictions = (scores >= 0.5).astype(int)
     accuracy = accuracy_score(y_test, predictions)
     auc_unweighted = roc_auc_score(y_test, scores)
-    auc_weighted = roc_auc_score(y_test, scores, sample_weight=phys_test)
+    auc_weighted = _weighted_auc_for_diagnostics(y_test, scores, phys_test)
     best = _best_significance_threshold(
         scores,
         y_test,
