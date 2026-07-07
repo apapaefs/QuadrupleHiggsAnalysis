@@ -150,7 +150,7 @@ class HHHHXsecOverlayBandWiringTests(unittest.TestCase):
         module_text = MODULE_PATH.read_text()
         analyzer_text = (REPO_DIR / "4h_analyzer.py").read_text()
         self.assertIn("DEFAULT_HHH_XSEC_SOURCE_DIR", module_text)
-        self.assertIn("DEFAULT_HHHH_OVER_HHH_RATIO_LEVELS = (0.01, 0.1, 1.0, 10.0)", module_text)
+        self.assertIn("DEFAULT_HHHH_OVER_HHH_RATIO_LEVELS = (0.01, 0.05, 0.1, 1.0, 10.0)", module_text)
         self.assertIn("/mnt/ssd2/Projects/4H/MG5_aMC_v3_5_15/gg_hhh_c3d4", module_text)
         self.assertIn("c3d4_hhhh_over_hhh_ratio_contours.png", module_text)
         self.assertIn("c3d4_hhhh_8b_over_hhh_6b_ratio_contours.png", module_text)
