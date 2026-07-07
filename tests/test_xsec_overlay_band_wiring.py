@@ -151,6 +151,9 @@ class HHHHXsecOverlayBandWiringTests(unittest.TestCase):
         analyzer_text = (REPO_DIR / "4h_analyzer.py").read_text()
         self.assertIn("DEFAULT_HHH_XSEC_SOURCE_DIR", module_text)
         self.assertIn("DEFAULT_HHHH_OVER_HHH_RATIO_LEVELS = (0.01, 0.05, 0.1, 1.0, 10.0)", module_text)
+        self.assertIn('0.01: {"color": "black", "linestyle": "dotted"}', module_text)
+        self.assertIn('0.05: {"color": "blue", "linestyle": "dashed"}', module_text)
+        self.assertIn('0.1: {"color": "red", "linestyle": "solid"}', module_text)
         self.assertIn("/mnt/ssd2/Projects/4H/MG5_aMC_v3_5_15/gg_hhh_c3d4", module_text)
         self.assertIn("c3d4_hhhh_over_hhh_ratio_contours.png", module_text)
         self.assertIn("c3d4_hhhh_8b_over_hhh_6b_ratio_contours.png", module_text)
@@ -176,6 +179,8 @@ class HHHHXsecOverlayBandWiringTests(unittest.TestCase):
         }
         self.assertIn("contour", called_attrs)
         self.assertNotIn("contourf", called_attrs)
+        self.assertIn("colors=contour_colors", module_text)
+        self.assertIn("linestyles=contour_linestyles", module_text)
 
         string_constants = [
             node.value

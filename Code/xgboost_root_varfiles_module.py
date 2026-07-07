@@ -1770,6 +1770,12 @@ DEFAULT_HHH_XSEC_WIDE_RUNNUM = "3"
 DEFAULT_HHH_XSEC_EXPECTED_WIDE_RUNS = 11
 DEFAULT_HHH_XSEC_EXCLUDED_RUNNUMS = ("1",)
 DEFAULT_HHHH_OVER_HHH_RATIO_LEVELS = (0.01, 0.05, 0.1, 1.0, 10.0)
+DEFAULT_HHHH_OVER_HHH_RATIO_CONTOUR_STYLES = {
+    0.01: {"color": "black", "linestyle": "dotted"},
+    0.05: {"color": "blue", "linestyle": "dashed"},
+    0.1: {"color": "red", "linestyle": "solid"},
+}
+DEFAULT_HHHH_OVER_HHH_RATIO_FALLBACK_CONTOUR_STYLE = {"color": "black", "linestyle": "solid"}
 DEFAULT_HBB_BRANCHING_RATIO = 0.5824
 DEFAULT_HHHH_PERTURBATIVITY_MH = 125.0
 DEFAULT_HHHH_PERTURBATIVITY_V = 246.0
@@ -2433,6 +2439,13 @@ def _format_hhhh_xsec_level(value):
     return "%.2g" % value
 
 
+def _hhhh_over_hhh_ratio_contour_style(level):
+    style = DEFAULT_HHHH_OVER_HHH_RATIO_CONTOUR_STYLES.get(float(level))
+    if style is None:
+        style = DEFAULT_HHHH_OVER_HHH_RATIO_FALLBACK_CONTOUR_STYLE
+    return dict(style)
+
+
 def _hhhh_perturbativity_partial_wave(s, c3_grid, d4_grid):
     k3_squared = (1.0 + c3_grid) ** 2
     k4 = 1.0 + d4_grid
@@ -2999,12 +3012,16 @@ def _write_hhhh_over_hhh_ratio_contour_plot(
         ax.grid(alpha=0.2, linewidth=0.5)
 
         if visible_levels:
+            contour_styles = [_hhhh_over_hhh_ratio_contour_style(level) for level in visible_levels]
+            contour_colors = [style["color"] for style in contour_styles]
+            contour_linestyles = [style["linestyle"] for style in contour_styles]
             contour = ax.contour(
                 c3_grid,
                 d4_grid,
                 ratio_masked,
                 levels=visible_levels,
-                colors=["black"],
+                colors=contour_colors,
+                linestyles=contour_linestyles,
                 linewidths=1.8,
             )
             ax.clabel(
@@ -3035,6 +3052,10 @@ def _write_hhhh_over_hhh_ratio_contour_plot(
                 "ratio_max": ratio_max,
                 "contour_levels_requested": [float(level) for level in ratio_levels],
                 "contour_levels_drawn": visible_levels,
+                "contour_level_styles": {
+                    _format_hhhh_xsec_level(level): _hhhh_over_hhh_ratio_contour_style(level)
+                    for level in visible_levels
+                },
                 "positive_finite_grid_points": int(np.count_nonzero(valid_ratio)),
                 "grid_points": int(ratio.size),
             }
