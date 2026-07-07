@@ -1663,9 +1663,26 @@ DEFAULT_C3D4_CHEBYSHEV_TERMS = (
     + [(i, 1) for i in range(0, 5)]
     + [(i, 2) for i in range(0, 3)]
 )
+DEFAULT_HHH_C3D4_CHEBYSHEV_TERMS = (
+    (0, 0),
+    (1, 0),
+    (2, 0),
+    (3, 0),
+    (4, 0),
+    (0, 1),
+    (1, 1),
+    (2, 1),
+    (0, 2),
+)
 DEFAULT_HHHH_XSEC_SOURCE_DIR = Path("/mnt/ssd2/Projects/4H/MG5_aMC_v3_5_15/gg_4h_c3d4")
+DEFAULT_HHH_XSEC_SOURCE_DIR = Path("/mnt/ssd2/Projects/4H/MG5_aMC_v3_5_15/gg_hhh_c3d4")
 DEFAULT_HHHH_XSEC_WIDE_RUNNUM = "3"
 DEFAULT_HHHH_XSEC_EXPECTED_WIDE_RUNS = 17
+DEFAULT_HHH_XSEC_WIDE_RUNNUM = "3"
+DEFAULT_HHH_XSEC_EXPECTED_WIDE_RUNS = 11
+DEFAULT_HHH_XSEC_EXCLUDED_RUNNUMS = ("1",)
+DEFAULT_HHHH_OVER_HHH_RATIO_LEVELS = (0.01, 0.1, 1.0, 10.0)
+DEFAULT_HBB_BRANCHING_RATIO = 0.5824
 DEFAULT_HHHH_PERTURBATIVITY_MH = 125.0
 DEFAULT_HHHH_PERTURBATIVITY_V = 246.0
 DEFAULT_HHHH_PERTURBATIVITY_LEVEL = 0.5
@@ -2234,24 +2251,26 @@ def _read_hhhh_xsec_error_pb(proc_dir, run_name, xsec_pb):
     return max(abs(float(xsec_pb)) * 0.01, 1.0e-30)
 
 
-def _read_hhhh_xsec_points(source_dir):
+def _read_c3d4_xsec_points(source_dir, run_prefix, process_label, excluded_runnumbers=()):
     proc_dir = Path(source_dir)
     event_dir = proc_dir / "Events"
     if not event_dir.exists():
-        raise RuntimeError("hhhh cross-section Events directory not found: " + str(event_dir))
+        raise RuntimeError(process_label + " cross-section Events directory not found: " + str(event_dir))
 
-    prefix = "run_gg_4h_"
     points = []
     counts = {}
-    for run_dir in sorted(event_dir.glob(prefix + "*")):
+    excluded_runnumbers = set(str(runnum) for runnum in excluded_runnumbers)
+    for run_dir in sorted(event_dir.glob(run_prefix + "*")):
         if not run_dir.is_dir():
             continue
         run_name = run_dir.name
-        rest = run_name[len(prefix):]
+        rest = run_name[len(run_prefix):]
         parts = rest.split("_")
         if len(parts) != 3:
             continue
         runnum, c3_text, d4_text = parts
+        if str(runnum) in excluded_runnumbers:
+            continue
         try:
             c3 = float(c3_text)
             d4 = float(d4_text)
@@ -2276,10 +2295,23 @@ def _read_hhhh_xsec_points(source_dir):
         counts[runnum] = counts.get(runnum, 0) + 1
 
     if not points:
-        raise RuntimeError("No completed hhhh cross-section runs found in " + str(event_dir))
+        raise RuntimeError("No completed " + process_label + " cross-section runs found in " + str(event_dir))
     points.sort(key=lambda row: (row["c3"], row["d4"], row["runnum"]))
     counts = dict(sorted(counts.items(), key=lambda item: int(item[0]) if item[0].isdigit() else item[0]))
     return points, counts
+
+
+def _read_hhhh_xsec_points(source_dir):
+    return _read_c3d4_xsec_points(source_dir, "run_gg_4h_", "hhhh")
+
+
+def _read_hhh_xsec_points(source_dir):
+    return _read_c3d4_xsec_points(
+        source_dir,
+        "run_gg_hhh_",
+        "hhh",
+        excluded_runnumbers=DEFAULT_HHH_XSEC_EXCLUDED_RUNNUMS,
+    )
 
 
 def _make_hhhh_xsec_log_levels(ratio):
@@ -2758,6 +2790,174 @@ def _write_hhhh_xsec_limit_overlay_plot(
         return None, metadata
 
 
+def _write_hhhh_over_hhh_ratio_contour_plot(
+    path,
+    hhhh_source_dir,
+    hhh_source_dir,
+    hhhh_fit_terms,
+    hhh_fit_terms,
+    fit_k3_range,
+    fit_k4_range,
+    plot_c3_range,
+    plot_d4_range,
+    plot_n_c3,
+    plot_n_d4,
+    ratio_levels=DEFAULT_HHHH_OVER_HHH_RATIO_LEVELS,
+    ratio_scale=1.0,
+    ratio_label=r"$\sigma(hhhh)/\sigma(hhh)$",
+):
+    metadata = {
+        "status": "not_run",
+        "hhhh_source_dir": str(hhhh_source_dir),
+        "hhh_source_dir": str(hhh_source_dir),
+        "ratio_levels": [float(level) for level in ratio_levels],
+        "ratio_scale": float(ratio_scale),
+        "ratio_label": ratio_label,
+    }
+    try:
+        ratio_scale = float(ratio_scale)
+        if ratio_scale <= 0.0 or not math.isfinite(ratio_scale):
+            metadata["status"] = "skipped"
+            metadata["reason"] = "ratio scale is not positive and finite"
+            return None, metadata
+        hhhh_points, hhhh_counts = _read_hhhh_xsec_points(hhhh_source_dir)
+        hhh_points, hhh_counts = _read_hhh_xsec_points(hhh_source_dir)
+        hhhh_fit = _fit_c3d4_chebyshev(
+            hhhh_points,
+            "xsec_pb",
+            "xsec_error_pb",
+            hhhh_fit_terms,
+            fit_k3_range,
+            fit_k4_range,
+        )
+        hhh_fit = _fit_c3d4_chebyshev(
+            hhh_points,
+            "xsec_pb",
+            "xsec_error_pb",
+            hhh_fit_terms,
+            fit_k3_range,
+            fit_k4_range,
+        )
+        metadata.update(
+            {
+                "hhhh_n_points": len(hhhh_points),
+                "hhh_n_points": len(hhh_points),
+                "hhhh_run_counts": hhhh_counts,
+                "hhh_run_counts": hhh_counts,
+                "hhhh_chebyshev_fit": hhhh_fit,
+                "hhh_chebyshev_fit": hhh_fit,
+                "hhh_excluded_runnumbers": list(DEFAULT_HHH_XSEC_EXCLUDED_RUNNUMS),
+            }
+        )
+        if hhhh_fit.get("status") != "ok":
+            metadata["status"] = "skipped"
+            metadata["reason"] = "hhhh fit: " + hhhh_fit.get("reason", "unknown reason")
+            return None, metadata
+        if hhh_fit.get("status") != "ok":
+            metadata["status"] = "skipped"
+            metadata["reason"] = "hhh fit: " + hhh_fit.get("reason", "unknown reason")
+            return None, metadata
+
+        hhhh_wide_count = hhhh_counts.get(DEFAULT_HHHH_XSEC_WIDE_RUNNUM, 0)
+        if hhhh_wide_count < DEFAULT_HHHH_XSEC_EXPECTED_WIDE_RUNS:
+            metadata["hhhh_wide_run_warning"] = (
+                "run "
+                + DEFAULT_HHHH_XSEC_WIDE_RUNNUM
+                + " has "
+                + str(hhhh_wide_count)
+                + " completed points; expected "
+                + str(DEFAULT_HHHH_XSEC_EXPECTED_WIDE_RUNS)
+            )
+        hhh_wide_count = hhh_counts.get(DEFAULT_HHH_XSEC_WIDE_RUNNUM, 0)
+        if hhh_wide_count < DEFAULT_HHH_XSEC_EXPECTED_WIDE_RUNS:
+            metadata["hhh_wide_run_warning"] = (
+                "run "
+                + DEFAULT_HHH_XSEC_WIDE_RUNNUM
+                + " has "
+                + str(hhh_wide_count)
+                + " completed points; expected "
+                + str(DEFAULT_HHH_XSEC_EXPECTED_WIDE_RUNS)
+            )
+
+        c3_grid, d4_grid, hhhh_xsec_grid_pb = _evaluate_c3d4_chebyshev_grid(
+            hhhh_fit,
+            plot_c3_range,
+            plot_d4_range,
+            plot_n_c3,
+            plot_n_d4,
+        )
+        _, _, hhh_xsec_grid_pb = _evaluate_c3d4_chebyshev_grid(
+            hhh_fit,
+            plot_c3_range,
+            plot_d4_range,
+            plot_n_c3,
+            plot_n_d4,
+        )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = ratio_scale * hhhh_xsec_grid_pb / hhh_xsec_grid_pb
+        valid_ratio = np.isfinite(ratio) & (hhhh_xsec_grid_pb > 0.0) & (hhh_xsec_grid_pb > 0.0)
+        if not np.any(valid_ratio):
+            metadata["status"] = "skipped"
+            metadata["reason"] = "no positive finite sigma(hhhh)/sigma(hhh) grid values"
+            return None, metadata
+
+        ratio_masked = np.ma.masked_where(~valid_ratio, ratio)
+        ratio_min = float(np.nanmin(ratio[valid_ratio]))
+        ratio_max = float(np.nanmax(ratio[valid_ratio]))
+        visible_levels = [float(level) for level in ratio_levels if ratio_min <= float(level) <= ratio_max]
+
+        fig, ax = plt.subplots(figsize=(8.2, 6.2), constrained_layout=True)
+        ax.set_facecolor("white")
+        ax.grid(alpha=0.2, linewidth=0.5)
+
+        if visible_levels:
+            contour = ax.contour(
+                c3_grid,
+                d4_grid,
+                ratio_masked,
+                levels=visible_levels,
+                colors=["black"],
+                linewidths=1.8,
+            )
+            ax.clabel(
+                contour,
+                fmt={level: _format_hhhh_xsec_level(level) for level in visible_levels},
+                inline=True,
+                fontsize=11,
+                colors="black",
+            )
+
+        ax.set_xlim(plot_c3_range)
+        ax.set_ylim(plot_d4_range)
+        ax.set_xlabel(r"$c_3$", fontsize=DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE)
+        ax.set_ylabel(r"$d_4$", fontsize=DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE)
+        ax.set_title(ratio_label + " at 14 TeV", fontsize=20)
+        ax.tick_params(axis="both", labelsize=15)
+
+        fig.savefig(path, dpi=220)
+        fig.savefig(_plot_pdf_path(path))
+        plt.close(fig)
+
+        metadata.update(
+            {
+                "status": "ok",
+                "output": str(path),
+                "output_pdf": str(_plot_pdf_path(path)),
+                "ratio_min": ratio_min,
+                "ratio_max": ratio_max,
+                "contour_levels_requested": [float(level) for level in ratio_levels],
+                "contour_levels_drawn": visible_levels,
+                "positive_finite_grid_points": int(np.count_nonzero(valid_ratio)),
+                "grid_points": int(ratio.size),
+            }
+        )
+        return path, metadata
+    except Exception as error:
+        metadata["status"] = "skipped"
+        metadata["reason"] = str(error)
+        return None, metadata
+
+
 def write_c3d4_limit_scan(
     scored_rows,
     output_dir="xgboost_c3d4_limit_scan",
@@ -2783,6 +2983,8 @@ def write_c3d4_limit_scan(
     plot_n_d4=301,
     xsec_overlay=True,
     xsec_source_dir=DEFAULT_HHHH_XSEC_SOURCE_DIR,
+    hhh_xsec_source_dir=DEFAULT_HHH_XSEC_SOURCE_DIR,
+    hbb_branching_ratio=DEFAULT_HBB_BRANCHING_RATIO,
     rate_metadata=None,
 ):
     """Write c3/d4 efficiencies, sigma*eff fits, and 95% CL contour plots."""
@@ -2989,6 +3191,8 @@ def write_c3d4_limit_scan(
     hhhh_xsec_atlas_overlay_no_ratio_contours_plot = (
         output_dir / "c3d4_hhhh_xsec_with_95cl_atl_phys_pub_2025_003_no_ratio_contours.png"
     )
+    hhhh_over_hhh_ratio_contours_plot = output_dir / "c3d4_hhhh_over_hhh_ratio_contours.png"
+    hhhh_8b_over_hhh_6b_ratio_contours_plot = output_dir / "c3d4_hhhh_8b_over_hhh_6b_ratio_contours.png"
 
     fit = None
     fit_metadata = {"status": "disabled"}
@@ -2997,6 +3201,8 @@ def write_c3d4_limit_scan(
         "status": "disabled" if not xsec_overlay else "not_run",
         "cross_section_calculation": False,
     }
+    hhhh_over_hhh_ratio_contours_metadata = {"status": "disabled" if not xsec_overlay else "not_run"}
+    hhhh_8b_over_hhh_6b_ratio_contours_metadata = {"status": "disabled" if not xsec_overlay else "not_run"}
     grid_outputs = {}
     if fit_signal:
         fit_metadata = _fit_c3d4_chebyshev(
@@ -3059,6 +3265,8 @@ def write_c3d4_limit_scan(
             hhhh_xsec_overlay_path = None
             hhhh_xsec_atlas_overlay_path = None
             hhhh_xsec_atlas_overlay_no_ratio_contours_path = None
+            hhhh_over_hhh_ratio_contours_path = None
+            hhhh_8b_over_hhh_6b_ratio_contours_path = None
             if xsec_overlay:
                 (
                     hhhh_xsec_atlas_overlay_no_ratio_contours_path,
@@ -3099,12 +3307,67 @@ def write_c3d4_limit_scan(
                 hhhh_xsec_atlas_overlay_path = hhhh_xsec_overlay_metadata.get("atlas_overlay_output")
                 if hhhh_xsec_overlay_path is None:
                     print("hhhh cross-section overlay skipped:", hhhh_xsec_overlay_metadata.get("reason", "unknown reason"))
+                (
+                    hhhh_over_hhh_ratio_contours_path,
+                    hhhh_over_hhh_ratio_contours_metadata,
+                ) = _write_hhhh_over_hhh_ratio_contour_plot(
+                    hhhh_over_hhh_ratio_contours_plot,
+                    hhhh_source_dir=xsec_source_dir,
+                    hhh_source_dir=hhh_xsec_source_dir,
+                    hhhh_fit_terms=fit_terms,
+                    hhh_fit_terms=DEFAULT_HHH_C3D4_CHEBYSHEV_TERMS,
+                    fit_k3_range=fit_k3_range,
+                    fit_k4_range=fit_k4_range,
+                    plot_c3_range=plot_c3_range,
+                    plot_d4_range=plot_d4_range,
+                    plot_n_c3=plot_n_c3,
+                    plot_n_d4=plot_n_d4,
+                    ratio_scale=1.0,
+                )
+                if hhhh_over_hhh_ratio_contours_path is None:
+                    print(
+                        "hhhh/hhh cross-section ratio contours skipped:",
+                        hhhh_over_hhh_ratio_contours_metadata.get("reason", "unknown reason"),
+                    )
+                (
+                    hhhh_8b_over_hhh_6b_ratio_contours_path,
+                    hhhh_8b_over_hhh_6b_ratio_contours_metadata,
+                ) = _write_hhhh_over_hhh_ratio_contour_plot(
+                    hhhh_8b_over_hhh_6b_ratio_contours_plot,
+                    hhhh_source_dir=xsec_source_dir,
+                    hhh_source_dir=hhh_xsec_source_dir,
+                    hhhh_fit_terms=fit_terms,
+                    hhh_fit_terms=DEFAULT_HHH_C3D4_CHEBYSHEV_TERMS,
+                    fit_k3_range=fit_k3_range,
+                    fit_k4_range=fit_k4_range,
+                    plot_c3_range=plot_c3_range,
+                    plot_d4_range=plot_d4_range,
+                    plot_n_c3=plot_n_c3,
+                    plot_n_d4=plot_n_d4,
+                    ratio_scale=hbb_branching_ratio,
+                    ratio_label=r"$\sigma(gg\to hhhh\to 8b)/\sigma(gg\to hhh\to 6b)$",
+                )
+                hhhh_8b_over_hhh_6b_ratio_contours_metadata["hbb_branching_ratio"] = float(hbb_branching_ratio)
+                hhhh_8b_over_hhh_6b_ratio_contours_metadata["branching_ratio_power_difference"] = 1
+                if hhhh_8b_over_hhh_6b_ratio_contours_path is None:
+                    print(
+                        "hhhh->8b / hhh->6b cross-section ratio contours skipped:",
+                        hhhh_8b_over_hhh_6b_ratio_contours_metadata.get("reason", "unknown reason"),
+                    )
             grid_outputs = {
                 "cl_plot": None if cl_plot_path is None else str(cl_plot_path),
                 "sigma_eff_plot": None if sigma_eff_plot_path is None else str(sigma_eff_plot_path),
                 "hhhh_xsec_overlay_plot": None if hhhh_xsec_overlay_path is None else str(hhhh_xsec_overlay_path),
                 "hhhh_xsec_atlas_overlay_plot": hhhh_xsec_atlas_overlay_path,
                 "hhhh_xsec_atlas_overlay_no_ratio_contours_plot": hhhh_xsec_atlas_overlay_no_ratio_contours_path,
+                "hhhh_over_hhh_ratio_contours_plot": (
+                    None if hhhh_over_hhh_ratio_contours_path is None else str(hhhh_over_hhh_ratio_contours_path)
+                ),
+                "hhhh_8b_over_hhh_6b_ratio_contours_plot": (
+                    None
+                    if hhhh_8b_over_hhh_6b_ratio_contours_path is None
+                    else str(hhhh_8b_over_hhh_6b_ratio_contours_path)
+                ),
             }
         else:
             print("Chebyshev fit skipped:", fit_metadata.get("reason", "unknown reason"))
@@ -3206,6 +3469,14 @@ def write_c3d4_limit_scan(
         "hhhh_xsec_atlas_overlay_no_ratio_contours_plot_pdf": _plot_pdf_output(
             grid_outputs.get("hhhh_xsec_atlas_overlay_no_ratio_contours_plot")
         ),
+        "hhhh_over_hhh_ratio_contours_plot": grid_outputs.get("hhhh_over_hhh_ratio_contours_plot"),
+        "hhhh_over_hhh_ratio_contours_plot_pdf": _plot_pdf_output(
+            grid_outputs.get("hhhh_over_hhh_ratio_contours_plot")
+        ),
+        "hhhh_8b_over_hhh_6b_ratio_contours_plot": grid_outputs.get("hhhh_8b_over_hhh_6b_ratio_contours_plot"),
+        "hhhh_8b_over_hhh_6b_ratio_contours_plot_pdf": _plot_pdf_output(
+            grid_outputs.get("hhhh_8b_over_hhh_6b_ratio_contours_plot")
+        ),
         "efficiency_plot": None if efficiency_plot_path is None else str(efficiency_plot_path),
         "efficiency_plot_pdf": _plot_pdf_output(efficiency_plot_path),
     }
@@ -3234,6 +3505,8 @@ def write_c3d4_limit_scan(
         "chebyshev_fit": fit_metadata,
         "hhhh_xsec_overlay": hhhh_xsec_overlay_metadata,
         "hhhh_xsec_atlas_overlay_no_ratio_contours": hhhh_xsec_atlas_overlay_no_ratio_contours_metadata,
+        "hhhh_over_hhh_ratio_contours": hhhh_over_hhh_ratio_contours_metadata,
+        "hhhh_8b_over_hhh_6b_ratio_contours": hhhh_8b_over_hhh_6b_ratio_contours_metadata,
         "outputs": outputs,
     }
     with open(fit_json, "w") as handle:
@@ -3270,6 +3543,14 @@ def write_c3d4_limit_scan(
         print("Wrote", outputs["hhhh_xsec_atlas_overlay_no_ratio_contours_plot"])
     if outputs["hhhh_xsec_atlas_overlay_no_ratio_contours_plot_pdf"] is not None:
         print("Wrote", outputs["hhhh_xsec_atlas_overlay_no_ratio_contours_plot_pdf"])
+    if outputs["hhhh_over_hhh_ratio_contours_plot"] is not None:
+        print("Wrote", outputs["hhhh_over_hhh_ratio_contours_plot"])
+    if outputs["hhhh_over_hhh_ratio_contours_plot_pdf"] is not None:
+        print("Wrote", outputs["hhhh_over_hhh_ratio_contours_plot_pdf"])
+    if outputs["hhhh_8b_over_hhh_6b_ratio_contours_plot"] is not None:
+        print("Wrote", outputs["hhhh_8b_over_hhh_6b_ratio_contours_plot"])
+    if outputs["hhhh_8b_over_hhh_6b_ratio_contours_plot_pdf"] is not None:
+        print("Wrote", outputs["hhhh_8b_over_hhh_6b_ratio_contours_plot_pdf"])
     if efficiency_plot_path is not None:
         print("Wrote", efficiency_plot_path)
     if outputs["efficiency_plot_pdf"] is not None:

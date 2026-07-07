@@ -146,6 +146,67 @@ class HHHHXsecOverlayBandWiringTests(unittest.TestCase):
         self.assertIn("fontsize=DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE", module_text)
         self.assertNotIn('marker="o", color="white", markeredgecolor="black", markersize=5', module_text)
 
+    def test_hhhh_over_hhh_ratio_contour_plot_is_wired(self):
+        module_text = MODULE_PATH.read_text()
+        analyzer_text = (REPO_DIR / "4h_analyzer.py").read_text()
+        self.assertIn("DEFAULT_HHH_XSEC_SOURCE_DIR", module_text)
+        self.assertIn("DEFAULT_HHHH_OVER_HHH_RATIO_LEVELS = (0.01, 0.1, 1.0, 10.0)", module_text)
+        self.assertIn("/mnt/ssd2/Projects/4H/MG5_aMC_v3_5_15/gg_hhh_c3d4", module_text)
+        self.assertIn("c3d4_hhhh_over_hhh_ratio_contours.png", module_text)
+        self.assertIn("c3d4_hhhh_8b_over_hhh_6b_ratio_contours.png", module_text)
+        self.assertIn("hhhh_over_hhh_ratio_contours_plot", module_text)
+        self.assertIn("hhhh_8b_over_hhh_6b_ratio_contours_plot", module_text)
+        self.assertIn("--hhh-xsec-source-dir", analyzer_text)
+        self.assertIn("hbb_branching_ratio=args.hbb_branching_ratio", analyzer_text)
+
+        tree = _module_tree()
+        writer = _function_def(tree, "_write_hhhh_over_hhh_ratio_contour_plot")
+        called_names = {
+            node.func.id
+            for node in ast.walk(writer)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        self.assertIn("_read_hhhh_xsec_points", called_names)
+        self.assertIn("_read_hhh_xsec_points", called_names)
+
+        called_attrs = {
+            node.func.attr
+            for node in ast.walk(writer)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        self.assertIn("contour", called_attrs)
+        self.assertNotIn("contourf", called_attrs)
+
+        string_constants = [
+            node.value
+            for node in ast.walk(writer)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        ]
+        self.assertIn("black", string_constants)
+        self.assertIn(r"$\sigma(hhhh)/\sigma(hhh)$", string_constants)
+        self.assertIn(r"$\sigma(gg\to hhhh\to 8b)/\sigma(gg\to hhh\to 6b)$", module_text)
+
+    def test_limit_scan_passes_hhh_source_to_ratio_contour_plot(self):
+        tree = _module_tree()
+        scan_writer = _function_def(tree, "write_c3d4_limit_scan")
+        argument_names = [arg.arg for arg in scan_writer.args.args]
+        self.assertIn("hhh_xsec_source_dir", argument_names)
+        self.assertIn("hbb_branching_ratio", argument_names)
+
+        ratio_calls = [
+            node
+            for node in ast.walk(scan_writer)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_write_hhhh_over_hhh_ratio_contour_plot"
+        ]
+        self.assertTrue(ratio_calls)
+        keyword_names = {keyword.arg for call in ratio_calls for keyword in call.keywords}
+        self.assertIn("hhh_source_dir", keyword_names)
+        self.assertIn("ratio_scale", keyword_names)
+
+        self.assertIn("hbb_branching_ratio", MODULE_PATH.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

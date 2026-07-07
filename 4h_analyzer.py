@@ -1908,9 +1908,15 @@ def _run_local_xgboost_cli():
         help="MG5 gg_4h_c3d4 directory used for the hhhh cross-section plot with the 95%% CL overlay.",
     )
     parser.add_argument(
+        "--hhh-xsec-source-dir",
+        type=_Path,
+        default=_Path("/mnt/ssd2/Projects/4H/MG5_aMC_v3_5_15/gg_hhh_c3d4"),
+        help="MG5 gg_hhh_c3d4 directory used for the sigma(hhhh)/sigma(hhh) contour plot.",
+    )
+    parser.add_argument(
         "--no-c3d4-xsec-overlay",
         action="store_true",
-        help="Do not write the hhhh cross-section plot with the 95%% CL contour overlay.",
+        help="Do not write the hhhh cross-section plot or hhhh/hhh ratio contours.",
     )
     parser.add_argument(
         "--analysis-exe",
@@ -2195,6 +2201,8 @@ def _run_local_xgboost_cli():
             plot_n_d4=args.c3d4_plot_nbins,
             xsec_overlay=not args.no_c3d4_xsec_overlay,
             xsec_source_dir=args.c3d4_xsec_source_dir,
+            hhh_xsec_source_dir=args.hhh_xsec_source_dir,
+            hbb_branching_ratio=args.hbb_branching_ratio,
             rate_metadata=rate_metadata,
         )
         _print_sm_background_mc_counts(metrics)
