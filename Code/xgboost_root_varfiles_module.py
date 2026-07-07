@@ -26,11 +26,16 @@ from tqdm.auto import tqdm
 # functions to load root varfiles from HwSim
 from read_root_varfiles import *
 from sample_report import (
+    attach_poisson_event_interval,
+    background_variation_scale_factors,
+    best_significance_threshold,
     cutflow_rates,
+    event_interval_text,
     html_escape,
     latex_number,
     safe_feature_filename,
     sample_latex_label,
+    sort_rows_by_importance,
     terminal_cutflow_table,
     write_stacked_input_cross_section_plot,
 )
@@ -340,41 +345,26 @@ def _mc_event_count_summary(signal_summary, background_summary):
     }
 
 
-def _best_significance_threshold(scores, labels, physical_weights, systematics=0.0):
-    thresholds = np.linspace(0.0, 1.0, 501)
-    best = {
-        "threshold": 0.5,
-        "signal_events": 0.0,
-        "background_events": 0.0,
-        "significance": 0.0,
-        "signal_efficiency": 0.0,
-        "background_efficiency": 0.0,
-    }
-
-    labels = np.asarray(labels)
-    scores = np.asarray(scores)
-    physical_weights = np.asarray(physical_weights, dtype=float)
-    total_signal = np.sum(physical_weights[labels == 1])
-    total_background = np.sum(physical_weights[labels == 0])
-
-    for threshold in thresholds:
-        selected = scores >= threshold
-        signal = float(np.sum(physical_weights[(labels == 1) & selected]))
-        background = float(np.sum(physical_weights[(labels == 0) & selected]))
-        if background <= 0.0:
-            continue
-        denominator = math.sqrt(background + (systematics * background) ** 2)
-        significance = signal / denominator
-        if significance > best["significance"]:
-            best = {
-                "threshold": float(threshold),
-                "signal_events": signal,
-                "background_events": background,
-                "significance": float(significance),
-                "signal_efficiency": float(signal / total_signal) if total_signal > 0 else 0.0,
-                "background_efficiency": float(background / total_background) if total_background > 0 else 0.0,
-            }
-    return best
+def _best_significance_threshold(
+    scores,
+    labels,
+    physical_weights,
+    systematics=0.0,
+    background_sources=None,
+    min_background_mc_entries=25,
+    min_background_effective_entries=10.0,
+    min_background_mc_entries_per_sample=0,
+):
+    return best_significance_threshold(
+        scores,
+        labels,
+        physical_weights,
+        systematics=systematics,
+        background_sources=background_sources,
+        min_background_mc_entries=min_background_mc_entries,
+        min_background_effective_entries=min_background_effective_entries,
+        min_background_mc_entries_per_sample=min_background_mc_entries_per_sample,
+    )
 
 
 def _write_scores_csv(path, labels, scores, physical_weights, sources):
@@ -385,8 +375,83 @@ def _write_scores_csv(path, labels, scores, physical_weights, sources):
             writer.writerow([int(label), float(score), float(weight), source])
 
 
+def _nonnegative_metric_weights(sample_weight):
+    """Return non-negative weights for classifier efficiency diagnostics."""
+
+    weights = np.asarray(sample_weight, dtype=float).ravel()
+    if not np.all(np.isfinite(weights)):
+        raise ValueError("classifier metric weights received non-finite sample weights")
+    return np.abs(weights)
+
+
+def _weighted_binary_auc(labels, scores, sample_weight=None):
+    """Weighted binary AUC from the rank-sum definition.
+
+    sklearn's weighted ROC integration can fail when the cumulative weighted FPR
+    has tiny floating-point reversals from very uneven positive weights. The
+    rank definition is equivalent for non-negative weights and avoids that
+    monotonicity check.
+    """
+
+    labels = np.asarray(labels, dtype=int).ravel()
+    scores = np.asarray(scores, dtype=float).ravel()
+    if sample_weight is None:
+        weights = np.ones_like(scores, dtype=float)
+    else:
+        weights = np.asarray(sample_weight, dtype=float).ravel()
+
+    if labels.shape != scores.shape or labels.shape != weights.shape:
+        raise ValueError("labels, scores, and sample_weight must have matching shapes")
+    if np.any((labels != 0) & (labels != 1)):
+        raise ValueError("weighted binary AUC expects labels encoded as 0 and 1")
+    if not np.all(np.isfinite(scores)):
+        raise ValueError("weighted binary AUC received non-finite scores")
+    if not np.all(np.isfinite(weights)):
+        raise ValueError("weighted binary AUC received non-finite sample weights")
+    if np.any(weights < 0):
+        raise ValueError("weighted binary AUC requires non-negative sample weights")
+
+    positive_weight_mask = weights > 0
+    labels = labels[positive_weight_mask]
+    scores = scores[positive_weight_mask]
+    weights = weights[positive_weight_mask]
+
+    pos_total = np.sum(weights[labels == 1], dtype=np.longdouble)
+    neg_total = np.sum(weights[labels == 0], dtype=np.longdouble)
+    if pos_total <= 0 or neg_total <= 0:
+        raise ValueError("weighted binary AUC requires positive signal and background weights")
+
+    order = np.argsort(scores, kind="mergesort")
+    sorted_scores = scores[order]
+    sorted_labels = labels[order]
+    sorted_weights = weights[order].astype(np.longdouble, copy=False)
+
+    neg_weight_below = np.longdouble(0.0)
+    concordant_weight = np.longdouble(0.0)
+    start = 0
+    n_scores = len(sorted_scores)
+    while start < n_scores:
+        end = start + 1
+        while end < n_scores and sorted_scores[end] == sorted_scores[start]:
+            end += 1
+        group_labels = sorted_labels[start:end]
+        group_weights = sorted_weights[start:end]
+        pos_weight = np.sum(group_weights[group_labels == 1], dtype=np.longdouble)
+        neg_weight = np.sum(group_weights[group_labels == 0], dtype=np.longdouble)
+        concordant_weight += pos_weight * (neg_weight_below + np.longdouble(0.5) * neg_weight)
+        neg_weight_below += neg_weight
+        start = end
+
+    auc_value = concordant_weight / (pos_total * neg_total)
+    return float(np.clip(auc_value, 0.0, 1.0))
+
+
+def _weighted_auc_for_diagnostics(labels, scores, sample_weight):
+    return _weighted_binary_auc(labels, scores, _nonnegative_metric_weights(sample_weight))
+
+
 def _write_roc_plot(path, labels, scores, physical_weights):
-    fpr, tpr, _ = roc_curve(labels, scores, sample_weight=physical_weights)
+    fpr, tpr, _ = roc_curve(labels, scores, sample_weight=_nonnegative_metric_weights(physical_weights))
     plt.figure(figsize=(6, 5))
     plt.plot(fpr, tpr, label="XGBoost")
     plt.plot([0, 1], [0, 1], "k--", linewidth=1)
@@ -572,11 +637,13 @@ def _write_feature_shape_plot(path, feature_index, feature_name, samples):
 
 
 def _write_cutflow_latex_table(path, rows, luminosity, threshold):
+    rows = sort_rows_by_importance(rows)
     lines = [
         rf"% Luminosity: {luminosity:g} fb^{{-1}}",
         rf"% XGBoost threshold: {threshold:g}",
         "% Generation columns include K-factors and decay branching ratios.",
         "% Input-selection and XGBoost columns additionally include b-tag and mistag factors.",
+        "% N_XGB entries include Poisson 95% CL intervals from selected MC counts.",
         r"\begin{tabular}{lrrrrrr}",
         r"\hline",
         (
@@ -596,7 +663,7 @@ def _write_cutflow_latex_table(path, rows, luminosity, threshold):
                     f"${latex_number(row['input_xsec_fb'])}$",
                     f"${latex_number(row['input_events'])}$",
                     f"${latex_number(row['xgboost_xsec_fb'])}$",
-                    f"${latex_number(row['xgboost_events'])}$",
+                    event_interval_text(row, "xgboost_events", latex=True),
                 ]
             )
             + r" \\"
@@ -737,7 +804,6 @@ def write_sample_report(
                 selected = np.asarray([], dtype=bool)
 
             selected_weight_sum = float(np.sum(raw_weights[selected])) if raw_weights.size else 0.0
-            selected_weight_sum_sq = float(np.sum(np.square(raw_weights[selected]))) if raw_weights.size else 0.0
             rates = cutflow_rates(
                 raw_xsec_fb=xsec_fb,
                 generation_rate_factor=generation_factor,
@@ -749,11 +815,6 @@ def write_sample_report(
             generation_xsec = rates["generation_xsec_fb"]
             input_xsec = rates["input_xsec_fb"]
             xgboost_xsec = rates["xgboost_xsec_fb"]
-            xgboost_error_events = (
-                luminosity * generation_xsec * float(tag_factor) * math.sqrt(selected_weight_sum_sq) / normalisation
-                if normalisation
-                else 0.0
-            )
             score_weight_sum = float(np.sum(np.abs(raw_weights))) if raw_weights.size else 0.0
             label = sample_latex_label(metadata, is_signal=is_signal)
             row = dict(metadata or {})
@@ -774,7 +835,7 @@ def write_sample_report(
                     "input_events": float(luminosity * input_xsec),
                     "xgboost_xsec_fb": float(xgboost_xsec),
                     "xgboost_events": float(luminosity * xgboost_xsec),
-                    "xgboost_events_error": float(xgboost_error_events),
+                    "xgboost_events_error": 0.0,
                     "input_efficiency": float(input_xsec / generation_xsec) if generation_xsec else 0.0,
                     "xgboost_efficiency_before_tag": (
                         float(selected_weight_sum / input_weight_sum) if input_weight_sum else 0.0
@@ -789,6 +850,16 @@ def write_sample_report(
                     ),
                 }
             )
+            attach_poisson_event_interval(
+                row,
+                selected_entries_key="selected_entries",
+                expected_events_key="xgboost_events",
+                input_entries_key="entries",
+                expected_input_events_key="input_events",
+                output_prefix="xgboost_events",
+                confidence_level=0.95,
+            )
+            row["xgboost_events_error"] = row["xgboost_events_error_high_95cl"]
             rows.append(row)
             plot_samples.append(
                 {
@@ -878,7 +949,8 @@ def write_sample_report(
     table_path = output_dir / "cutflow_table.txt"
     index_path = output_dir / "index.html"
     metadata_path = output_dir / "report_metadata.json"
-    _write_cutflow_latex_table(table_path, rows, luminosity, threshold)
+    report_rows = sort_rows_by_importance(rows)
+    _write_cutflow_latex_table(table_path, report_rows, luminosity, threshold)
     metadata = {
         "luminosity_fb_inverse": luminosity,
         "threshold": threshold,
@@ -886,7 +958,7 @@ def write_sample_report(
         "table": str(table_path),
         "index": str(index_path),
         "plots": plot_rows,
-        "samples": rows,
+        "samples": report_rows,
         "normalisation": {
             "generation_columns": "K-factors and decay branching ratios",
             "input_and_xgboost_columns": "K-factors, decay branching ratios, and b-tag/mistag factors",
@@ -899,7 +971,7 @@ def write_sample_report(
     print("Wrote sample report table:", table_path)
     print("Wrote sample report index:", index_path)
     print()
-    print(terminal_cutflow_table(rows, luminosity, threshold))
+    print(terminal_cutflow_table(report_rows, luminosity, threshold))
     return metadata
 
 
@@ -921,6 +993,9 @@ def run_signal_background_analysis(
     test_size=0.35,
     seed=12345,
     systematics=0.0,
+    min_background_mc_entries=25,
+    min_background_effective_entries=10.0,
+    min_background_mc_entries_per_sample=0,
     max_events=None,
     model_params=None,
 ):
@@ -1014,8 +1089,17 @@ def run_signal_background_analysis(
     predictions = (scores >= 0.5).astype(int)
     accuracy = accuracy_score(y_test, predictions)
     auc_unweighted = roc_auc_score(y_test, scores)
-    auc_weighted = roc_auc_score(y_test, scores, sample_weight=phys_test)
-    best = _best_significance_threshold(scores, y_test, phys_test, systematics)
+    auc_weighted = _weighted_auc_for_diagnostics(y_test, scores, phys_test)
+    best = _best_significance_threshold(
+        scores,
+        y_test,
+        phys_test,
+        systematics,
+        background_sources=src_test,
+        min_background_mc_entries=min_background_mc_entries,
+        min_background_effective_entries=min_background_effective_entries,
+        min_background_mc_entries_per_sample=min_background_mc_entries_per_sample,
+    )
     best_predictions = (scores >= best["threshold"]).astype(int)
     confmatrix = confusion_matrix(y_test, best_predictions, labels=[0, 1])
 
@@ -1045,6 +1129,11 @@ def run_signal_background_analysis(
         "seed": int(seed),
         "luminosity_fb_inverse": float(luminosity),
         "systematics": float(systematics),
+        "threshold_mc_stat_requirements": {
+            "min_background_mc_entries": int(min_background_mc_entries or 0),
+            "min_background_effective_entries": float(min_background_effective_entries or 0.0),
+            "min_background_mc_entries_per_sample": int(min_background_mc_entries_per_sample or 0),
+        },
         "accuracy_threshold_0p5": float(accuracy),
         "auc_unweighted": float(auc_unweighted),
         "auc_weighted": float(auc_weighted),
@@ -1073,6 +1162,15 @@ def run_signal_background_analysis(
     print("Best threshold =", best["threshold"])
     print("Expected S, B =", best["signal_events"], best["background_events"])
     print("S/sqrt(B + syst^2 B^2) =", best["significance"])
+    print(
+        "Selected background MC at threshold =",
+        best.get("selected_background_entries", 0),
+        "raw,",
+        best.get("selected_background_effective_entries", 0.0),
+        "effective",
+    )
+    if not best.get("mc_stat_requirement_satisfied", False):
+        print("Warning:", best.get("mc_stat_warning", "MC-statistics threshold requirement was not satisfied."))
     print("MC event counts")
     print("  Signal entries read =", mc_event_counts["signal_entries_read"])
     if mc_event_counts["signal_generated_events"] is None:
@@ -1172,7 +1270,6 @@ def score_signal_files(
 
         preselected_events = float(np.sum(physical_weights))
         selected_events = float(np.sum(physical_weights[selected]))
-        selected_error = float(np.sqrt(np.sum(np.square(physical_weights[selected]))))
         initial_events = float(luminosity) * effective_xsec_fb
         analysis_efficiency = preselected_events / initial_events if initial_events != 0.0 else 0.0
         weighted_efficiency = selected_events / preselected_events if preselected_events != 0.0 else 0.0
@@ -1203,7 +1300,7 @@ def score_signal_files(
                 "normalisation_source": normalisation_source,
                 "expected_preselected_events": preselected_events,
                 "expected_selected_events": selected_events,
-                "expected_selected_error": selected_error,
+                "expected_selected_error": 0.0,
                 "raw_sigma_eff_fb": float(float(xsec_fb) * weighted_efficiency),
                 "effective_sigma_eff_fb": float(effective_xsec_fb * weighted_efficiency),
                 "analysis_efficiency": float(analysis_efficiency),
@@ -1214,6 +1311,16 @@ def score_signal_files(
                 "mean_score": float(np.average(scores, weights=np.abs(raw_weights))),
             }
         )
+        attach_poisson_event_interval(
+            row,
+            selected_entries_key="selected_entries",
+            expected_events_key="expected_selected_events",
+            input_entries_key="entries",
+            expected_input_events_key="expected_preselected_events",
+            output_prefix="expected_selected_events",
+            confidence_level=0.95,
+        )
+        row["expected_selected_error"] = row["expected_selected_events_error_high_95cl"]
         rows.append(row)
 
         if write_event_scores:
@@ -1260,6 +1367,13 @@ def score_signal_files(
         "expected_preselected_events",
         "expected_selected_events",
         "expected_selected_error",
+        "expected_selected_events_lower_95cl",
+        "expected_selected_events_upper_95cl",
+        "expected_selected_events_error_low_95cl",
+        "expected_selected_events_error_high_95cl",
+        "expected_selected_events_upper_limit_95cl",
+        "expected_selected_events_is_upper_limit",
+        "expected_selected_events_confidence_level",
         "raw_sigma_eff_fb",
         "effective_sigma_eff_fb",
         "analysis_efficiency",
@@ -1365,7 +1479,6 @@ def score_background_files(
 
         preselected_events = float(np.sum(physical_weights))
         selected_events = float(np.sum(physical_weights[selected]))
-        selected_error = float(np.sqrt(np.sum(np.square(physical_weights[selected]))))
         initial_events = float(luminosity) * effective_xsec_fb
         analysis_efficiency = preselected_events / initial_events if initial_events != 0.0 else 0.0
         weighted_efficiency = selected_events / preselected_events if preselected_events != 0.0 else 0.0
@@ -1392,7 +1505,7 @@ def score_background_files(
                 "normalisation_source": normalisation_source,
                 "expected_preselected_events": preselected_events,
                 "expected_selected_events": selected_events,
-                "expected_selected_error": selected_error,
+                "expected_selected_error": 0.0,
                 "raw_sigma_eff_fb": float(float(xsec_fb) * weighted_efficiency),
                 "effective_sigma_eff_fb": float(effective_xsec_fb * weighted_efficiency),
                 "analysis_efficiency": float(analysis_efficiency),
@@ -1403,6 +1516,16 @@ def score_background_files(
                 "mean_score": float(np.average(scores, weights=np.abs(raw_weights))),
             }
         )
+        attach_poisson_event_interval(
+            row,
+            selected_entries_key="selected_entries",
+            expected_events_key="expected_selected_events",
+            input_entries_key="entries",
+            expected_input_events_key="expected_preselected_events",
+            output_prefix="expected_selected_events",
+            confidence_level=0.95,
+        )
+        row["expected_selected_error"] = row["expected_selected_events_error_high_95cl"]
         rows.append(row)
 
     summary_csv = output_dir / "scored_background_samples.csv"
@@ -1431,6 +1554,13 @@ def score_background_files(
         "expected_preselected_events",
         "expected_selected_events",
         "expected_selected_error",
+        "expected_selected_events_lower_95cl",
+        "expected_selected_events_upper_95cl",
+        "expected_selected_events_error_low_95cl",
+        "expected_selected_events_error_high_95cl",
+        "expected_selected_events_upper_limit_95cl",
+        "expected_selected_events_is_upper_limit",
+        "expected_selected_events_confidence_level",
         "raw_sigma_eff_fb",
         "effective_sigma_eff_fb",
         "analysis_efficiency",
@@ -1479,6 +1609,29 @@ def _finite_float(value):
 
 def _json_safe_float(value):
     value = _finite_float(value)
+    return value
+
+
+def _json_safe_value(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.generic):
+        return _json_safe_value(value.item())
+    if isinstance(value, np.ndarray):
+        return _json_safe_value(value.tolist())
+    if isinstance(value, dict):
+        safe_dict = {}
+        for key, item in value.items():
+            if isinstance(key, (str, int, float, bool)) or key is None:
+                safe_key = key
+            else:
+                safe_key = str(_json_safe_value(key))
+            safe_dict[safe_key] = _json_safe_value(item)
+        return safe_dict
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
     return value
 
 
@@ -1589,14 +1742,31 @@ DEFAULT_C3D4_CHEBYSHEV_TERMS = (
     + [(i, 1) for i in range(0, 5)]
     + [(i, 2) for i in range(0, 3)]
 )
+DEFAULT_HHH_C3D4_CHEBYSHEV_TERMS = (
+    (0, 0),
+    (1, 0),
+    (2, 0),
+    (3, 0),
+    (4, 0),
+    (0, 1),
+    (1, 1),
+    (2, 1),
+    (0, 2),
+)
 DEFAULT_HHHH_XSEC_SOURCE_DIR = Path("/mnt/ssd2/Projects/4H/MG5_aMC_v3_5_15/gg_4h_c3d4")
+DEFAULT_HHH_XSEC_SOURCE_DIR = Path("/mnt/ssd2/Projects/4H/MG5_aMC_v3_5_15/gg_hhh_c3d4")
 DEFAULT_HHHH_XSEC_WIDE_RUNNUM = "3"
 DEFAULT_HHHH_XSEC_EXPECTED_WIDE_RUNS = 17
+DEFAULT_HHH_XSEC_WIDE_RUNNUM = "3"
+DEFAULT_HHH_XSEC_EXPECTED_WIDE_RUNS = 11
+DEFAULT_HHH_XSEC_EXCLUDED_RUNNUMS = ("1",)
+DEFAULT_HHHH_OVER_HHH_RATIO_LEVELS = (0.1, 1.0, 10.0)
 DEFAULT_HHHH_PERTURBATIVITY_MH = 125.0
 DEFAULT_HHHH_PERTURBATIVITY_V = 246.0
 DEFAULT_HHHH_PERTURBATIVITY_LEVEL = 0.5
 DEFAULT_HHHH_PERTURBATIVITY_SQRTS = np.arange(200.0, 5000.0, 10.0)
-ATL_PHYS_PUB_2025_003_LABEL = r"ATL-PHYS-PUB-2025-003 (no syst., $L = 3000\,\mathrm{fb}^{-1}$)"
+DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE = 20
+ATL_PHYS_PUB_2025_003_LABEL = r"$gg\rightarrow hhh \rightarrow 6 b$, ATL-PHYS-PUB-2025-003 (no syst.)"
 ATL_PHYS_PUB_2025_003_SOURCE_URL = "https://cds.cern.ch/record/2924772/files/ATL-PHYS-PUB-2025-003.pdf"
 ATL_PHYS_PUB_2025_003_FIGURE = "Figure 7 black no-systematics curve"
 ATL_PHYS_PUB_2025_003_NO_SYST_KAPPA34 = np.array(
@@ -1765,6 +1935,10 @@ ATL_PHYS_PUB_2025_003_NO_SYST_KAPPA34 = np.array(
 )
 
 
+def _luminosity_legend_label(luminosity):
+    return rf"$L = {float(luminosity):g}\,\mathrm{{fb}}^{{-1}}$"
+
+
 def _scale_to_chebyshev(value, value_range):
     xmin, xmax = value_range
     return (2.0 * value - xmin - xmax) / (xmax - xmin)
@@ -1868,6 +2042,67 @@ def _evaluate_c3d4_chebyshev_grid(fit, c3_range, d4_range, n_c3, n_d4):
     return c3_grid, d4_grid, values
 
 
+def _draw_background_variation_band(
+    ax,
+    x_values,
+    y_values,
+    z_values,
+    z_min,
+    z_max,
+    band,
+    contourf_func,
+    contour_func,
+):
+    if not band or not band.get("enabled", False):
+        return False
+    lower = _finite_float(band.get("required_signal_events_low"))
+    upper = _finite_float(band.get("required_signal_events_high"))
+    if lower is None or upper is None:
+        return False
+    lower, upper = sorted((lower, upper))
+    visible_lower = max(float(z_min), lower)
+    visible_upper = min(float(z_max), upper)
+    color = band.get("color", "#d55e00")
+    alpha = float(band.get("alpha", 0.22))
+    boundary_linewidth = float(band.get("boundary_linewidth", 0.75))
+    drawn = False
+    if visible_lower < visible_upper:
+        contourf_func(
+            x_values,
+            y_values,
+            z_values,
+            levels=[visible_lower, visible_upper],
+            colors=[color],
+            alpha=alpha,
+        )
+        ax.plot(
+            [],
+            [],
+            color=color,
+            linewidth=8.0,
+            alpha=alpha,
+            label=band.get("label", "background normalization band"),
+        )
+        drawn = True
+    line_targets = []
+    if float(z_min) <= lower <= float(z_max):
+        line_targets.append(lower)
+    if float(z_min) <= upper <= float(z_max) and upper != lower:
+        line_targets.append(upper)
+    if line_targets:
+        contour_func(
+            x_values,
+            y_values,
+            z_values,
+            levels=line_targets,
+            colors=[color],
+            linewidths=boundary_linewidth,
+            linestyles="--",
+        )
+        drawn = True
+    return drawn
+
+
 def _write_c3d4_grid_plot(
     path,
     c3_grid,
@@ -1880,6 +2115,7 @@ def _write_c3d4_grid_plot(
     contour_label=None,
     selected_label=None,
     contour_legend_label=None,
+    background_variation_band=None,
 ):
     finite = np.isfinite(z_grid)
     if not np.any(finite):
@@ -1895,6 +2131,17 @@ def _write_c3d4_grid_plot(
         levels = np.linspace(z_min, z_max, 24)
         contour = ax.contourf(c3_grid, d4_grid, z_grid, levels=levels, cmap="viridis")
         fig.colorbar(contour, ax=ax, label=colorbar_label)
+        _draw_background_variation_band(
+            ax,
+            c3_grid,
+            d4_grid,
+            z_grid,
+            z_min,
+            z_max,
+            background_variation_band,
+            contourf_func=ax.contourf,
+            contour_func=ax.contour,
+        )
         if cl_target is not None and z_min <= cl_target <= z_max:
             line = ax.contour(c3_grid, d4_grid, z_grid, levels=[cl_target], colors=["crimson"], linewidths=2.0)
             label = contour_label if contour_label is not None else f"S/sqrt(B) = {cl_target:g}"
@@ -1956,6 +2203,7 @@ def _write_c3d4_scatter_or_contour(
     contour_label=None,
     selected_label=None,
     contour_legend_label=None,
+    background_variation_band=None,
 ):
     points = []
     seen = {}
@@ -1998,6 +2246,17 @@ def _write_c3d4_scatter_or_contour(
             contour = ax.tricontourf(c3_values, d4_values, z_values, levels=levels, cmap="viridis")
             fig.colorbar(contour, ax=ax, label=colorbar_label)
             contour_written = True
+            _draw_background_variation_band(
+                ax,
+                c3_values,
+                d4_values,
+                z_values,
+                z_min,
+                z_max,
+                background_variation_band,
+                contourf_func=ax.tricontourf,
+                contour_func=ax.tricontour,
+            )
             if cl_target is not None and z_min <= cl_target <= z_max:
                 line = ax.tricontour(
                     c3_values,
@@ -2070,24 +2329,26 @@ def _read_hhhh_xsec_error_pb(proc_dir, run_name, xsec_pb):
     return max(abs(float(xsec_pb)) * 0.01, 1.0e-30)
 
 
-def _read_hhhh_xsec_points(source_dir):
+def _read_c3d4_xsec_points(source_dir, run_prefix, process_label, excluded_runnumbers=()):
     proc_dir = Path(source_dir)
     event_dir = proc_dir / "Events"
     if not event_dir.exists():
-        raise RuntimeError("hhhh cross-section Events directory not found: " + str(event_dir))
+        raise RuntimeError(process_label + " cross-section Events directory not found: " + str(event_dir))
 
-    prefix = "run_gg_4h_"
     points = []
     counts = {}
-    for run_dir in sorted(event_dir.glob(prefix + "*")):
+    excluded_runnumbers = set(str(runnum) for runnum in excluded_runnumbers)
+    for run_dir in sorted(event_dir.glob(run_prefix + "*")):
         if not run_dir.is_dir():
             continue
         run_name = run_dir.name
-        rest = run_name[len(prefix):]
+        rest = run_name[len(run_prefix):]
         parts = rest.split("_")
         if len(parts) != 3:
             continue
         runnum, c3_text, d4_text = parts
+        if str(runnum) in excluded_runnumbers:
+            continue
         try:
             c3 = float(c3_text)
             d4 = float(d4_text)
@@ -2112,10 +2373,23 @@ def _read_hhhh_xsec_points(source_dir):
         counts[runnum] = counts.get(runnum, 0) + 1
 
     if not points:
-        raise RuntimeError("No completed hhhh cross-section runs found in " + str(event_dir))
+        raise RuntimeError("No completed " + process_label + " cross-section runs found in " + str(event_dir))
     points.sort(key=lambda row: (row["c3"], row["d4"], row["runnum"]))
     counts = dict(sorted(counts.items(), key=lambda item: int(item[0]) if item[0].isdigit() else item[0]))
     return points, counts
+
+
+def _read_hhhh_xsec_points(source_dir):
+    return _read_c3d4_xsec_points(source_dir, "run_gg_4h_", "hhhh")
+
+
+def _read_hhh_xsec_points(source_dir):
+    return _read_c3d4_xsec_points(
+        source_dir,
+        "run_gg_hhh_",
+        "hhh",
+        excluded_runnumbers=DEFAULT_HHH_XSEC_EXCLUDED_RUNNUMS,
+    )
 
 
 def _make_hhhh_xsec_log_levels(ratio):
@@ -2214,6 +2488,160 @@ def _plot_atlas_phys_pub_2025_003_curve(ax):
     }
 
 
+def _plot_sm_marker(ax):
+    ax.plot(
+        [0.0],
+        [0.0],
+        marker="*",
+        color="red",
+        markeredgecolor="black",
+        markeredgewidth=0.7,
+        markersize=13,
+        linestyle="None",
+        zorder=12,
+    )
+    ax.annotate(
+        "SM",
+        xy=(0.0, 0.0),
+        xytext=(8, 8),
+        textcoords="offset points",
+        color="red",
+        fontsize=13,
+        fontweight="bold",
+        ha="left",
+        va="bottom",
+        zorder=12,
+    )
+
+
+def _write_c3d4_atlas_limit_overlay_no_xsec_plot(
+    path,
+    limit_c3_grid,
+    limit_d4_grid,
+    limit_signal_events_grid,
+    required_signal_events,
+    limit_contour_label,
+    limit_legend_label,
+    plot_c3_range,
+    plot_d4_range,
+    background_variation_band=None,
+    luminosity=3000.0,
+):
+    metadata = {
+        "status": "not_run",
+        "cross_section_calculation": False,
+    }
+    try:
+        finite_limit = np.isfinite(limit_signal_events_grid)
+        if not np.any(finite_limit):
+            metadata["status"] = "skipped"
+            metadata["reason"] = "no finite signal-event grid"
+            return None, metadata
+
+        limit_min = float(np.nanmin(limit_signal_events_grid[finite_limit]))
+        limit_max = float(np.nanmax(limit_signal_events_grid[finite_limit]))
+        contour_drawn = limit_min != limit_max and limit_min <= required_signal_events <= limit_max
+
+        perturbativity_grid = _hhhh_perturbativity_grid(limit_c3_grid, limit_d4_grid)
+        perturbativity_min = float(np.nanmin(perturbativity_grid))
+        perturbativity_max = float(np.nanmax(perturbativity_grid))
+        perturbativity_contour_drawn = (
+            perturbativity_min <= DEFAULT_HHHH_PERTURBATIVITY_LEVEL <= perturbativity_max
+        )
+        background_variation_band_drawn = False
+
+        fig, ax = plt.subplots(figsize=(8.2, 6.2), constrained_layout=True)
+        ax.set_facecolor("white")
+        ax.grid(alpha=0.2, linewidth=0.5)
+
+        if limit_min != limit_max:
+            background_variation_band_drawn = _draw_background_variation_band(
+                ax,
+                limit_c3_grid,
+                limit_d4_grid,
+                limit_signal_events_grid,
+                limit_min,
+                limit_max,
+                background_variation_band,
+                contourf_func=ax.contourf,
+                contour_func=ax.contour,
+            )
+
+        if perturbativity_contour_drawn:
+            ax.contour(
+                limit_c3_grid,
+                limit_d4_grid,
+                perturbativity_grid,
+                levels=[DEFAULT_HHHH_PERTURBATIVITY_LEVEL],
+                colors=["black"],
+                linestyles="--",
+                linewidths=1.7,
+            )
+            ax.plot(
+                [],
+                [],
+                color="black",
+                linestyle="--",
+                linewidth=1.7,
+                label=r"Perturbative unitarity, $hh \rightarrow hh$",
+            )
+
+        if contour_drawn:
+            limit_line = ax.contour(
+                limit_c3_grid,
+                limit_d4_grid,
+                limit_signal_events_grid,
+                levels=[required_signal_events],
+                colors=["crimson"],
+                linewidths=2.0,
+            )
+            if limit_contour_label != "":
+                ax.clabel(limit_line, fmt={required_signal_events: limit_contour_label}, inline=True, fontsize=9)
+            if limit_legend_label is not None:
+                ax.plot([], [], color="crimson", linewidth=2.0, label=limit_legend_label)
+
+        atlas_curve_metadata = _plot_atlas_phys_pub_2025_003_curve(ax)
+
+        _plot_sm_marker(ax)
+        ax.set_xlim(plot_c3_range)
+        ax.set_ylim(plot_d4_range)
+        ax.set_xlabel(r"$c_3$", fontsize=DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE)
+        ax.set_ylabel(r"$d_4$", fontsize=DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE)
+        ax.set_title(r"$gg \to hhhh$ at 14 TeV, " + _luminosity_legend_label(luminosity), fontsize=20)
+        ax.tick_params(axis="both", labelsize=15)
+
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(loc="best", fontsize=10)
+
+        fig.savefig(path, dpi=220)
+        fig.savefig(_plot_pdf_path(path))
+        plt.close(fig)
+
+        metadata.update(
+            {
+                "status": "ok",
+                "output": str(path),
+                "output_pdf": str(_plot_pdf_path(path)),
+                "limit_signal_events_min": limit_min,
+                "limit_signal_events_max": limit_max,
+                "limit_contour_drawn": contour_drawn,
+                "background_variation_band": background_variation_band,
+                "background_variation_band_drawn": background_variation_band_drawn,
+                "perturbativity_level": DEFAULT_HHHH_PERTURBATIVITY_LEVEL,
+                "perturbativity_min": perturbativity_min,
+                "perturbativity_max": perturbativity_max,
+                "perturbativity_contour_drawn": perturbativity_contour_drawn,
+                "atlas_reference_curve": atlas_curve_metadata,
+            }
+        )
+        return path, metadata
+    except Exception as error:
+        metadata["status"] = "skipped"
+        metadata["reason"] = str(error)
+        return None, metadata
+
+
 def _write_hhhh_xsec_limit_overlay_plot(
     path,
     source_dir,
@@ -2231,6 +2659,8 @@ def _write_hhhh_xsec_limit_overlay_plot(
     plot_n_c3,
     plot_n_d4,
     atlas_overlay_path=None,
+    background_variation_band=None,
+    luminosity=3000.0,
 ):
     metadata = {
         "status": "not_run",
@@ -2296,6 +2726,7 @@ def _write_hhhh_xsec_limit_overlay_plot(
 
         finite_limit = np.isfinite(limit_signal_events_grid)
         contour_drawn = False
+        background_variation_band_drawn = False
         limit_min = None
         limit_max = None
         if np.any(finite_limit):
@@ -2307,6 +2738,7 @@ def _write_hhhh_xsec_limit_overlay_plot(
             metadata["limit_signal_events_max"] = limit_max
 
         def draw_overlay(output_path, include_atlas_curve=False):
+            nonlocal background_variation_band_drawn
             fig, ax = plt.subplots(figsize=(8.2, 6.2), constrained_layout=True)
             contour = ax.contourf(
                 c3_grid,
@@ -2346,8 +2778,22 @@ def _write_hhhh_xsec_limit_overlay_plot(
                     color="black",
                     linestyle="--",
                     linewidth=1.7,
-                    label=r"Perturbativity $|\mathrm{Re}\,a_0| = 0.5$",
+                    label=r"Perturbative unitarity, $hh \rightarrow hh$",
                 )
+
+            if limit_min is not None and limit_max is not None and limit_min != limit_max:
+                if _draw_background_variation_band(
+                    ax,
+                    limit_c3_grid,
+                    limit_d4_grid,
+                    limit_signal_events_grid,
+                    limit_min,
+                    limit_max,
+                    background_variation_band,
+                    contourf_func=ax.contourf,
+                    contour_func=ax.contour,
+                ):
+                    background_variation_band_drawn = True
 
             if contour_drawn:
                 limit_line = ax.contour(
@@ -2371,12 +2817,12 @@ def _write_hhhh_xsec_limit_overlay_plot(
             if handles:
                 ax.legend(loc="best", fontsize=10)
 
-            ax.plot([0.0], [0.0], marker="o", color="white", markeredgecolor="black", markersize=5)
+            _plot_sm_marker(ax)
             ax.set_xlim(plot_c3_range)
             ax.set_ylim(plot_d4_range)
-            ax.set_xlabel(r"$c_3$", fontsize=18)
-            ax.set_ylabel(r"$d_4$", fontsize=18)
-            ax.set_title(r"$gg \to hhhh$ at 14 TeV: $\sigma(c_3,d_4)/\sigma(0,0)$", fontsize=20)
+            ax.set_xlabel(r"$c_3$", fontsize=DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE)
+            ax.set_ylabel(r"$d_4$", fontsize=DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE)
+            ax.set_title(r"$gg \to hhhh$ at 14 TeV, " + _luminosity_legend_label(luminosity), fontsize=20)
             ax.tick_params(axis="both", labelsize=15)
 
             cbar = fig.colorbar(contour, ax=ax)
@@ -2403,6 +2849,8 @@ def _write_hhhh_xsec_limit_overlay_plot(
                 "ratio_min": float(np.nanmin(finite_ratio)) if finite_ratio.size else None,
                 "ratio_max": float(np.nanmax(finite_ratio)) if finite_ratio.size else None,
                 "limit_contour_drawn": contour_drawn,
+                "background_variation_band": background_variation_band,
+                "background_variation_band_drawn": background_variation_band_drawn,
                 "perturbativity_level": DEFAULT_HHHH_PERTURBATIVITY_LEVEL,
                 "perturbativity_min": perturbativity_min,
                 "perturbativity_max": perturbativity_max,
@@ -2420,6 +2868,167 @@ def _write_hhhh_xsec_limit_overlay_plot(
         return None, metadata
 
 
+def _write_hhhh_over_hhh_ratio_contour_plot(
+    path,
+    hhhh_source_dir,
+    hhh_source_dir,
+    hhhh_fit_terms,
+    hhh_fit_terms,
+    fit_k3_range,
+    fit_k4_range,
+    plot_c3_range,
+    plot_d4_range,
+    plot_n_c3,
+    plot_n_d4,
+    ratio_levels=DEFAULT_HHHH_OVER_HHH_RATIO_LEVELS,
+):
+    metadata = {
+        "status": "not_run",
+        "hhhh_source_dir": str(hhhh_source_dir),
+        "hhh_source_dir": str(hhh_source_dir),
+        "ratio_levels": [float(level) for level in ratio_levels],
+    }
+    try:
+        hhhh_points, hhhh_counts = _read_hhhh_xsec_points(hhhh_source_dir)
+        hhh_points, hhh_counts = _read_hhh_xsec_points(hhh_source_dir)
+        hhhh_fit = _fit_c3d4_chebyshev(
+            hhhh_points,
+            "xsec_pb",
+            "xsec_error_pb",
+            hhhh_fit_terms,
+            fit_k3_range,
+            fit_k4_range,
+        )
+        hhh_fit = _fit_c3d4_chebyshev(
+            hhh_points,
+            "xsec_pb",
+            "xsec_error_pb",
+            hhh_fit_terms,
+            fit_k3_range,
+            fit_k4_range,
+        )
+        metadata.update(
+            {
+                "hhhh_n_points": len(hhhh_points),
+                "hhh_n_points": len(hhh_points),
+                "hhhh_run_counts": hhhh_counts,
+                "hhh_run_counts": hhh_counts,
+                "hhhh_chebyshev_fit": hhhh_fit,
+                "hhh_chebyshev_fit": hhh_fit,
+                "hhh_excluded_runnumbers": list(DEFAULT_HHH_XSEC_EXCLUDED_RUNNUMS),
+            }
+        )
+        if hhhh_fit.get("status") != "ok":
+            metadata["status"] = "skipped"
+            metadata["reason"] = "hhhh fit: " + hhhh_fit.get("reason", "unknown reason")
+            return None, metadata
+        if hhh_fit.get("status") != "ok":
+            metadata["status"] = "skipped"
+            metadata["reason"] = "hhh fit: " + hhh_fit.get("reason", "unknown reason")
+            return None, metadata
+
+        hhhh_wide_count = hhhh_counts.get(DEFAULT_HHHH_XSEC_WIDE_RUNNUM, 0)
+        if hhhh_wide_count < DEFAULT_HHHH_XSEC_EXPECTED_WIDE_RUNS:
+            metadata["hhhh_wide_run_warning"] = (
+                "run "
+                + DEFAULT_HHHH_XSEC_WIDE_RUNNUM
+                + " has "
+                + str(hhhh_wide_count)
+                + " completed points; expected "
+                + str(DEFAULT_HHHH_XSEC_EXPECTED_WIDE_RUNS)
+            )
+        hhh_wide_count = hhh_counts.get(DEFAULT_HHH_XSEC_WIDE_RUNNUM, 0)
+        if hhh_wide_count < DEFAULT_HHH_XSEC_EXPECTED_WIDE_RUNS:
+            metadata["hhh_wide_run_warning"] = (
+                "run "
+                + DEFAULT_HHH_XSEC_WIDE_RUNNUM
+                + " has "
+                + str(hhh_wide_count)
+                + " completed points; expected "
+                + str(DEFAULT_HHH_XSEC_EXPECTED_WIDE_RUNS)
+            )
+
+        c3_grid, d4_grid, hhhh_xsec_grid_pb = _evaluate_c3d4_chebyshev_grid(
+            hhhh_fit,
+            plot_c3_range,
+            plot_d4_range,
+            plot_n_c3,
+            plot_n_d4,
+        )
+        _, _, hhh_xsec_grid_pb = _evaluate_c3d4_chebyshev_grid(
+            hhh_fit,
+            plot_c3_range,
+            plot_d4_range,
+            plot_n_c3,
+            plot_n_d4,
+        )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = hhhh_xsec_grid_pb / hhh_xsec_grid_pb
+        valid_ratio = np.isfinite(ratio) & (hhhh_xsec_grid_pb > 0.0) & (hhh_xsec_grid_pb > 0.0)
+        if not np.any(valid_ratio):
+            metadata["status"] = "skipped"
+            metadata["reason"] = "no positive finite sigma(hhhh)/sigma(hhh) grid values"
+            return None, metadata
+
+        ratio_masked = np.ma.masked_where(~valid_ratio, ratio)
+        ratio_min = float(np.nanmin(ratio[valid_ratio]))
+        ratio_max = float(np.nanmax(ratio[valid_ratio]))
+        visible_levels = [float(level) for level in ratio_levels if ratio_min <= float(level) <= ratio_max]
+
+        fig, ax = plt.subplots(figsize=(8.2, 6.2), constrained_layout=True)
+        ax.set_facecolor("white")
+        ax.grid(alpha=0.2, linewidth=0.5)
+
+        if visible_levels:
+            contour = ax.contour(
+                c3_grid,
+                d4_grid,
+                ratio_masked,
+                levels=visible_levels,
+                colors=["black"],
+                linewidths=1.8,
+            )
+            ax.clabel(
+                contour,
+                fmt={level: _format_hhhh_xsec_level(level) for level in visible_levels},
+                inline=True,
+                fontsize=11,
+                colors="black",
+            )
+
+        ratio_label = r"$\sigma(hhhh)/\sigma(hhh)$"
+
+        ax.set_xlim(plot_c3_range)
+        ax.set_ylim(plot_d4_range)
+        ax.set_xlabel(r"$c_3$", fontsize=DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE)
+        ax.set_ylabel(r"$d_4$", fontsize=DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE)
+        ax.set_title(ratio_label + " at 14 TeV", fontsize=20)
+        ax.tick_params(axis="both", labelsize=15)
+
+        fig.savefig(path, dpi=220)
+        fig.savefig(_plot_pdf_path(path))
+        plt.close(fig)
+
+        metadata.update(
+            {
+                "status": "ok",
+                "output": str(path),
+                "output_pdf": str(_plot_pdf_path(path)),
+                "ratio_min": ratio_min,
+                "ratio_max": ratio_max,
+                "contour_levels_requested": [float(level) for level in ratio_levels],
+                "contour_levels_drawn": visible_levels,
+                "positive_finite_grid_points": int(np.count_nonzero(valid_ratio)),
+                "grid_points": int(ratio.size),
+            }
+        )
+        return path, metadata
+    except Exception as error:
+        metadata["status"] = "skipped"
+        metadata["reason"] = str(error)
+        return None, metadata
+
+
 def write_c3d4_limit_scan(
     scored_rows,
     output_dir="xgboost_c3d4_limit_scan",
@@ -2430,6 +3039,8 @@ def write_c3d4_limit_scan(
     poisson_confidence_level=0.95,
     poisson_method="cls",
     poisson_observed_events=None,
+    background_variation_band=True,
+    background_variation_factor=4.0,
     systematics=0.0,
     model_file=None,
     metrics_file=None,
@@ -2437,12 +3048,13 @@ def write_c3d4_limit_scan(
     fit_terms=None,
     fit_k3_range=(-29.0, 31.0),
     fit_k4_range=(-699.0, 701.0),
-    plot_c3_range=(-30.0, 30.0),
-    plot_d4_range=(-700.0, 700.0),
+    plot_c3_range=(-20.0, 20.0),
+    plot_d4_range=(-300.0, 300.0),
     plot_n_c3=301,
     plot_n_d4=301,
     xsec_overlay=True,
     xsec_source_dir=DEFAULT_HHHH_XSEC_SOURCE_DIR,
+    hhh_xsec_source_dir=DEFAULT_HHH_XSEC_SOURCE_DIR,
     rate_metadata=None,
 ):
     """Write c3/d4 efficiencies, sigma*eff fits, and 95% CL contour plots."""
@@ -2469,10 +3081,73 @@ def write_c3d4_limit_scan(
     poisson_observed_source = "median_background" if poisson_observed_events is None else "user_specified"
     poisson_method_label = "CLs" if str(poisson_limit["method"]).lower() == "cls" else "classical"
     poisson_confidence_label = f"{100.0 * poisson_confidence_level:g}%"
+    poisson_confidence_percent_label = f"{100.0 * poisson_confidence_level:g}%"
     poisson_contour_label = ""
-    luminosity_label = rf"$L = {luminosity:g}\,\mathrm{{fb}}^{{-1}}$"
-    poisson_legend_label = f"Poisson {poisson_method_label} {poisson_confidence_label} CL, {luminosity_label}"
+    poisson_legend_label = (
+        rf"$gg \rightarrow hhhh \rightarrow 8b$, Poisson "
+        f"{poisson_method_label} {poisson_confidence_percent_label}"
+    )
     poisson_selected_label = f"scored S >= S95 ({required_signal_events:.3g})"
+    background_variation = background_variation_scale_factors(
+        background_variation_factor,
+        enabled=background_variation_band,
+    )
+    background_variation_metadata = {
+        "enabled": False,
+        "factor": None,
+        "down_factor": None,
+        "up_factor": None,
+        "background_events_down": None,
+        "background_events_up": None,
+        "required_signal_events_low": None,
+        "required_signal_events_high": None,
+        "label": None,
+    }
+    background_variation_plot_band = None
+    if background_variation is not None:
+        b_down = background_events * background_variation["down_factor"]
+        b_up = background_events * background_variation["up_factor"]
+        poisson_limit_down = _poisson_signal_upper_limit(
+            b_down,
+            confidence_level=poisson_confidence_level,
+            method=poisson_method,
+            observed_events=poisson_observed_events,
+        )
+        poisson_limit_up = _poisson_signal_upper_limit(
+            b_up,
+            confidence_level=poisson_confidence_level,
+            method=poisson_method,
+            observed_events=poisson_observed_events,
+        )
+        required_low, required_high = sorted(
+            (float(poisson_limit_down["signal_events"]), float(poisson_limit_up["signal_events"]))
+        )
+        band_label = (
+            rf"Background $\times[{background_variation['down_factor']:.3g},"
+            rf"{background_variation['up_factor']:.3g}]$"
+        )
+        background_variation_metadata = {
+            "enabled": True,
+            "factor": background_variation["factor"],
+            "down_factor": background_variation["down_factor"],
+            "up_factor": background_variation["up_factor"],
+            "background_events_down": b_down,
+            "background_events_up": b_up,
+            "required_signal_events_low": required_low,
+            "required_signal_events_high": required_high,
+            "poisson_limit_down": poisson_limit_down,
+            "poisson_limit_up": poisson_limit_up,
+            "label": band_label,
+        }
+        background_variation_plot_band = {
+            "enabled": True,
+            "required_signal_events_low": required_low,
+            "required_signal_events_high": required_high,
+            "label": band_label,
+            "color": "crimson",
+            "alpha": 0.32,
+            "boundary_linewidth": 0.75,
+        }
     syst_denominator = (
         math.sqrt(background_events + (systematics * background_events) ** 2)
         if background_events > 0.0
@@ -2533,6 +3208,13 @@ def write_c3d4_limit_scan(
                 "expected_preselected_events": preselected_events,
                 "expected_selected_events": signal_events,
                 "expected_selected_error": selected_error,
+                "expected_selected_events_lower_95cl": row.get("expected_selected_events_lower_95cl"),
+                "expected_selected_events_upper_95cl": row.get("expected_selected_events_upper_95cl"),
+                "expected_selected_events_error_low_95cl": row.get("expected_selected_events_error_low_95cl"),
+                "expected_selected_events_error_high_95cl": row.get("expected_selected_events_error_high_95cl"),
+                "expected_selected_events_upper_limit_95cl": row.get("expected_selected_events_upper_limit_95cl"),
+                "expected_selected_events_is_upper_limit": row.get("expected_selected_events_is_upper_limit"),
+                "expected_selected_events_confidence_level": row.get("expected_selected_events_confidence_level"),
                 "raw_sigma_eff_fb": raw_sigma_eff_fb,
                 "effective_sigma_eff_fb": effective_sigma_eff_fb,
                 "effective_sigma_eff_error_fb": effective_sigma_eff_error_fb,
@@ -2576,10 +3258,19 @@ def write_c3d4_limit_scan(
     sigma_eff_plot = output_dir / "c3d4_sigma_eff_fit.png"
     hhhh_xsec_overlay_plot = output_dir / "c3d4_hhhh_xsec_with_95cl.png"
     hhhh_xsec_atlas_overlay_plot = output_dir / "c3d4_hhhh_xsec_with_95cl_atl_phys_pub_2025_003.png"
+    hhhh_xsec_atlas_overlay_no_ratio_contours_plot = (
+        output_dir / "c3d4_hhhh_xsec_with_95cl_atl_phys_pub_2025_003_no_ratio_contours.png"
+    )
+    hhhh_over_hhh_ratio_contours_plot = output_dir / "c3d4_hhhh_over_hhh_ratio_contours.png"
 
     fit = None
     fit_metadata = {"status": "disabled"}
     hhhh_xsec_overlay_metadata = {"status": "disabled" if not xsec_overlay else "not_run"}
+    hhhh_xsec_atlas_overlay_no_ratio_contours_metadata = {
+        "status": "disabled" if not xsec_overlay else "not_run",
+        "cross_section_calculation": False,
+    }
+    hhhh_over_hhh_ratio_contours_metadata = {"status": "disabled" if not xsec_overlay else "not_run"}
     grid_outputs = {}
     if fit_signal:
         fit_metadata = _fit_c3d4_chebyshev(
@@ -2630,6 +3321,7 @@ def write_c3d4_limit_scan(
                 contour_label=poisson_contour_label,
                 selected_label=poisson_selected_label,
                 contour_legend_label=poisson_legend_label,
+                background_variation_band=background_variation_plot_band,
             )
             sigma_eff_plot_path = _write_c3d4_grid_plot(
                 sigma_eff_plot,
@@ -2640,7 +3332,25 @@ def write_c3d4_limit_scan(
             )
             hhhh_xsec_overlay_path = None
             hhhh_xsec_atlas_overlay_path = None
+            hhhh_xsec_atlas_overlay_no_ratio_contours_path = None
+            hhhh_over_hhh_ratio_contours_path = None
             if xsec_overlay:
+                (
+                    hhhh_xsec_atlas_overlay_no_ratio_contours_path,
+                    hhhh_xsec_atlas_overlay_no_ratio_contours_metadata,
+                ) = _write_c3d4_atlas_limit_overlay_no_xsec_plot(
+                    hhhh_xsec_atlas_overlay_no_ratio_contours_plot,
+                    c3_grid,
+                    d4_grid,
+                    fitted_signal_events_grid,
+                    required_signal_events,
+                    poisson_contour_label,
+                    poisson_legend_label,
+                    plot_c3_range,
+                    plot_d4_range,
+                    background_variation_band=background_variation_plot_band,
+                    luminosity=luminosity,
+                )
                 hhhh_xsec_overlay_path, hhhh_xsec_overlay_metadata = _write_hhhh_xsec_limit_overlay_plot(
                     hhhh_xsec_overlay_plot,
                     xsec_source_dir,
@@ -2658,15 +3368,42 @@ def write_c3d4_limit_scan(
                     plot_n_c3,
                     plot_n_d4,
                     atlas_overlay_path=hhhh_xsec_atlas_overlay_plot,
+                    background_variation_band=background_variation_plot_band,
+                    luminosity=luminosity,
                 )
                 hhhh_xsec_atlas_overlay_path = hhhh_xsec_overlay_metadata.get("atlas_overlay_output")
                 if hhhh_xsec_overlay_path is None:
                     print("hhhh cross-section overlay skipped:", hhhh_xsec_overlay_metadata.get("reason", "unknown reason"))
+                (
+                    hhhh_over_hhh_ratio_contours_path,
+                    hhhh_over_hhh_ratio_contours_metadata,
+                ) = _write_hhhh_over_hhh_ratio_contour_plot(
+                    hhhh_over_hhh_ratio_contours_plot,
+                    hhhh_source_dir=xsec_source_dir,
+                    hhh_source_dir=hhh_xsec_source_dir,
+                    hhhh_fit_terms=fit_terms,
+                    hhh_fit_terms=DEFAULT_HHH_C3D4_CHEBYSHEV_TERMS,
+                    fit_k3_range=fit_k3_range,
+                    fit_k4_range=fit_k4_range,
+                    plot_c3_range=plot_c3_range,
+                    plot_d4_range=plot_d4_range,
+                    plot_n_c3=plot_n_c3,
+                    plot_n_d4=plot_n_d4,
+                )
+                if hhhh_over_hhh_ratio_contours_path is None:
+                    print(
+                        "hhhh/hhh cross-section ratio contours skipped:",
+                        hhhh_over_hhh_ratio_contours_metadata.get("reason", "unknown reason"),
+                    )
             grid_outputs = {
                 "cl_plot": None if cl_plot_path is None else str(cl_plot_path),
                 "sigma_eff_plot": None if sigma_eff_plot_path is None else str(sigma_eff_plot_path),
                 "hhhh_xsec_overlay_plot": None if hhhh_xsec_overlay_path is None else str(hhhh_xsec_overlay_path),
                 "hhhh_xsec_atlas_overlay_plot": hhhh_xsec_atlas_overlay_path,
+                "hhhh_xsec_atlas_overlay_no_ratio_contours_plot": hhhh_xsec_atlas_overlay_no_ratio_contours_path,
+                "hhhh_over_hhh_ratio_contours_plot": (
+                    None if hhhh_over_hhh_ratio_contours_path is None else str(hhhh_over_hhh_ratio_contours_path)
+                ),
             }
         else:
             print("Chebyshev fit skipped:", fit_metadata.get("reason", "unknown reason"))
@@ -2686,6 +3423,13 @@ def write_c3d4_limit_scan(
         "expected_preselected_events",
         "expected_selected_events",
         "expected_selected_error",
+        "expected_selected_events_lower_95cl",
+        "expected_selected_events_upper_95cl",
+        "expected_selected_events_error_low_95cl",
+        "expected_selected_events_error_high_95cl",
+        "expected_selected_events_upper_limit_95cl",
+        "expected_selected_events_is_upper_limit",
+        "expected_selected_events_confidence_level",
         "raw_sigma_eff_fb",
         "effective_sigma_eff_fb",
         "effective_sigma_eff_error_fb",
@@ -2727,6 +3471,7 @@ def write_c3d4_limit_scan(
         contour_label=poisson_contour_label,
         contour_legend_label=poisson_legend_label,
         selected_label=f"S >= S95 ({required_signal_events:.3g})",
+        background_variation_band=background_variation_plot_band,
     )
     if fit is None:
         grid_outputs["cl_plot"] = None if cl_points_path is None else str(cl_points_path)
@@ -2754,6 +3499,16 @@ def write_c3d4_limit_scan(
         "hhhh_xsec_overlay_plot_pdf": _plot_pdf_output(grid_outputs.get("hhhh_xsec_overlay_plot")),
         "hhhh_xsec_atlas_overlay_plot": grid_outputs.get("hhhh_xsec_atlas_overlay_plot"),
         "hhhh_xsec_atlas_overlay_plot_pdf": _plot_pdf_output(grid_outputs.get("hhhh_xsec_atlas_overlay_plot")),
+        "hhhh_xsec_atlas_overlay_no_ratio_contours_plot": grid_outputs.get(
+            "hhhh_xsec_atlas_overlay_no_ratio_contours_plot"
+        ),
+        "hhhh_xsec_atlas_overlay_no_ratio_contours_plot_pdf": _plot_pdf_output(
+            grid_outputs.get("hhhh_xsec_atlas_overlay_no_ratio_contours_plot")
+        ),
+        "hhhh_over_hhh_ratio_contours_plot": grid_outputs.get("hhhh_over_hhh_ratio_contours_plot"),
+        "hhhh_over_hhh_ratio_contours_plot_pdf": _plot_pdf_output(
+            grid_outputs.get("hhhh_over_hhh_ratio_contours_plot")
+        ),
         "efficiency_plot": None if efficiency_plot_path is None else str(efficiency_plot_path),
         "efficiency_plot_pdf": _plot_pdf_output(efficiency_plot_path),
     }
@@ -2774,19 +3529,22 @@ def write_c3d4_limit_scan(
         "gaussian_required_signal_events": _json_safe_float(gaussian_required_signal_events),
         "background_effective_sigma_eff_fb": background_events / float(luminosity) if luminosity > 0.0 else None,
         "systematics": systematics,
+        "background_variation": background_variation_metadata,
         "n_points": len(rows),
         "n_excluded_95cl": sum(1 for row in rows if row["excluded_95cl"]),
         "n_fitted_excluded_95cl": sum(1 for row in rows if row["fitted_excluded_95cl"]),
         "rate_metadata": rate_metadata or {},
         "chebyshev_fit": fit_metadata,
         "hhhh_xsec_overlay": hhhh_xsec_overlay_metadata,
+        "hhhh_xsec_atlas_overlay_no_ratio_contours": hhhh_xsec_atlas_overlay_no_ratio_contours_metadata,
+        "hhhh_over_hhh_ratio_contours": hhhh_over_hhh_ratio_contours_metadata,
         "outputs": outputs,
     }
     with open(fit_json, "w") as handle:
-        json.dump(fit_metadata, handle, indent=2)
+        json.dump(_json_safe_value(fit_metadata), handle, indent=2)
 
     with open(limit_json, "w") as handle:
-        json.dump({"metadata": metadata, "points": rows}, handle, indent=2)
+        json.dump(_json_safe_value({"metadata": metadata, "points": rows}), handle, indent=2)
 
     print("Wrote c3/d4 limit scan", limit_csv)
     print("Wrote c3/d4 limit metadata", limit_json)
@@ -2812,6 +3570,14 @@ def write_c3d4_limit_scan(
         print("Wrote", outputs["hhhh_xsec_atlas_overlay_plot"])
     if outputs["hhhh_xsec_atlas_overlay_plot_pdf"] is not None:
         print("Wrote", outputs["hhhh_xsec_atlas_overlay_plot_pdf"])
+    if outputs["hhhh_xsec_atlas_overlay_no_ratio_contours_plot"] is not None:
+        print("Wrote", outputs["hhhh_xsec_atlas_overlay_no_ratio_contours_plot"])
+    if outputs["hhhh_xsec_atlas_overlay_no_ratio_contours_plot_pdf"] is not None:
+        print("Wrote", outputs["hhhh_xsec_atlas_overlay_no_ratio_contours_plot_pdf"])
+    if outputs["hhhh_over_hhh_ratio_contours_plot"] is not None:
+        print("Wrote", outputs["hhhh_over_hhh_ratio_contours_plot"])
+    if outputs["hhhh_over_hhh_ratio_contours_plot_pdf"] is not None:
+        print("Wrote", outputs["hhhh_over_hhh_ratio_contours_plot_pdf"])
     if efficiency_plot_path is not None:
         print("Wrote", efficiency_plot_path)
     if outputs["efficiency_plot_pdf"] is not None:
@@ -2821,6 +3587,18 @@ def write_c3d4_limit_scan(
     print("  observed n =", poisson_limit["observed_events"], f"({poisson_observed_source})")
     print("  B =", background_events, "expected events")
     print("  S95 =", required_signal_events, "expected signal events")
+    if background_variation_metadata.get("enabled"):
+        print(
+            "  background variation band:",
+            f"B x [{background_variation_metadata['down_factor']:.3g}, {background_variation_metadata['up_factor']:.3g}]",
+        )
+        print(
+            "  S95 band =",
+            background_variation_metadata["required_signal_events_low"],
+            "to",
+            background_variation_metadata["required_signal_events_high"],
+            "expected signal events",
+        )
     if luminosity > 0.0:
         print("  sigma*eff target =", required_signal_events / float(luminosity), "fb at L =", luminosity, "fb^-1")
     if gaussian_required_signal_events is not None:

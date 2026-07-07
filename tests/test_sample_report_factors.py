@@ -1,3 +1,4 @@
+import ast
 import math
 import sys
 import tempfile
@@ -11,6 +12,8 @@ sys.path.insert(0, str(CODE_DIR))
 
 from sample_report import (  # noqa: E402
     attach_poisson_event_interval,
+    background_variation_scale_factors,
+    best_significance_threshold,
     background_generation_rate_factor,
     background_tag_rate_factor,
     cutflow_rates,
@@ -126,6 +129,7 @@ class SampleReportFactorTests(unittest.TestCase):
         rows = [
             {
                 "label": r"SM $gg\to hhhh\to 8b$",
+                "is_signal": True,
                 "generation_xsec_fb": 0.023,
                 "generation_events": 69.0,
                 "input_xsec_fb": 0.0012,
@@ -154,10 +158,48 @@ class SampleReportFactorTests(unittest.TestCase):
         self.assertNotIn("$", table)
         self.assertIn("+", table)
 
+    def test_terminal_cutflow_table_keeps_sm_first_then_orders_by_xgboost_yield(self):
+        rows = [
+            {
+                "label": "low background",
+                "generation_xsec_fb": 10.0,
+                "generation_events": 30000.0,
+                "input_xsec_fb": 1.0,
+                "input_events": 3000.0,
+                "xgboost_xsec_fb": 0.01,
+                "xgboost_events": 30.0,
+            },
+            {
+                "label": r"SM $gg\to hhhh\to 8b$",
+                "is_signal": True,
+                "generation_xsec_fb": 0.023,
+                "generation_events": 69.0,
+                "input_xsec_fb": 0.0012,
+                "input_events": 3.6,
+                "xgboost_xsec_fb": 4.2e-5,
+                "xgboost_events": 0.126,
+            },
+            {
+                "label": "high background",
+                "generation_xsec_fb": 10.0,
+                "generation_events": 30000.0,
+                "input_xsec_fb": 1.0,
+                "input_events": 3000.0,
+                "xgboost_xsec_fb": 0.1,
+                "xgboost_events": 300.0,
+            },
+        ]
+
+        table = terminal_cutflow_table(rows, luminosity=3000.0, threshold=0.5)
+
+        self.assertLess(table.index("SM gg->hhhh->8b"), table.index("high background"))
+        self.assertLess(table.index("high background"), table.index("low background"))
+
     def test_terminal_xgboost_mc_table_renders_per_sample_counts(self):
         rows = [
             {
                 "process_id": "sm_4h",
+                "is_signal": True,
                 "description": r"SM $gg\to hhhh\to 8b$",
                 "entries": 120,
                 "selected_entries": 7,
@@ -188,6 +230,43 @@ class SampleReportFactorTests(unittest.TestCase):
         self.assertIn("SM gg->hhhh->8b", table)
         self.assertIn("gg->6b+c cbar", table)
         self.assertNotIn("$", table)
+
+    def test_terminal_xgboost_mc_table_orders_by_expected_selected_events(self):
+        rows = [
+            {
+                "description": "low background",
+                "entries": 50000,
+                "selected_entries": 1,
+                "expected_selected_events": 0.1,
+            },
+            {
+                "description": "high background",
+                "entries": 50000,
+                "selected_entries": 20,
+                "expected_selected_events": 2.0,
+            },
+        ]
+
+        table = terminal_xgboost_mc_table(rows, threshold=0.5)
+
+        self.assertLess(table.index("high background"), table.index("low background"))
+
+    def test_latex_cutflow_writer_sorts_rows_by_importance(self):
+        module_path = CODE_DIR / "xgboost_root_varfiles_module.py"
+        tree = ast.parse(module_path.read_text())
+        writer = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_write_cutflow_latex_table"
+        )
+        calls_sorter = any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "sort_rows_by_importance"
+            for node in ast.walk(writer)
+        )
+
+        self.assertTrue(calls_sorter)
 
     def test_poisson_event_interval_reports_zero_count_upper_limit(self):
         interval = poisson_event_interval(
@@ -231,6 +310,52 @@ class SampleReportFactorTests(unittest.TestCase):
         }
 
         self.assertEqual(event_interval_text(row, "expected_selected_events"), "< 0.2996")
+
+    def test_terminal_xgboost_mc_table_uses_poisson_95cl_upper_limit_for_zero_rows(self):
+        rows = [
+            {
+                "process_id": "gg_to_8b",
+                "description": r"$gg\to8b$",
+                "entries": 100,
+                "selected_entries": 0,
+                "expected_selected_events": 0.0,
+                "expected_selected_events_upper_limit_95cl": 0.2995732273553991,
+                "expected_selected_events_is_upper_limit": True,
+            }
+        ]
+
+        table = terminal_xgboost_mc_table(rows, threshold=0.9)
+
+        self.assertIn("95% CL", table)
+        self.assertIn("< 0.2996", table)
+        self.assertNotIn("+/- 0", table)
+
+    def test_best_significance_threshold_obeys_min_background_mc_entries(self):
+        scores = [0.95, 0.93, 0.91, 0.90, 0.89, 0.80] + [0.20] * 30
+        labels = [1, 1, 1, 1, 1, 0] + [0] * 30
+        physical_weights = [1.0] * 5 + [0.01] + [0.01] * 30
+
+        unconstrained = best_significance_threshold(scores, labels, physical_weights, min_background_mc_entries=0)
+        constrained = best_significance_threshold(scores, labels, physical_weights, min_background_mc_entries=25)
+
+        self.assertGreater(unconstrained["threshold"], 0.2)
+        self.assertLessEqual(constrained["threshold"], 0.2)
+        self.assertGreaterEqual(constrained["selected_background_entries"], 25)
+        self.assertTrue(constrained["mc_stat_requirement_satisfied"])
+
+    def test_background_variation_scale_factors_default_to_factor_four(self):
+        factors = background_variation_scale_factors()
+
+        self.assertTrue(math.isclose(factors["factor"], 4.0))
+        self.assertTrue(math.isclose(factors["down_factor"], 0.25))
+        self.assertTrue(math.isclose(factors["up_factor"], 4.0))
+
+    def test_background_variation_scale_factors_can_be_disabled(self):
+        self.assertIsNone(background_variation_scale_factors(enabled=False))
+
+    def test_background_variation_scale_factors_reject_subunit_factor(self):
+        with self.assertRaises(ValueError):
+            background_variation_scale_factors(0.9)
 
     def test_stacked_input_histogram_integrates_to_input_cross_section(self):
         y, yerr = stacked_input_cross_section_histogram(

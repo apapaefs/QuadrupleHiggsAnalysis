@@ -82,6 +82,21 @@ def background_tag_rate_factor(metadata, btagging_rate, c_mistag_rate, light_mis
     )
 
 
+def background_variation_scale_factors(factor=4.0, enabled=True):
+    """Multiplicative background-normalization factors for exclusion bands."""
+
+    if not enabled:
+        return None
+    factor = float(factor)
+    if not math.isfinite(factor) or factor < 1.0:
+        raise ValueError("background variation factor must be finite and >= 1")
+    return {
+        "factor": factor,
+        "down_factor": 1.0 / factor,
+        "up_factor": factor,
+    }
+
+
 def cutflow_rates(
     raw_xsec_fb,
     generation_rate_factor,
@@ -107,6 +122,22 @@ def cutflow_rates(
         "input_xsec_fb": tagged_generation_xsec * float(input_weight_sum) / normalisation,
         "xgboost_xsec_fb": tagged_generation_xsec * float(selected_weight_sum) / normalisation,
     }
+
+
+def effective_entries(weights):
+    """Effective MC entries for weighted events."""
+
+    import numpy as np
+
+    weights = np.asarray(weights, dtype=float)
+    weights = weights[np.isfinite(weights)]
+    if weights.size == 0:
+        return 0.0
+    sum_abs = float(np.sum(np.abs(weights)))
+    sum_sq = float(np.sum(np.square(weights)))
+    if sum_sq <= 0.0:
+        return float(weights.size)
+    return sum_abs * sum_abs / sum_sq
 
 
 def _chi2_ppf(probability, degrees_of_freedom):
@@ -217,6 +248,115 @@ def attach_poisson_event_interval(
     if interval["is_upper_limit"]:
         row[f"{output_prefix}_upper_limit_95cl"] = interval["event_upper"]
     return row
+
+
+def threshold_mc_stat_summary(scores, labels, weights, threshold, sources=None):
+    import numpy as np
+
+    scores = np.asarray(scores, dtype=float)
+    labels = np.asarray(labels)
+    weights = np.asarray(weights, dtype=float)
+    selected_background = (labels == 0) & (scores >= float(threshold))
+    selected_weights = weights[selected_background]
+    summary = {
+        "selected_background_entries": int(np.sum(selected_background)),
+        "selected_background_effective_entries": float(effective_entries(selected_weights)),
+        "selected_background_source_entries": {},
+    }
+    if sources is not None:
+        sources = np.asarray(sources)
+        per_source = {}
+        source_values = sources.astype(str)
+        for source in sorted(set(str(value) for value in sources[labels == 0])):
+            per_source[source] = int(np.sum(selected_background & (source_values == source)))
+        summary["selected_background_source_entries"] = per_source
+    return summary
+
+
+def best_significance_threshold(
+    scores,
+    labels,
+    physical_weights,
+    systematics=0.0,
+    background_sources=None,
+    min_background_mc_entries=0,
+    min_background_effective_entries=0.0,
+    min_background_mc_entries_per_sample=0,
+):
+    import numpy as np
+
+    thresholds = np.linspace(0.0, 1.0, 501)
+    labels = np.asarray(labels)
+    scores = np.asarray(scores)
+    physical_weights = np.asarray(physical_weights, dtype=float)
+    background_sources = None if background_sources is None else np.asarray(background_sources)
+    total_signal = np.sum(physical_weights[labels == 1])
+    total_background = np.sum(physical_weights[labels == 0])
+
+    def empty_best():
+        return {
+            "threshold": 0.5,
+            "signal_events": 0.0,
+            "background_events": 0.0,
+            "significance": 0.0,
+            "signal_efficiency": 0.0,
+            "background_efficiency": 0.0,
+            "selected_background_entries": 0,
+            "selected_background_effective_entries": 0.0,
+            "selected_background_source_entries": {},
+            "mc_stat_requirement_satisfied": False,
+        }
+
+    best = empty_best()
+    best_unconstrained = empty_best()
+
+    min_background_mc_entries = int(min_background_mc_entries or 0)
+    min_background_effective_entries = float(min_background_effective_entries or 0.0)
+    min_background_mc_entries_per_sample = int(min_background_mc_entries_per_sample or 0)
+
+    for threshold in thresholds:
+        selected = scores >= threshold
+        signal = float(np.sum(physical_weights[(labels == 1) & selected]))
+        background = float(np.sum(physical_weights[(labels == 0) & selected]))
+        if background <= 0.0:
+            continue
+        denominator = math.sqrt(background + (float(systematics) * background) ** 2)
+        significance = signal / denominator if denominator > 0.0 else 0.0
+        stats = threshold_mc_stat_summary(scores, labels, physical_weights, threshold, sources=background_sources)
+        candidate = {
+            "threshold": float(threshold),
+            "signal_events": signal,
+            "background_events": background,
+            "significance": float(significance),
+            "signal_efficiency": float(signal / total_signal) if total_signal > 0 else 0.0,
+            "background_efficiency": float(background / total_background) if total_background > 0 else 0.0,
+            **stats,
+            "mc_stat_requirement_satisfied": True,
+        }
+        if significance > best_unconstrained["significance"]:
+            best_unconstrained = dict(candidate)
+
+        passes = (
+            stats["selected_background_entries"] >= min_background_mc_entries
+            and stats["selected_background_effective_entries"] >= min_background_effective_entries
+        )
+        if passes and min_background_mc_entries_per_sample > 0 and background_sources is not None:
+            source_entries = stats["selected_background_source_entries"]
+            if source_entries:
+                passes = min(source_entries.values()) >= min_background_mc_entries_per_sample
+        if not passes:
+            continue
+        if significance > best["significance"]:
+            best = dict(candidate)
+
+    if best["significance"] > 0.0:
+        return best
+    best_unconstrained["mc_stat_requirement_satisfied"] = False
+    best_unconstrained["mc_stat_warning"] = (
+        "No scanned threshold satisfied the requested background MC-statistics requirement; "
+        "falling back to the unconstrained significance optimum."
+    )
+    return best_unconstrained
 
 
 def safe_feature_filename(name):
@@ -741,6 +881,83 @@ def terminal_label(label):
     return label
 
 
+def _finite_abs_value(row, key):
+    value = (row or {}).get(key)
+    if value is None:
+        return None
+    try:
+        value = abs(float(value))
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _is_signal_row(row):
+    row = row or {}
+    if "is_signal" in row:
+        return bool(row.get("is_signal"))
+    process_id = str(row.get("process_id", "")).lower()
+    if process_id in {"sm", "sm_4h", "gg_hhhh_sm", "gg_to_hhhh_sm"}:
+        return True
+    label = terminal_label(row.get("label") or row.get("description") or "")
+    label = label.lower().replace(" ", "")
+    return "sm" in label and "gg->hhhh" in label
+
+
+def _row_importance(row):
+    primary_keys = ("expected_selected_events", "xgboost_events")
+    for key in primary_keys:
+        value = _finite_abs_value(row, key)
+        if value is not None and value > 0.0:
+            return value
+
+    zero_selected_limit_keys = (
+        "expected_selected_events_upper_limit_95cl",
+        "xgboost_events_upper_limit_95cl",
+    )
+    for key in zero_selected_limit_keys:
+        value = _finite_abs_value(row, key)
+        if value is not None and value > 0.0:
+            return value
+
+    fallback_keys = (
+        *primary_keys,
+        "expected_input_events",
+        "input_events",
+        "generation_events",
+        "expected_selected_xsec_fb",
+        "xgboost_xsec_fb",
+        "input_xsec_fb",
+        "generation_xsec_fb",
+    )
+    for key in fallback_keys:
+        value = _finite_abs_value(row, key)
+        if value is not None:
+            return value
+    return 0.0
+
+
+def sort_rows_by_importance(rows, keep_signal_first=True):
+    """Order report rows by analysis importance, with SM signal pinned first."""
+
+    enumerated = list(enumerate(rows or []))
+
+    def sorted_items(items):
+        return sorted(items, key=lambda item: (-_row_importance(item[1]), item[0]))
+
+    if not keep_signal_first:
+        return [row for _, row in sorted_items(enumerated)]
+
+    signal_items = []
+    other_items = []
+    for item in enumerated:
+        if _is_signal_row(item[1]):
+            signal_items.append(item)
+        else:
+            other_items.append(item)
+    return [row for _, row in signal_items] + [row for _, row in sorted_items(other_items)]
+
+
 def _row_interval_value(row, prefix):
     value = row.get(prefix)
     if value is None and prefix == "expected_selected_events":
@@ -813,6 +1030,7 @@ def _terminal_table(headers, rows, right_aligned=None):
 
 
 def terminal_cutflow_table(rows, luminosity, threshold):
+    rows = sort_rows_by_importance(rows)
     headers = [
         "Sample",
         "sigma_gen [fb]",
@@ -830,13 +1048,14 @@ def terminal_cutflow_table(rows, luminosity, threshold):
             terminal_number(row["input_xsec_fb"]),
             terminal_number(row["input_events"]),
             terminal_number(row["xgboost_xsec_fb"]),
-            terminal_number(row["xgboost_events"]),
+            event_interval_text(row, "xgboost_events"),
         ]
         for row in rows
     ]
     lines = [
         f"4H sample cutflow / rates (L = {float(luminosity):g} fb^-1, XGBoost threshold = {float(threshold):g})",
         "Generation columns include K-factors and decay BRs; input/XGBoost columns also include b-tag/mistag factors.",
+        "N_XGB uncertainties are Poisson 95% CL intervals from selected MC counts.",
         _terminal_table(headers, table_rows, right_aligned=set(range(1, len(headers)))),
     ]
     return "\n".join(lines)
@@ -854,6 +1073,10 @@ def _expected_with_error(row):
         value = row.get("xgboost_events")
     if value is None:
         return "--"
+    prefix = "expected_selected_events" if row.get("expected_selected_events") is not None else "xgboost_events"
+    interval_text = event_interval_text(row, prefix)
+    if interval_text != terminal_number(value):
+        return interval_text
     error = row.get("expected_selected_error")
     if error is None:
         error = row.get("xgboost_events_error")
@@ -863,8 +1086,8 @@ def _expected_with_error(row):
 
 
 def terminal_xgboost_mc_table(rows, title="Per-sample XGBoost MC event counts", threshold=None):
-    rows = list(rows or [])
-    headers = ["Sample", "MC selected / input", "N_XGB"]
+    rows = sort_rows_by_importance(rows)
+    headers = ["Sample", "MC selected / input", "N_XGB (95% CL)"]
     table_rows = [
         [
             _score_row_label(row),
@@ -878,7 +1101,10 @@ def terminal_xgboost_mc_table(rows, title="Per-sample XGBoost MC event counts", 
     lines = [str(title)]
     if threshold is not None:
         lines.append(f"XGBoost threshold = {float(threshold):g}")
-    lines.append("MC selected/input entries are raw classifier entries after the threshold; N_XGB is luminosity-normalized.")
+    lines.append(
+        "MC selected/input entries are raw classifier entries after the threshold; "
+        "N_XGB is luminosity-normalized with Poisson 95% CL intervals."
+    )
     lines.append(_terminal_table(headers, table_rows, right_aligned={1, 2}))
     return "\n".join(lines)
 

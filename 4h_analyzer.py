@@ -11,8 +11,10 @@ if str(_CODE_DIR) not in _sys.path:
     _sys.path.insert(0, str(_CODE_DIR))
 
 from sample_report import (
+    attach_poisson_event_interval,
     background_generation_rate_factor,
     background_tag_rate_factor,
+    event_interval_text,
     signal_generation_rate_factor,
     signal_tag_rate_factor,
     terminal_xgboost_mc_table,
@@ -1259,7 +1261,7 @@ def _score_rows_summary(rows, luminosity):
     analysis_efficiency = preselected_events / initial_events if initial_events > 0.0 else 0.0
     xgboost_efficiency = selected_events / preselected_events if preselected_events > 0.0 else 0.0
     final_efficiency = selected_events / initial_events if initial_events > 0.0 else 0.0
-    return {
+    summary = {
         "entries": entries,
         "selected_entries": selected_entries,
         "expected_preselected_events": preselected_events,
@@ -1269,6 +1271,17 @@ def _score_rows_summary(rows, luminosity):
         "xgboost_efficiency": xgboost_efficiency,
         "final_efficiency": final_efficiency,
     }
+    attach_poisson_event_interval(
+        summary,
+        selected_entries_key="selected_entries",
+        expected_events_key="expected_selected_events",
+        input_entries_key="entries",
+        expected_input_events_key="expected_preselected_events",
+        output_prefix="expected_selected_events",
+        confidence_level=0.95,
+    )
+    summary["expected_selected_error"] = summary["expected_selected_events_error_high_95cl"]
+    return summary
 
 
 def _print_xgboost_threshold_summary(threshold, sm_signal_rows, background_rows, luminosity):
@@ -1283,7 +1296,7 @@ def _print_xgboost_threshold_summary(threshold, sm_signal_rows, background_rows,
     )
     print(
         "  SM signal expected events after threshold = "
-        f"{sm_summary['expected_selected_events']} +/- {sm_summary['expected_selected_error']}"
+        f"{event_interval_text(sm_summary, 'expected_selected_events')} (95% CL)"
     )
     print(f"  SM signal analysis efficiency = {sm_summary['analysis_efficiency']}")
     print(f"  SM signal XGBoost efficiency = {sm_summary['xgboost_efficiency']}")
@@ -1294,7 +1307,7 @@ def _print_xgboost_threshold_summary(threshold, sm_signal_rows, background_rows,
     )
     print(
         "  Background expected events after threshold = "
-        f"{background_summary['expected_selected_events']} +/- {background_summary['expected_selected_error']}"
+        f"{event_interval_text(background_summary, 'expected_selected_events')} (95% CL)"
     )
     print(f"  Background analysis efficiency = {background_summary['analysis_efficiency']}")
     print(f"  Background XGBoost efficiency = {background_summary['xgboost_efficiency']}")
@@ -1666,6 +1679,24 @@ def _run_local_xgboost_cli():
     parser.add_argument("--test-size", type=float, default=0.35, help="Held-out test fraction.")
     parser.add_argument("--seed", type=int, default=12345, help="Random seed.")
     parser.add_argument("--max-events", type=int, default=None, help="Optional maximum events read per file.")
+    parser.add_argument(
+        "--min-xgb-background-mc",
+        type=int,
+        default=25,
+        help="Minimum raw held-out background MC entries required after the optimized XGBoost threshold. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--min-xgb-background-effective-mc",
+        type=float,
+        default=10.0,
+        help="Minimum effective held-out background MC entries required after the optimized XGBoost threshold. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--min-xgb-background-mc-per-sample",
+        type=int,
+        default=0,
+        help="Optional minimum held-out background MC entries per background source after the optimized XGBoost threshold.",
+    )
     parser.add_argument("--signal-xsec-fb", action="append", type=float, help="Signal cross section in fb. May be repeated.")
     parser.add_argument("--background-xsec-fb", action="append", type=float, help="Background cross section in fb. May be repeated.")
     parser.add_argument(
@@ -1850,6 +1881,17 @@ def _run_local_xgboost_cli():
         default=None,
         help="Observed event count for the Poisson target. Defaults to the median expected background count.",
     )
+    parser.add_argument(
+        "--background-variation-factor",
+        type=float,
+        default=4.0,
+        help="Multiplicative background normalization factor used for the shaded c3/d4 exclusion band.",
+    )
+    parser.add_argument(
+        "--no-background-variation-band",
+        action="store_true",
+        help="Disable the shaded c3/d4 exclusion band from varying the total background normalization.",
+    )
     parser.add_argument("--c3d4-signal-xsec-fb", action="append", type=float, help="Cross section in fb for c3/d4 scan files.")
     parser.add_argument("--c3d4-signal-generated-events", action="append", type=int, help="Generated event counts for c3/d4 scan files.")
     parser.add_argument(
@@ -1863,10 +1905,10 @@ def _run_local_xgboost_cli():
     parser.add_argument("--c3d4-fit-k3-max", type=float, default=31.0, help="Maximum k3=1+c3 used to scale the Chebyshev fit.")
     parser.add_argument("--c3d4-fit-k4-min", type=float, default=-699.0, help="Minimum k4=1+d4 used to scale the Chebyshev fit.")
     parser.add_argument("--c3d4-fit-k4-max", type=float, default=701.0, help="Maximum k4=1+d4 used to scale the Chebyshev fit.")
-    parser.add_argument("--c3d4-plot-c3-min", type=float, default=-30.0, help="Minimum c3 shown in the fitted limit plot.")
-    parser.add_argument("--c3d4-plot-c3-max", type=float, default=30.0, help="Maximum c3 shown in the fitted limit plot.")
-    parser.add_argument("--c3d4-plot-d4-min", type=float, default=-700.0, help="Minimum d4 shown in the fitted limit plot.")
-    parser.add_argument("--c3d4-plot-d4-max", type=float, default=700.0, help="Maximum d4 shown in the fitted limit plot.")
+    parser.add_argument("--c3d4-plot-c3-min", type=float, default=-20.0, help="Minimum c3 shown in the fitted limit plot.")
+    parser.add_argument("--c3d4-plot-c3-max", type=float, default=20.0, help="Maximum c3 shown in the fitted limit plot.")
+    parser.add_argument("--c3d4-plot-d4-min", type=float, default=-300.0, help="Minimum d4 shown in the fitted limit plot.")
+    parser.add_argument("--c3d4-plot-d4-max", type=float, default=300.0, help="Maximum d4 shown in the fitted limit plot.")
     parser.add_argument("--c3d4-plot-nbins", type=int, default=301, help="Number of bins per axis for fitted c3/d4 plots.")
     parser.add_argument(
         "--c3d4-xsec-source-dir",
@@ -1875,9 +1917,15 @@ def _run_local_xgboost_cli():
         help="MG5 gg_4h_c3d4 directory used for the hhhh cross-section plot with the 95%% CL overlay.",
     )
     parser.add_argument(
+        "--hhh-xsec-source-dir",
+        type=_Path,
+        default=_Path("/mnt/ssd2/Projects/4H/MG5_aMC_v3_5_15/gg_hhh_c3d4"),
+        help="MG5 gg_hhh_c3d4 directory used for the sigma(hhhh)/sigma(hhh) contour plot.",
+    )
+    parser.add_argument(
         "--no-c3d4-xsec-overlay",
         action="store_true",
-        help="Do not write the hhhh cross-section plot with the 95%% CL contour overlay.",
+        help="Do not write the hhhh cross-section plot or hhhh/hhh ratio contours.",
     )
     parser.add_argument(
         "--analysis-exe",
@@ -2033,6 +2081,9 @@ def _run_local_xgboost_cli():
             test_size=args.test_size,
             seed=args.seed,
             systematics=args.systematics,
+            min_background_mc_entries=args.min_xgb_background_mc,
+            min_background_effective_entries=args.min_xgb_background_effective_mc,
+            min_background_mc_entries_per_sample=args.min_xgb_background_mc_per_sample,
             max_events=args.max_events,
         )
         metrics = analysis["metrics"]
@@ -2145,6 +2196,8 @@ def _run_local_xgboost_cli():
             poisson_confidence_level=args.poisson_cl,
             poisson_method=args.poisson_limit_method,
             poisson_observed_events=args.poisson_observed_events,
+            background_variation_band=not args.no_background_variation_band,
+            background_variation_factor=args.background_variation_factor,
             systematics=args.systematics,
             model_file=model_file,
             metrics_file=metrics_file,
@@ -2157,6 +2210,7 @@ def _run_local_xgboost_cli():
             plot_n_d4=args.c3d4_plot_nbins,
             xsec_overlay=not args.no_c3d4_xsec_overlay,
             xsec_source_dir=args.c3d4_xsec_source_dir,
+            hhh_xsec_source_dir=args.hhh_xsec_source_dir,
             rate_metadata=rate_metadata,
         )
         _print_sm_background_mc_counts(metrics)
@@ -2284,6 +2338,9 @@ def _run_local_xgboost_cli():
         test_size=args.test_size,
         seed=args.seed,
         systematics=args.systematics,
+        min_background_mc_entries=args.min_xgb_background_mc,
+        min_background_effective_entries=args.min_xgb_background_effective_mc,
+        min_background_mc_entries_per_sample=args.min_xgb_background_mc_per_sample,
         max_events=args.max_events,
     )
     metrics = analysis["metrics"]
