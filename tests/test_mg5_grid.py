@@ -1,10 +1,13 @@
 import csv
+import contextlib
+import io
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 
-from ForcedSplitting.mg5_grid import MG5_PROCESS_CONFIGS, _madloop_library_env, prepare_mg5_grid
+from ForcedSplitting.mg5_grid import MG5_PROCESS_CONFIGS, _madloop_library_env, _run_command, prepare_mg5_grid
 
 
 def write_manifest(path):
@@ -59,6 +62,23 @@ def write_signal_run_card(path):
 
 
 class MG5GridTests(unittest.TestCase):
+    def test_mg5_runner_streams_subprocess_output_and_keeps_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            log_path = tmpdir / "mg5_grid.log"
+            captured = io.StringIO()
+
+            with contextlib.redirect_stdout(captured):
+                exit_code = _run_command(
+                    [sys.executable, "-c", "print('visible mg5 output')"],
+                    tmpdir,
+                    log_path,
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("visible mg5 output", captured.getvalue())
+            self.assertIn("visible mg5 output", log_path.read_text())
+
     def test_mg5_runner_env_includes_mg5_root_heptools_libraries(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)

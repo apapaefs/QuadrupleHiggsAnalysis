@@ -106,15 +106,20 @@ def _madloop_library_env(cwd, base_env=None):
 def _run_command(command, cwd, log_path):
     env = _madloop_library_env(cwd)
     with Path(log_path).open("a") as log:
-        proc = subprocess.run(
+        with subprocess.Popen(
             command,
             cwd=str(cwd),
-            stdout=log,
+            stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            check=False,
             env=env,
-        )
+            bufsize=1,
+        ) as proc:
+            for line in proc.stdout:
+                print(line, end="", flush=True)
+                log.write(line)
+                log.flush()
+            proc.wait()
     return proc.returncode
 
 

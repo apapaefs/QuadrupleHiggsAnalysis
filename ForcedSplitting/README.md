@@ -143,9 +143,11 @@ python3 -m ForcedSplitting.mg5_grid gg_hhhg \
 
 Then launch the missing MG5 points by dropping `--dry-run`.  The launcher
 defaults to `--cores 324`, which writes `set run_mode 2` and `set nb_core 324`
-to each launch block.  For `hh+gg` or `h+ggg`, replace `gg_hhhg` with
-`gg_hhgg` or `gg_hggg`.  The generated runs are named like
-`Events/run_gg_hhhg_4_<c3>_<d4>/`, `Events/run_gg_hhgg_4_<c3>_<d4>/`, or
+to each launch block.  MadEvent output is printed live to the terminal and
+also appended to `ForcedSplittingDecks/mg5_grid.log`.  For `hh+gg` or `h+ggg`,
+replace `gg_hhhg` with `gg_hhgg` or `gg_hggg`.  The generated runs are named
+like `Events/run_gg_hhhg_4_<c3>_<d4>/`,
+`Events/run_gg_hhgg_4_<c3>_<d4>/`, or
 `Events/run_gg_hggg_4_<c3>_<d4>/`.
 
 ## hhhbb c3/d4 Production Campaign
