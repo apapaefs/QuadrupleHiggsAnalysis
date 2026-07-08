@@ -120,11 +120,12 @@ class MG5GridTests(unittest.TestCase):
 
             deck_text = Path(summary["deck"]).read_text()
             self.assertNotIn("run_gg_hhhg_1_0.0_0.0", deck_text)
+            self.assertTrue(deck_text.startswith("set run_mode 2\nset nb_core 324\n\nlaunch "))
             self.assertIn("launch run_gg_hhhg_4_0.0_0.0 --accuracy=0.02 --points=3000 --iterations=5", deck_text)
             self.assertIn("launch run_gg_hhhg_4_1.0_100.0 --accuracy=0.02 --points=3000 --iterations=5", deck_text)
             self.assertEqual(deck_text.count("set nevents 1234"), 2)
-            self.assertEqual(deck_text.count("set run_mode 2"), 2)
-            self.assertEqual(deck_text.count("set nb_core 324"), 2)
+            self.assertEqual(deck_text.count("set run_mode 2"), 1)
+            self.assertEqual(deck_text.count("set nb_core 324"), 1)
             self.assertIn("set ebeam1 6500.0", deck_text)
             self.assertIn("set pdlabel lhapdf", deck_text)
             self.assertIn("set lhaid 260000", deck_text)
@@ -220,8 +221,9 @@ class MG5GridTests(unittest.TestCase):
             )
 
             deck_text = Path(summary["deck"]).read_text()
-            self.assertEqual(deck_text.count("set run_mode 2"), 2)
-            self.assertEqual(deck_text.count("set nb_core 8"), 2)
+            self.assertTrue(deck_text.startswith("set run_mode 2\nset nb_core 8\n\nlaunch "))
+            self.assertEqual(deck_text.count("set run_mode 2"), 1)
+            self.assertEqual(deck_text.count("set nb_core 8"), 1)
             self.assertEqual(summary["cores"], 8)
 
     def test_mg5_grid_supports_hggg_process_directory_and_run_names(self):

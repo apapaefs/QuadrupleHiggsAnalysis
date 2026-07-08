@@ -201,12 +201,11 @@ def _execution_settings(cores):
     return ["set run_mode %d" % run_mode, "set nb_core %d" % cores]
 
 
-def _launch_block(run_name, point, events, run_settings, accuracy, points, iterations, seed, cores):
+def _launch_block(run_name, point, events, run_settings, accuracy, points, iterations, seed):
     lines = [
         "launch %s --accuracy=%s --points=%s --iterations=%s" % (run_name, accuracy, points, iterations),
         "0",
     ]
-    lines.extend(_execution_settings(cores))
     for key in RUN_CARD_KEYS:
         if key in run_settings:
             lines.append("set %s %s" % (key, run_settings[key]))
@@ -309,9 +308,10 @@ def prepare_mg5_grid(
 
         row["status"] = "scheduled"
         rows.append(row)
-        blocks.append(_launch_block(run_name, point, events, run_settings, accuracy, points, iterations, seed, cores))
+        blocks.append(_launch_block(run_name, point, events, run_settings, accuracy, points, iterations, seed))
 
-    deck.write_text("\n".join(blocks))
+    deck_blocks = ["\n".join(_execution_settings(cores))] + blocks if blocks else []
+    deck.write_text("\n\n".join(deck_blocks))
     manifest_file.parent.mkdir(parents=True, exist_ok=True)
     _write_manifest(manifest_file, rows)
 
