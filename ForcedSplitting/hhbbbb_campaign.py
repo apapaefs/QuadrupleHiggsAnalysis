@@ -1,4 +1,4 @@
-"""Production campaign for gg -> hhhg with forced g -> b bbar."""
+"""Production campaign for gg -> hhgg with two forced g -> b bbar splits."""
 
 import argparse
 import csv
@@ -19,14 +19,14 @@ from .validation_hbb import _run_herwig
 
 
 @dataclass
-class HHHBBCampaignConfig(object):
+class HHBBBBCampaignConfig(object):
     mg5_dir: Path
     reference_grid_manifest: Path
     workdir: Path
     events: int
     jobs: int = 32
     probe_trials: int = 99999
-    run_name: str = "hhhbb_campaign"
+    run_name: str = "hhbbbb_campaign"
     herwig: str = "Herwig"
     output_location: str = "events"
     seed_stage1: int = 31122002
@@ -168,7 +168,7 @@ def _prepare_point_jobs(config, point, source_lhe, input_event_count, point_dir)
     chunks = []
     for job_index, (start, stop) in enumerate(ranges, start=1):
         job_events = stop - start
-        job_name = "%s_job%03d" % (_run_name(MG5_PROCESS_CONFIGS["gg_hhhg"], point), job_index)
+        job_name = "%s_job%03d" % (_run_name(MG5_PROCESS_CONFIGS["gg_hhgg"], point), job_index)
         job_dir = jobs_dir / job_name
         job_dir.mkdir(parents=True, exist_ok=True)
         chunk_lhe = job_dir / ("%s_input.lhe" % job_name)
@@ -181,7 +181,7 @@ def _prepare_point_jobs(config, point, source_lhe, input_event_count, point_dir)
         correction_file = job_dir / ("%s.force_split.weights" % stage1_name)
         weighted_lhe = job_dir / ("%s.weighted.lhe" % stage1_name)
         stage1_text = stage1_lhewriter_card(
-            PROCESS_CONFIGS["gg_hhhg"],
+            PROCESS_CONFIGS["gg_hhgg"],
             input_lhe=chunk_lhe,
             output_prefix=stage1_name,
             events=job_events,
@@ -227,7 +227,7 @@ def _prepare_point_jobs(config, point, source_lhe, input_event_count, point_dir)
 
 
 def _run_point(config, point, source_lhe, input_event_count, events_dir, runner):
-    run_name = _run_name(MG5_PROCESS_CONFIGS["gg_hhhg"], point)
+    run_name = _run_name(MG5_PROCESS_CONFIGS["gg_hhgg"], point)
     point_dir = Path(config.workdir) / run_name
     point_dir.mkdir(parents=True, exist_ok=True)
     active_jobs, jobs, chunks = _prepare_point_jobs(config, point, source_lhe, input_event_count, point_dir)
@@ -257,7 +257,7 @@ def _run_point(config, point, source_lhe, input_event_count, events_dir, runner)
             overwrite=config.overwrite,
         )
 
-    stage2_name = "%s_hhhbb_stage2" % run_name
+    stage2_name = "%s_hhbbbb_stage2" % run_name
     stage2_card = point_dir / ("%s.in" % stage2_name)
     stage2_run = point_dir / ("%s.run" % stage2_name)
     stage2_root = events_dir / ("%s.root" % stage2_name)
@@ -280,7 +280,7 @@ def _run_point(config, point, source_lhe, input_event_count, events_dir, runner)
     weight_check = _combine_weight_checks(job_summaries)
     summary = {
         "status": "dry_run" if config.dry_run else "complete",
-        "process": "gg_hhhg",
+        "process": "gg_hhgg",
         "run_name": run_name,
         "run_group": point["run_group"],
         "c3": point["c3"],
@@ -339,8 +339,8 @@ def _manifest_row(point_summary):
     }
 
 
-def run_hhhbb_campaign(config, runner=None):
-    """Run the hhhbb forced-splitting production campaign over the reference grid."""
+def run_hhbbbb_campaign(config, runner=None):
+    """Run the hhbbbb forced-splitting production campaign over the c3 projection."""
 
     if runner is None:
         runner = _default_runner
@@ -356,8 +356,8 @@ def run_hhhbb_campaign(config, runner=None):
     events_dir = config.workdir / config.output_location
     events_dir.mkdir(parents=True, exist_ok=True)
 
-    points = load_signal_grid(config.reference_grid_manifest)
-    process_config = MG5_PROCESS_CONFIGS["gg_hhhg"]
+    points = load_signal_grid(config.reference_grid_manifest, c3_only=True, c3_only_d4="0.0")
+    process_config = MG5_PROCESS_CONFIGS["gg_hhgg"]
     point_inputs = []
     missing = []
     for point in points:
@@ -396,11 +396,11 @@ def run_hhhbb_campaign(config, runner=None):
     for point, source_lhe, input_event_count in point_inputs:
         point_summaries.append(_run_point(config, point, source_lhe, input_event_count, events_dir.resolve(), runner))
 
-    manifest = config.workdir / "hhhbb_campaign_manifest.csv"
+    manifest = config.workdir / "hhbbbb_campaign_manifest.csv"
     _write_csv(manifest, [_manifest_row(point) for point in point_summaries])
     summary = {
         "status": "dry_run" if config.dry_run else "complete",
-        "process": "gg_hhhg",
+        "process": "gg_hhgg",
         "reference_grid_manifest": str(config.reference_grid_manifest),
         "mg5_dir": str(config.mg5_dir),
         "workdir": str(config.workdir),
@@ -414,7 +414,7 @@ def run_hhhbb_campaign(config, runner=None):
         "manifest": str(manifest),
         "points": point_summaries,
     }
-    summary_path = config.workdir / "hhhbb_campaign_summary.json"
+    summary_path = config.workdir / "hhbbbb_campaign_summary.json"
     summary["summary"] = str(summary_path)
     _write_text(summary_path, json.dumps(summary, indent=2, sort_keys=True) + "\n", True)
     return summary
@@ -422,7 +422,7 @@ def run_hhhbb_campaign(config, runner=None):
 
 def check_campaign(workdir):
     workdir = Path(workdir)
-    manifest = workdir / "hhhbb_campaign_manifest.csv"
+    manifest = workdir / "hhbbbb_campaign_manifest.csv"
     if not manifest.exists():
         raise FileNotFoundError("Campaign manifest not found: %s" % manifest)
     rows = list(csv.DictReader(manifest.open()))
@@ -513,20 +513,18 @@ def _configured_cores_from_latest_deck(deck_dir, process):
 def monitor_mg5_grid(
     mg5_dir,
     reference_grid_manifest,
-    process="gg_hhhg",
-    c3_only=False,
-    c3_only_d4="0.0",
+    process="gg_hhgg",
     count_events=False,
     tail=25,
     show_points=8,
 ):
-    """Summarize MG5 hard-process grid progress for the hhhbb campaign."""
+    """Summarize MG5 hard-process grid progress for the hhbbbb campaign."""
 
     if process not in MG5_PROCESS_CONFIGS:
         raise ValueError("Unknown MG5 forced-splitting process %r" % process)
     mg5_dir = Path(mg5_dir)
     process_config = MG5_PROCESS_CONFIGS[process]
-    points = load_signal_grid(reference_grid_manifest, c3_only=c3_only, c3_only_d4=c3_only_d4)
+    points = load_signal_grid(reference_grid_manifest, c3_only=True, c3_only_d4="0.0")
     rows = []
     counts = {"complete": 0, "incomplete": 0, "pending": 0}
     total_events = 0
@@ -580,8 +578,8 @@ def monitor_mg5_grid(
         "mg5_dir": str(mg5_dir),
         "reference_grid_manifest": str(reference_grid_manifest),
         "grid_points": len(points),
-        "c3_only": bool(c3_only),
-        "c3_only_d4": str(c3_only_d4),
+        "c3_only": True,
+        "c3_only_d4": "0.0",
         "complete_lhes": counts["complete"],
         "incomplete_run_dirs": counts["incomplete"],
         "pending_run_dirs": counts["pending"],
@@ -602,11 +600,10 @@ def monitor_mg5_grid(
 
 
 def _print_mg5_monitor(summary, show_points=8):
-    print("MG5 %s hard-process monitor" % summary["process"])
+    print("MG5 hhbbbb hard-process monitor")
     print("  process dir:", summary["mg5_dir"])
     print("  grid points:", summary["grid_points"])
-    if summary.get("c3_only"):
-        print("  c3-only projection: yes, d4 =", summary.get("c3_only_d4", "0.0"))
+    print("  c3-only projection: yes, d4 =", summary.get("c3_only_d4", "0.0"))
     print("  completed LHEs:", "%d/%d" % (summary["complete_lhes"], summary["grid_points"]))
     print("  incomplete run dirs:", summary["incomplete_run_dirs"])
     print("  pending run dirs:", summary["pending_run_dirs"])
@@ -661,7 +658,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command")
 
-    prepare = subparsers.add_parser("prepare-mg5", help="write/run the gg_hhhg MG5 grid deck")
+    prepare = subparsers.add_parser("prepare-mg5", help="write/run the c3-only gg_hhgg MG5 grid deck")
     prepare.add_argument("--mg5-root", required=True, type=Path)
     prepare.add_argument("--process-dir", type=Path, default=None)
     prepare.add_argument("--reference-grid-manifest", required=True, type=Path)
@@ -676,14 +673,14 @@ def main(argv=None):
     prepare.add_argument("--overwrite", action="store_true")
     prepare.add_argument("--dry-run", action="store_true")
 
-    run = subparsers.add_parser("run", help="run the forced-splitting hhhbb campaign")
+    run = subparsers.add_parser("run", help="run the forced-splitting hhbbbb campaign")
     run.add_argument("--mg5-dir", required=True, type=Path)
     run.add_argument("--reference-grid-manifest", required=True, type=Path)
     run.add_argument("--workdir", required=True, type=Path)
     run.add_argument("--events", required=True, type=int)
     run.add_argument("--jobs", type=int, default=32)
     run.add_argument("--probe-trials", type=int, default=99999)
-    run.add_argument("--run-name", default="hhhbb_campaign")
+    run.add_argument("--run-name", default="hhbbbb_campaign")
     run.add_argument("--herwig", default="Herwig")
     run.add_argument("--output-location", default="events")
     run.add_argument("--pdf-name", default=DEFAULT_HERWIG_PDF_NAME)
@@ -699,9 +696,7 @@ def main(argv=None):
     monitor = subparsers.add_parser("monitor-mg5", help="summarize MG5 hard-process grid progress")
     monitor.add_argument("--mg5-dir", required=True, type=Path)
     monitor.add_argument("--reference-grid-manifest", required=True, type=Path)
-    monitor.add_argument("--process", choices=sorted(MG5_PROCESS_CONFIGS), default="gg_hhhg")
-    monitor.add_argument("--c3-only", action="store_true", help="Monitor one run per unique c3 value, with d4 fixed by --c3-only-d4.")
-    monitor.add_argument("--c3-only-d4", default="0.0", help="d4 value used for c3-only run names.")
+    monitor.add_argument("--process", choices=sorted(MG5_PROCESS_CONFIGS), default="gg_hhgg")
     monitor.add_argument("--count-events", action="store_true", help="Count events inside completed LHE files; slower.")
     monitor.add_argument("--tail", type=int, default=25, help="Number of mg5_grid.log tail lines to print.")
     monitor.add_argument("--show-points", type=int, default=8, help="Number of point/debug/process rows to show per section.")
@@ -709,9 +704,9 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
     if args.command == "prepare-mg5":
-        process_dir = args.process_dir or (args.mg5_root / "gg_hhhg")
+        process_dir = args.process_dir or (args.mg5_root / "gg_hhgg")
         summary = prepare_mg5_grid(
-            process="gg_hhhg",
+            process="gg_hhgg",
             process_dir=process_dir,
             reference_grid_manifest=args.reference_grid_manifest,
             events=args.events,
@@ -722,13 +717,15 @@ def main(argv=None):
             iterations=args.iterations,
             seed=args.seed,
             cores=args.cores,
+            c3_only=True,
+            c3_only_d4="0.0",
             overwrite=args.overwrite,
             dry_run=args.dry_run,
         )
         print(json.dumps(summary, indent=2, sort_keys=True))
     elif args.command == "run":
-        summary = run_hhhbb_campaign(
-            HHHBBCampaignConfig(
+        summary = run_hhbbbb_campaign(
+            HHBBBBCampaignConfig(
                 mg5_dir=args.mg5_dir,
                 reference_grid_manifest=args.reference_grid_manifest,
                 workdir=args.workdir,
@@ -754,8 +751,6 @@ def main(argv=None):
             mg5_dir=args.mg5_dir,
             reference_grid_manifest=args.reference_grid_manifest,
             process=args.process,
-            c3_only=args.c3_only,
-            c3_only_d4=args.c3_only_d4,
             count_events=args.count_events,
             tail=args.tail,
             show_points=args.show_points,

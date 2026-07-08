@@ -251,6 +251,36 @@ class MG5GridTests(unittest.TestCase):
             self.assertIn("launch run_gg_hggg_4_1.0_100.0", deck_text)
             self.assertEqual(MG5_PROCESS_CONFIGS["gg_hggg"].default_process_dir, "gg_hggg")
 
+    def test_mg5_grid_can_project_reference_grid_to_unique_c3_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            process_dir = tmpdir / "gg_hhgg"
+            process_dir.mkdir()
+            manifest = tmpdir / "signal_manifest.csv"
+            with manifest.open("w", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["status", "run_name", "run_group", "c3", "d4"])
+                writer.writeheader()
+                writer.writerow({"status": "written", "run_name": "a", "run_group": "4", "c3": "0.0", "d4": "-100.0"})
+                writer.writerow({"status": "written", "run_name": "b", "run_group": "4", "c3": "0.0", "d4": "0.0"})
+                writer.writerow({"status": "written", "run_name": "c", "run_group": "4", "c3": "1.0", "d4": "100.0"})
+
+            summary = prepare_mg5_grid(
+                process="gg_hhgg",
+                process_dir=process_dir,
+                reference_grid_manifest=manifest,
+                events=1000,
+                dry_run=True,
+                c3_only=True,
+            )
+
+            deck_text = Path(summary["deck"]).read_text()
+            self.assertIn("launch run_gg_hhgg_4_0.0_0.0", deck_text)
+            self.assertIn("launch run_gg_hhgg_4_1.0_0.0", deck_text)
+            self.assertNotIn("run_gg_hhgg_4_0.0_-100.0", deck_text)
+            self.assertEqual(deck_text.count("set nevents 1000"), 2)
+            self.assertEqual(summary["scheduled_points"], 2)
+            self.assertTrue(summary["c3_only"])
+
 
 if __name__ == "__main__":
     unittest.main()

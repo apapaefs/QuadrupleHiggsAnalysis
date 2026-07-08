@@ -1194,7 +1194,7 @@ def run_signal_background_analysis(
 
 
 _C3D4_RUN_PATTERN = re.compile(
-    r"run_gg_(4h|hhhg)_([^_/]+)_"
+    r"run_gg_(4h|hhhg|hhgg)_([^_/]+)_"
     r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)_"
     r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
 )
@@ -1463,6 +1463,23 @@ def _index_component_rows(rows):
     return indexed
 
 
+def _component_c3_key(row):
+    return (
+        str(row.get("run_group", "")),
+        round(float(row.get("c3", 0.0)), 9) if row.get("c3") not in (None, "") else None,
+    )
+
+
+def _index_c3_component_rows(rows, component_name):
+    indexed = {}
+    for row in rows or []:
+        key = _component_c3_key(row)
+        if key in indexed:
+            raise ValueError("Duplicate %s row for run_group/c3 = %s" % (component_name, key))
+        indexed[key] = dict(row)
+    return indexed
+
+
 def _sum_row_values(rows, key, default=0.0):
     return sum(float(row.get(key, default) or 0.0) for row in rows)
 
@@ -1498,21 +1515,29 @@ def _copy_component_fields(target, component, prefix):
         target["%s_%s" % (prefix, field)] = component.get(field)
 
 
-def combine_signal_component_rows(hhhh_rows, hhhbb_rows):
-    """Sum hhhh and hhhbb scored rows by c3/d4 for final limit setting only."""
+def combine_signal_component_rows(hhhh_rows, hhhbb_rows=None, hhbbbb_rows=None):
+    """Sum scored signal components for final limit setting only.
+
+    hhhh and hhhbb are keyed by the full (run_group, c3, d4) point.  hhbbbb is
+    a c3-only contribution, so a single row is added to every hhhh/hhhbb row
+    with the same (run_group, c3).
+    """
 
     hhhh_by_key = _index_component_rows(hhhh_rows)
     hhhbb_by_key = _index_component_rows(hhhbb_rows)
+    hhbbbb_by_c3 = _index_c3_component_rows(hhbbbb_rows, "hhbbbb")
+    exact_keys = set(hhhh_by_key) | set(hhhbb_by_key)
     combined = []
     for key in sorted(
-        set(hhhh_by_key) | set(hhhbb_by_key),
+        exact_keys,
         key=lambda item: (item[0], float("nan") if item[1] is None else item[1], float("nan") if item[2] is None else item[2]),
     ):
         hhhh = hhhh_by_key.get(key)
         hhhbb = hhhbb_by_key.get(key)
+        hhbbbb = hhbbbb_by_c3.get((key[0], key[1]))
         components = []
         component_rows = []
-        base = dict(hhhh or hhhbb or {})
+        base = dict(hhhh or hhhbb or hhbbbb or {})
         if hhhh is not None:
             components.append("hhhh")
             component_rows.append(hhhh)
@@ -1521,6 +1546,10 @@ def combine_signal_component_rows(hhhh_rows, hhhbb_rows):
             components.append("hhhbb")
             component_rows.append(hhhbb)
             _copy_component_fields(base, hhhbb, "hhhbb")
+        if hhbbbb is not None:
+            components.append("hhbbbb")
+            component_rows.append(hhbbbb)
+            _copy_component_fields(base, hhbbbb, "hhbbbb")
 
         expected_selected_error = math.sqrt(
             sum(float(row.get("expected_selected_error", 0.0) or 0.0) ** 2 for row in component_rows)
@@ -1623,6 +1652,26 @@ SIGNAL_COMPONENT_LIMIT_FIELDS = [
     "hhhbb_weighted_efficiency",
     "hhhbb_raw_weight_efficiency",
     "hhhbb_mean_score",
+    "hhbbbb_file",
+    "hhbbbb_entries",
+    "hhbbbb_selected_entries",
+    "hhbbbb_xsec_fb",
+    "hhbbbb_raw_xsec_fb",
+    "hhbbbb_rate_factor",
+    "hhbbbb_effective_xsec_fb",
+    "hhbbbb_generated_events",
+    "hhbbbb_normalisation_weight",
+    "hhbbbb_expected_preselected_events",
+    "hhbbbb_expected_selected_events",
+    "hhbbbb_expected_selected_error",
+    "hhbbbb_raw_sigma_eff_fb",
+    "hhbbbb_effective_sigma_eff_fb",
+    "hhbbbb_analysis_efficiency",
+    "hhbbbb_xgboost_efficiency",
+    "hhbbbb_final_efficiency",
+    "hhbbbb_weighted_efficiency",
+    "hhbbbb_raw_weight_efficiency",
+    "hhbbbb_mean_score",
 ]
 
 

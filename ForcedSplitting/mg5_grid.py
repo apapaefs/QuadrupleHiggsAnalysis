@@ -150,7 +150,7 @@ def _point_key(c3, d4):
     return (round(float(c3), 9), round(float(d4), 9))
 
 
-def load_signal_grid(manifest_file, statuses=None):
+def load_signal_grid(manifest_file, statuses=None, c3_only=False, c3_only_d4="0.0"):
     statuses = set(statuses or PRODUCTION_SIGNAL_STATUSES)
     points = []
     seen = set()
@@ -162,7 +162,11 @@ def load_signal_grid(manifest_file, statuses=None):
             d4 = row.get("d4")
             if c3 in (None, "") or d4 in (None, ""):
                 continue
-            key = _point_key(c3, d4)
+            if c3_only:
+                d4 = str(c3_only_d4)
+                key = (round(float(c3), 9),)
+            else:
+                key = _point_key(c3, d4)
             if key in seen:
                 continue
             seen.add(key)
@@ -257,6 +261,8 @@ def prepare_mg5_grid(
     iterations=5,
     seed=0,
     cores=DEFAULT_MG5_CORES,
+    c3_only=False,
+    c3_only_d4="0.0",
     overwrite=False,
     dry_run=False,
     runner=None,
@@ -281,7 +287,7 @@ def prepare_mg5_grid(
 
     rows = []
     blocks = []
-    for point in load_signal_grid(reference_grid_manifest):
+    for point in load_signal_grid(reference_grid_manifest, c3_only=c3_only, c3_only_d4=c3_only_d4):
         run_name = _run_name(process_config, point)
         run_dir = process_dir / "Events" / run_name
         existing_lhe = _find_lhe(run_dir)
@@ -334,6 +340,8 @@ def prepare_mg5_grid(
         "scheduled_points": len(blocks),
         "total_points": len(rows),
         "cores": int(cores),
+        "c3_only": bool(c3_only),
+        "c3_only_d4": str(c3_only_d4),
         "run_status": run_status,
         "exit_code": exit_code,
     }
@@ -360,6 +368,8 @@ def main(argv=None):
     parser.add_argument("--iterations", type=int, default=5)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--cores", type=int, default=DEFAULT_MG5_CORES, help="MadEvent multicore worker count.")
+    parser.add_argument("--c3-only", action="store_true", help="Schedule one run per unique c3 value, with d4 fixed by --c3-only-d4.")
+    parser.add_argument("--c3-only-d4", default="0.0", help="d4 value written into c3-only run names and param cards.")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
@@ -385,6 +395,8 @@ def main(argv=None):
         iterations=args.iterations,
         seed=args.seed,
         cores=args.cores,
+        c3_only=args.c3_only,
+        c3_only_d4=args.c3_only_d4,
         overwrite=args.overwrite,
         dry_run=args.dry_run,
     )
@@ -393,6 +405,8 @@ def main(argv=None):
     print("MG5 manifest:", summary["manifest"])
     print("Scheduled points:", summary["scheduled_points"], "of", summary["total_points"])
     print("MG5 cores:", summary["cores"])
+    if summary["c3_only"]:
+        print("c3-only projection: yes, d4 =", summary["c3_only_d4"])
     print("Run status:", summary["run_status"])
 
 

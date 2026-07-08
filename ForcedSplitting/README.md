@@ -149,6 +149,8 @@ to the terminal and also appended to `ForcedSplittingDecks/mg5_grid.log`.  For
 generated runs are named like `Events/run_gg_hhhg_4_<c3>_<d4>/`,
 `Events/run_gg_hhgg_4_<c3>_<d4>/`, or
 `Events/run_gg_hggg_4_<c3>_<d4>/`.
+For processes that depend only on `c3`, add `--c3-only`; the deck then writes
+one point per unique `c3` value using `d4 = 0.0` in the run name and param card.
 
 ## hhhbb c3/d4 Production Campaign
 
@@ -247,6 +249,81 @@ SM signal plus backgrounds only.  The hhhbb grid is scored separately in
 rows passed to `write_c3d4_limit_scan`.  The hhhh rate factor remains
 `K_signal * BR(h->bb)^4 * btag^8`; the hhhbb rate factor is
 `K_signal * BR(h->bb)^3 * btag^8`.
+
+## hhbbbb c3-only Production Campaign
+
+Use `hhbbbb_campaign` for the production approximation
+`gg -> hhgg, g g -> b bbar b bbar`.  This process depends on `c3` but not
+`d4`, so the campaign projects the 57-point reference grid onto the 21 unique
+`c3` values and generates runs named `run_gg_hhgg_4_<c3>_0.0`.  The resulting
+ROOT files are scored once per `c3` and added to every matching `d4` row only
+at the final Poisson-limit stage; they are not used for XGBoost training or
+threshold optimization.
+
+On odysseus:
+
+```sh
+cd ~/Projects/QuadrupleHiggsAnalysis
+git pull origin main
+module load herwig/730
+
+python3 -m ForcedSplitting.hhbbbb_campaign prepare-mg5 \
+  --mg5-root ~/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15 \
+  --reference-grid-manifest HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv \
+  --events 10000 \
+  --cores 324 \
+  --dry-run
+
+python3 -m ForcedSplitting.hhbbbb_campaign prepare-mg5 \
+  --mg5-root ~/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15 \
+  --reference-grid-manifest HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv \
+  --events 10000 \
+  --cores 324
+```
+
+Monitor MG5 while it is running:
+
+```sh
+python3 -m ForcedSplitting.hhbbbb_campaign monitor-mg5 \
+  --mg5-dir ~/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15/gg_hhgg \
+  --reference-grid-manifest HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv \
+  --tail 30
+```
+
+Then run the forced-splitting and HwSim production chain:
+
+```sh
+python3 -m ForcedSplitting.hhbbbb_campaign run \
+  --mg5-dir ~/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15/gg_hhgg \
+  --reference-grid-manifest HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv \
+  --workdir HerwigForcedSplitting/gg_hhgg_c3_10k_hhbbbb \
+  --events 10000 \
+  --jobs 32 \
+  --probe-trials 99999 \
+  --allow-zero-probe-successes
+```
+
+Check the campaign:
+
+```sh
+python3 -m ForcedSplitting.hhbbbb_campaign check \
+  --workdir HerwigForcedSplitting/gg_hhgg_c3_10k_hhbbbb
+```
+
+After copying `HerwigForcedSplitting/gg_hhgg_c3_10k_hhbbbb/events/` to the
+analysis machine, include it in the c3/d4 scan with:
+
+```sh
+python3 4h_analyzer.py --run-c3d4-limit-scan \
+  --background-csv Backgrounds/processes.csv \
+  --analysis-jobs 6 \
+  --hhhbb-signal-dir HerwigForcedSplitting/gg_hhhg_c3d4_10k_hhhbb/events \
+  --hhbbbb-signal-dir HerwigForcedSplitting/gg_hhgg_c3_10k_hhbbbb/events
+```
+
+The hhhh rate factor remains `K_signal * BR(h->bb)^4 * btag^8`, hhhbb uses
+`K_signal * BR(h->bb)^3 * btag^8`, and hhbbbb uses
+`K_signal * BR(h->bb)^2 * btag^8`.
 
 For an MG5 process directory with an `Events/` subdirectory, prepare the paired
 Stage-1 and Stage-2 Herwig cards with:
