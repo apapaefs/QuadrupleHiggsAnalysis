@@ -329,8 +329,8 @@ class HHHBBValidationTests(unittest.TestCase):
                 stage1_card = Path(job["split_stage1_card"])
                 self.assertTrue(stage1_card.exists())
                 self.assertIn("set ForceSplitVeto:ProbeTrials 11", stage1_card.read_text())
-                self.assertIn("set ForceSplitVeto:ResetAfterAttempts 100011", stage1_card.read_text())
-                self.assertIn("set ShowerHandler:MaxTry 100011", stage1_card.read_text())
+                self.assertIn("set ForceSplitVeto:ResetAfterAttempts 100000", stage1_card.read_text())
+                self.assertIn("set ShowerHandler:MaxTry 100000", stage1_card.read_text())
 
     def test_weight_check_report_lines_print_unsuccessful_rows(self):
         lines = weight_check_report_lines(

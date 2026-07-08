@@ -54,6 +54,8 @@ PROCESS_CONFIGS = {
 }
 
 DEFAULT_HERWIG_PDF_NAME = "NNPDF23_nlo_as_0119"
+HERWIG_SHOWER_MAXTRY_LIMIT = 100000
+DEFAULT_POST_PROBE_ATTEMPTS = 10000
 
 
 FINAL_STATE_SPLITTING_DELETIONS = """\
@@ -103,7 +105,7 @@ def stage1_lhewriter_card(
     correction_file=None,
     reset_after_attempts=100000,
     max_try=100000,
-    post_probe_attempts=100000,
+    post_probe_attempts=DEFAULT_POST_PROBE_ATTEMPTS,
     extra_shower_settings=None,
     pdf_name=DEFAULT_HERWIG_PDF_NAME,
 ):
@@ -112,9 +114,25 @@ def stage1_lhewriter_card(
         correction_file = _default_correction_file(output_prefix)
     probe_trials = int(probe_trials)
     reset_after_attempts = int(reset_after_attempts)
-    max_try = int(max_try)
+    max_try = min(int(max_try), HERWIG_SHOWER_MAXTRY_LIMIT)
     post_probe_attempts = max(1, int(post_probe_attempts))
+    probe_comment = ""
     if probe_trials > 0:
+        if post_probe_attempts >= max_try:
+            post_probe_attempts = max(1, max_try // 10)
+        max_probe_trials = max(0, max_try - post_probe_attempts)
+        requested_probe_trials = probe_trials
+        if probe_trials > max_probe_trials:
+            probe_trials = max_probe_trials
+            probe_comment = (
+                "# Requested ProbeTrials {requested} capped to {actual} "
+                "to leave {post} post-probe attempts under Herwig ShowerHandler:MaxTry <= {max_try}\n"
+            ).format(
+                requested=requested_probe_trials,
+                actual=probe_trials,
+                post=max_try - probe_trials,
+                max_try=HERWIG_SHOWER_MAXTRY_LIMIT,
+            )
         min_attempts = probe_trials + post_probe_attempts
         reset_after_attempts = max(reset_after_attempts, min_attempts)
         max_try = max(max_try, min_attempts)
@@ -193,6 +211,7 @@ set ForceSplitVeto:SplitMinBPt 15*GeV
 set ForceSplitVeto:SplitMaxBEta 3.0
 set ForceSplitVeto:SplitMinDeltaR 0.3
 set ForceSplitVeto:SplitMinDeltaRToOtherB 0.3
+{probe_comment}\
 set ForceSplitVeto:ProbeTrials {probe_trials}
 set ForceSplitVeto:CorrectionFile {correction_file}
 set ForceSplitVeto:ResetAfterAttempts {reset_after_attempts}
@@ -231,6 +250,7 @@ saverun {output_prefix} theGenerator
         min_b=int(config.min_b),
         min_split_pairs=int(config.min_split_pairs),
         require_distinct=_yes_no(config.require_distinct_hard_gluons),
+        probe_comment=probe_comment,
         probe_trials=probe_trials,
         correction_file=correction_file,
         reset_after_attempts=reset_after_attempts,
@@ -439,7 +459,7 @@ def main(argv=None):
     stage1.add_argument(
         "--post-probe-attempts",
         type=int,
-        default=100000,
+        default=DEFAULT_POST_PROBE_ATTEMPTS,
         help="Minimum accepted-shower forcing attempts left after ProbeTrials.",
     )
     stage1.add_argument("--extra-shower-setting", action="append", default=[])

@@ -78,10 +78,11 @@ event weights, the weighted LHE satisfies
 
 When `ProbeTrials` is nonzero, the Stage-1 cards reserve additional accepted
 shower attempts after the fixed probes.  By default the card writer sets
-`ShowerHandler:MaxTry` and `ForceSplitVeto:ResetAfterAttempts` to at least
-`ProbeTrials + 100000`.  This matters for high-statistics probe runs: the
-fixed probes measure the split acceptance, but the shower still needs real
-post-probe attempts to produce an accepted event.
+`ShowerHandler:MaxTry` and `ForceSplitVeto:ResetAfterAttempts` to Herwig's
+`100000` shower-attempt ceiling, and caps the effective `ProbeTrials` value if
+needed to leave 10000 post-probe attempts.  This matters for high-statistics
+probe runs: the fixed probes measure the split acceptance, but the shower
+still needs real post-probe attempts to produce an accepted event.
 
 Create the `HwSim:OutputLocation` directory before running Stage 2.  For
 nested sample-specific directories, use the exact directory name produced by
