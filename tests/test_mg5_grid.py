@@ -103,6 +103,8 @@ class MG5GridTests(unittest.TestCase):
             self.assertIn("launch run_gg_hhhg_4_0.0_0.0 --accuracy=0.02 --points=3000 --iterations=5", deck_text)
             self.assertIn("launch run_gg_hhhg_4_1.0_100.0 --accuracy=0.02 --points=3000 --iterations=5", deck_text)
             self.assertEqual(deck_text.count("set nevents 1234"), 2)
+            self.assertEqual(deck_text.count("set run_mode 2"), 2)
+            self.assertEqual(deck_text.count("set nb_core 324"), 2)
             self.assertIn("set ebeam1 6500.0", deck_text)
             self.assertIn("set pdlabel lhapdf", deck_text)
             self.assertIn("set lhaid 260000", deck_text)
@@ -176,6 +178,31 @@ class MG5GridTests(unittest.TestCase):
             self.assertEqual(cwd, process_dir)
             self.assertTrue(str(log_path).endswith("mg5_grid.log"))
             self.assertEqual(summary["run_status"], "complete")
+
+    def test_mg5_grid_allows_core_count_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            process_dir = tmpdir / "gg_hhhg"
+            process_dir.mkdir()
+            manifest = tmpdir / "signal_manifest.csv"
+            run_card = tmpdir / "run_card.dat"
+            write_manifest(manifest)
+            write_signal_run_card(run_card)
+
+            summary = prepare_mg5_grid(
+                process="gg_hhhg",
+                process_dir=process_dir,
+                reference_grid_manifest=manifest,
+                events=1000,
+                signal_run_card=run_card,
+                cores=8,
+                dry_run=True,
+            )
+
+            deck_text = Path(summary["deck"]).read_text()
+            self.assertEqual(deck_text.count("set run_mode 2"), 2)
+            self.assertEqual(deck_text.count("set nb_core 8"), 2)
+            self.assertEqual(summary["cores"], 8)
 
     def test_mg5_grid_supports_hggg_process_directory_and_run_names(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -137,13 +137,15 @@ python3 -m ForcedSplitting.mg5_grid gg_hhhg \
   --mg5-root /mnt/ssd2/Projects/4H/MG5_aMC_v3_5_15 \
   --reference-grid-manifest /mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis/HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv \
   --events 1000 \
+  --cores 324 \
   --dry-run
 ```
 
-Then launch the missing MG5 points by dropping `--dry-run`.  For `hh+gg` or
-`h+ggg`, replace `gg_hhhg` with `gg_hhgg` or `gg_hggg`.  The generated runs are
-named like `Events/run_gg_hhhg_4_<c3>_<d4>/`,
-`Events/run_gg_hhgg_4_<c3>_<d4>/`, or
+Then launch the missing MG5 points by dropping `--dry-run`.  The launcher
+defaults to `--cores 324`, which writes `set run_mode 2` and `set nb_core 324`
+to each launch block.  For `hh+gg` or `h+ggg`, replace `gg_hhhg` with
+`gg_hhgg` or `gg_hggg`.  The generated runs are named like
+`Events/run_gg_hhhg_4_<c3>_<d4>/`, `Events/run_gg_hhgg_4_<c3>_<d4>/`, or
 `Events/run_gg_hggg_4_<c3>_<d4>/`.
 
 ## hhhbb c3/d4 Production Campaign
@@ -166,12 +168,14 @@ python3 -m ForcedSplitting.hhhbb_campaign prepare-mg5 \
   --mg5-root ~/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15 \
   --reference-grid-manifest HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv \
   --events 10000 \
+  --cores 324 \
   --dry-run
 
 python3 -m ForcedSplitting.hhhbb_campaign prepare-mg5 \
   --mg5-root ~/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15 \
   --reference-grid-manifest HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv \
-  --events 10000
+  --events 10000 \
+  --cores 324
 ```
 
 Then run the forced-splitting production campaign:
@@ -200,6 +204,11 @@ This reports completed LHEs, incomplete run directories, pending points,
 recent MG5 debug-log errors, matching processes, and the tail of
 `ForcedSplittingDecks/mg5_grid.log`.  Add `--count-events` for a slower check
 that opens completed LHE files and counts their `<event>` blocks.
+
+The MG5 deck writer defaults to multicore mode with `nb_core = 324` for this
+campaign.  The generated `.mg5cmd` contains `set run_mode 2` and
+`set nb_core 324` in every point launch block, and `monitor-mg5` reports the
+configured core count from the latest deck.
 
 The Stage-1 card writer caps the effective `ProbeTrials` value under Herwig's
 legal `ShowerHandler:MaxTry` limit while leaving post-probe attempts to produce

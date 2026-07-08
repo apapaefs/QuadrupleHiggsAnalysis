@@ -144,6 +144,11 @@ class HHHBBCampaignTests(unittest.TestCase):
             debug_log.write_text("Traceback\ninternal.MadGraph5Error: failed initialization\n")
             deck_dir = mg5_dir / "ForcedSplittingDecks"
             deck_dir.mkdir(parents=True)
+            (deck_dir / "gg_hhhg_10000events.mg5cmd").write_text(
+                "launch run_gg_hhhg_4_0.0_0.0\n"
+                "set run_mode 2\n"
+                "set nb_core 324\n"
+            )
             (deck_dir / "mg5_grid.log").write_text(
                 "line 1\n"
                 "INFO:  Idle: 1,  Running: 56,  Completed: 0 [ current time: 16h28 ]\n"
@@ -166,6 +171,7 @@ class HHHBBCampaignTests(unittest.TestCase):
         self.assertEqual(summary["incomplete_run_dirs"], 1)
         self.assertEqual(summary["pending_run_dirs"], 1)
         self.assertEqual(summary["debug_logs"], 1)
+        self.assertEqual(summary["configured_cores"], 324)
         self.assertEqual(summary["total_counted_events"], 2)
         self.assertEqual(summary["grid_log_tail"][-2:], ["Error: something went wrong", "line 3"])
         self.assertIn("Running: 56", summary["latest_progress_line"])

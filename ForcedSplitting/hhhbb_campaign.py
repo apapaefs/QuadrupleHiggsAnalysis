@@ -13,7 +13,7 @@ from .herwig_cards import DEFAULT_HERWIG_PDF_NAME, PROCESS_CONFIGS, stage1_lhewr
 from .lhe_merge import event_ranges, merge_weighted_lhe_chunks, write_lhe_event_slice
 from .lhe_validation import normalize_lhe_file_process_ids
 from .lhe_weights import apply_weights, verify_weighted_lhe
-from .mg5_grid import MG5_PROCESS_CONFIGS, _find_lhe, _run_name, load_signal_grid, prepare_mg5_grid
+from .mg5_grid import DEFAULT_MG5_CORES, MG5_PROCESS_CONFIGS, _find_lhe, _run_name, load_signal_grid, prepare_mg5_grid
 from .run_chain import count_lhe_events
 from .validation_hbb import _run_herwig
 
@@ -494,6 +494,22 @@ def _latest_mg5_progress_line(lines):
     return progress
 
 
+def _configured_cores_from_latest_deck(deck_dir, process):
+    deck_dir = Path(deck_dir)
+    decks = sorted(deck_dir.glob("%s_*events.mg5cmd" % process), key=lambda path: path.stat().st_mtime, reverse=True)
+    if not decks:
+        return None
+    configured_cores = None
+    for raw_line in decks[0].read_text(errors="replace").splitlines():
+        parts = raw_line.strip().split()
+        if len(parts) == 3 and parts[0] == "set" and parts[1] == "nb_core":
+            try:
+                configured_cores = int(parts[2])
+            except ValueError:
+                configured_cores = None
+    return configured_cores
+
+
 def monitor_mg5_grid(
     mg5_dir,
     reference_grid_manifest,
@@ -569,6 +585,7 @@ def monitor_mg5_grid(
         "grid_manifest": str(grid_manifest) if grid_manifest.exists() else "",
         "grid_log": str(grid_log) if grid_log.exists() else "",
         "grid_log_mtime": grid_log.stat().st_mtime if grid_log.exists() else None,
+        "configured_cores": _configured_cores_from_latest_deck(deck_dir, process),
         "current_processes": current_processes,
         "current_process_count": len(current_processes),
         "latest_progress_line": _latest_mg5_progress_line(grid_log_tail),
@@ -588,6 +605,8 @@ def _print_mg5_monitor(summary, show_points=8):
     print("  incomplete run dirs:", summary["incomplete_run_dirs"])
     print("  pending run dirs:", summary["pending_run_dirs"])
     print("  debug logs:", summary["debug_logs"])
+    if summary["configured_cores"] is not None:
+        print("  configured MG5 cores:", summary["configured_cores"])
     print("  matching processes:", summary["current_process_count"])
     if summary["latest_progress_line"]:
         print("  latest MG5 progress:", summary["latest_progress_line"])
@@ -647,6 +666,7 @@ def main(argv=None):
     prepare.add_argument("--points", type=int, default=3000)
     prepare.add_argument("--iterations", type=int, default=5)
     prepare.add_argument("--seed", type=int, default=0)
+    prepare.add_argument("--cores", type=int, default=DEFAULT_MG5_CORES)
     prepare.add_argument("--overwrite", action="store_true")
     prepare.add_argument("--dry-run", action="store_true")
 
@@ -693,6 +713,7 @@ def main(argv=None):
             points=args.points,
             iterations=args.iterations,
             seed=args.seed,
+            cores=args.cores,
             overwrite=args.overwrite,
             dry_run=args.dry_run,
         )

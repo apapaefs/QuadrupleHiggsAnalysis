@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 PRODUCTION_SIGNAL_STATUSES = {"written", "skipped_existing", "complete", "skipped_complete"}
+DEFAULT_MG5_CORES = 324
 
 
 @dataclass
@@ -187,11 +188,20 @@ def _find_lhe(run_dir):
     return None
 
 
-def _launch_block(run_name, point, events, run_settings, accuracy, points, iterations, seed):
+def _execution_settings(cores):
+    cores = int(cores)
+    if cores < 1:
+        raise ValueError("MG5 core count must be positive, got %d" % cores)
+    run_mode = 2 if cores > 1 else 0
+    return ["set run_mode %d" % run_mode, "set nb_core %d" % cores]
+
+
+def _launch_block(run_name, point, events, run_settings, accuracy, points, iterations, seed, cores):
     lines = [
         "launch %s --accuracy=%s --points=%s --iterations=%s" % (run_name, accuracy, points, iterations),
         "0",
     ]
+    lines.extend(_execution_settings(cores))
     for key in RUN_CARD_KEYS:
         if key in run_settings:
             lines.append("set %s %s" % (key, run_settings[key]))
@@ -218,6 +228,7 @@ def _write_manifest(path, rows):
         "d4",
         "events",
         "seed",
+        "cores",
         "run_dir",
         "lhe_file",
         "deck",
@@ -241,6 +252,7 @@ def prepare_mg5_grid(
     points=3000,
     iterations=5,
     seed=0,
+    cores=DEFAULT_MG5_CORES,
     overwrite=False,
     dry_run=False,
     runner=None,
@@ -250,6 +262,8 @@ def prepare_mg5_grid(
     if runner is None:
         runner = _run_command
 
+    cores = int(cores)
+    _execution_settings(cores)
     process_config = MG5_PROCESS_CONFIGS[process]
     process_dir = Path(process_dir)
     deck_dir = Path(deck_dir) if deck_dir is not None else process_dir / "ForcedSplittingDecks"
@@ -276,6 +290,7 @@ def prepare_mg5_grid(
             "d4": point["d4"],
             "events": int(events),
             "seed": int(seed),
+            "cores": int(cores),
             "run_dir": str(run_dir),
             "lhe_file": str(existing_lhe) if existing_lhe is not None else str(run_dir / "unweighted_events.lhe.gz"),
             "deck": str(deck),
@@ -289,7 +304,7 @@ def prepare_mg5_grid(
 
         row["status"] = "scheduled"
         rows.append(row)
-        blocks.append(_launch_block(run_name, point, events, run_settings, accuracy, points, iterations, seed))
+        blocks.append(_launch_block(run_name, point, events, run_settings, accuracy, points, iterations, seed, cores))
 
     deck.write_text("\n".join(blocks))
     manifest_file.parent.mkdir(parents=True, exist_ok=True)
@@ -313,6 +328,7 @@ def prepare_mg5_grid(
         "manifest": str(manifest_file),
         "scheduled_points": len(blocks),
         "total_points": len(rows),
+        "cores": int(cores),
         "run_status": run_status,
         "exit_code": exit_code,
     }
@@ -338,6 +354,7 @@ def main(argv=None):
     parser.add_argument("--points", type=int, default=3000)
     parser.add_argument("--iterations", type=int, default=5)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--cores", type=int, default=DEFAULT_MG5_CORES, help="MadEvent multicore worker count.")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
@@ -362,6 +379,7 @@ def main(argv=None):
         points=args.points,
         iterations=args.iterations,
         seed=args.seed,
+        cores=args.cores,
         overwrite=args.overwrite,
         dry_run=args.dry_run,
     )
@@ -369,6 +387,7 @@ def main(argv=None):
     print("MG5 deck:", summary["deck"])
     print("MG5 manifest:", summary["manifest"])
     print("Scheduled points:", summary["scheduled_points"], "of", summary["total_points"])
+    print("MG5 cores:", summary["cores"])
     print("Run status:", summary["run_status"])
 
 
