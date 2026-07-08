@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -82,9 +83,37 @@ DEFAULT_RUN_CARD_VALUES = {
 }
 
 
+def _madloop_library_env(cwd, base_env=None):
+    """Return an environment that can load MG5-root HEPTools loop libraries."""
+    env = dict(os.environ if base_env is None else base_env)
+    cwd = Path(cwd)
+    candidates = [
+        cwd / "HEPTools" / "lib",
+        cwd / "HEPTools" / "collier",
+        cwd.parent / "HEPTools" / "lib",
+        cwd.parent / "HEPTools" / "collier",
+    ]
+    library_paths = [str(path) for path in candidates if path.exists()]
+    existing = env.get("LD_LIBRARY_PATH")
+    if existing:
+        library_paths.extend(path for path in existing.split(":") if path)
+    if library_paths:
+        env["LD_LIBRARY_PATH"] = ":".join(dict.fromkeys(library_paths))
+    return env
+
+
 def _run_command(command, cwd, log_path):
+    env = _madloop_library_env(cwd)
     with Path(log_path).open("a") as log:
-        proc = subprocess.run(command, cwd=str(cwd), stdout=log, stderr=subprocess.STDOUT, text=True, check=False)
+        proc = subprocess.run(
+            command,
+            cwd=str(cwd),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+            env=env,
+        )
     return proc.returncode
 
 

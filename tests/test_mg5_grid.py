@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 
-from ForcedSplitting.mg5_grid import MG5_PROCESS_CONFIGS, prepare_mg5_grid
+from ForcedSplitting.mg5_grid import MG5_PROCESS_CONFIGS, _madloop_library_env, prepare_mg5_grid
 
 
 def write_manifest(path):
@@ -59,6 +59,26 @@ def write_signal_run_card(path):
 
 
 class MG5GridTests(unittest.TestCase):
+    def test_mg5_runner_env_includes_mg5_root_heptools_libraries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            process_dir = tmpdir / "gg_hhhg"
+            process_lib = process_dir / "HEPTools" / "lib"
+            process_collier = process_dir / "HEPTools" / "collier"
+            root_lib = tmpdir / "HEPTools" / "lib"
+            root_collier = tmpdir / "HEPTools" / "collier"
+            for path in (process_lib, process_collier, root_lib, root_collier):
+                path.mkdir(parents=True)
+
+            env = _madloop_library_env(process_dir, {"LD_LIBRARY_PATH": "/existing/lib"})
+            paths = env["LD_LIBRARY_PATH"].split(":")
+
+            self.assertEqual(paths[0], str(process_lib))
+            self.assertEqual(paths[1], str(process_collier))
+            self.assertIn(str(root_lib), paths)
+            self.assertIn(str(root_collier), paths)
+            self.assertIn("/existing/lib", paths)
+
     def test_mg5_grid_uses_signal_manifest_and_run_card_for_launch_deck(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
