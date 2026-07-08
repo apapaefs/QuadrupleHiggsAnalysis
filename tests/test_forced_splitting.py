@@ -138,6 +138,21 @@ class ForcedSplittingTests(unittest.TestCase):
         self.assertIn("set ForceSplitVeto:SplitMaxBEta 3.0", card)
         self.assertIn("set ForceSplitVeto:ProbeTrials 25", card)
 
+    def test_stage1_card_leaves_post_probe_attempts_when_probe_trials_are_large(self):
+        card = stage1_lhewriter_card(
+            PROCESS_CONFIGS["gg_hhhg"],
+            input_lhe="/data/gg_hhhg/unweighted_events.lhe.gz",
+            output_prefix="gg_hhhg_split",
+            events=2244,
+            probe_trials=99999,
+            correction_file="gg_hhhg_split.weights",
+        )
+
+        self.assertIn("set ForceSplitVeto:ProbeTrials 99999", card)
+        self.assertIn("set ForceSplitVeto:ResetAfterAttempts 199999", card)
+        self.assertIn("set ShowerHandler:MaxTry 199999", card)
+        self.assertNotIn("set ShowerHandler:MaxTry 100000", card)
+
     def test_stage1_card_accepts_extra_shower_variation_settings(self):
         card = stage1_lhewriter_card(
             PROCESS_CONFIGS["gg_hg"],

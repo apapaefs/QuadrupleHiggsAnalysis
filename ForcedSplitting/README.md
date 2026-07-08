@@ -76,6 +76,13 @@ sidecar and updates the LHE `<init>` cross section.  With equal unit input
 event weights, the weighted LHE satisfies
 `mean(XWGTUP) = XSECUP * mean(p_hat)`.
 
+When `ProbeTrials` is nonzero, the Stage-1 cards reserve additional accepted
+shower attempts after the fixed probes.  By default the card writer sets
+`ShowerHandler:MaxTry` and `ForceSplitVeto:ResetAfterAttempts` to at least
+`ProbeTrials + 100000`.  This matters for high-statistics probe runs: the
+fixed probes measure the split acceptance, but the shower still needs real
+post-probe attempts to produce an accepted event.
+
 Create the `HwSim:OutputLocation` directory before running Stage 2.  For
 nested sample-specific directories, use the exact directory name produced by
 the card or keep `--output-location events/` and separate outputs by run name.
