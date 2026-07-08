@@ -11,13 +11,18 @@ sys.path.insert(0, str(REPO_DIR))
 sys.path.insert(0, str(REPO_DIR / "Code"))
 
 from ForcedSplitting.validation_hhhbb import (  # noqa: E402
+    HHHBB_DIRECT_LABEL,
     HHHBB_OBSERVABLE_ORDER,
+    HHHBB_REPORT_TITLE,
+    HHHBB_SHAPE_MAX_BINS,
+    HHHBB_SPLIT_LABEL,
     HHHBBValidationRunConfig,
     extract_lhe_8b_sample,
     run_hhhbb_validation_chain,
     weight_check_report_lines,
     write_lhe_8b_validation_report,
 )
+from sample_report import observable_axis_label  # noqa: E402
 
 
 def _row(pid, status, mother1, mother2, px, py, pz, energy, mass=0.0):
@@ -218,16 +223,27 @@ class HHHBBValidationTests(unittest.TestCase):
             self.assertTrue(index.exists())
             self.assertTrue(table.exists())
             self.assertTrue(metadata_path.exists())
-            self.assertIn("4H HEFT LHE 8b Validation Observables", index.read_text())
+            self.assertIn(HHHBB_REPORT_TITLE, index.read_text())
             self.assertIn("class=\"grid\"", index.read_text())
-            self.assertIn("gg_hhhg_forced_split", table.read_text())
-            self.assertIn("gg_hhhbb_direct", table.read_text())
+            self.assertIn(HHHBB_SPLIT_LABEL, table.read_text())
+            self.assertIn(HHHBB_DIRECT_LABEL, table.read_text())
             self.assertIn("associated_pair_deltaR_bb", index.read_text())
             self.assertIn("higgs_decay_deltaR_bb", index.read_text())
             self.assertIn("m_8b", index.read_text())
             self.assertIn("ht_b", index.read_text())
             self.assertTrue(all(Path(row["path"]).exists() for row in metadata["plots"]))
             self.assertTrue(json.loads(metadata_path.read_text())["validation_only"])
+            self.assertEqual(
+                json.loads(metadata_path.read_text())["normalisation"]["shape_plot_binning"]["max_bins"],
+                HHHBB_SHAPE_MAX_BINS,
+            )
+
+    def test_hhhbb_validation_axis_labels_are_latex(self):
+        self.assertEqual(observable_axis_label("b8_pt"), r"$p_T(b_8)$ [GeV]")
+        self.assertEqual(observable_axis_label("dr_associated_bb"), r"$\Delta R(b,b)_{\mathrm{assoc}}$")
+        self.assertEqual(observable_axis_label("m_higgs_bb"), r"$m(b,b)_{\mathrm{same}\ h}$ [GeV]")
+        self.assertEqual(observable_axis_label("m_8b"), r"$m(8b)$ [GeV]")
+        self.assertEqual(observable_axis_label("ht_b"), r"$H_T(b)$ [GeV]")
 
     def test_hhhbb_validation_chain_dry_run_writes_baseline_cards_and_summary(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -378,13 +378,31 @@ def observable_axis_label(name):
         "b2_pt": r"$p_T(b_2)$ [GeV]",
         "b3_pt": r"$p_T(b_3)$ [GeV]",
         "b4_pt": r"$p_T(b_4)$ [GeV]",
+        "b5_pt": r"$p_T(b_5)$ [GeV]",
+        "b6_pt": r"$p_T(b_6)$ [GeV]",
+        "b7_pt": r"$p_T(b_7)$ [GeV]",
+        "b8_pt": r"$p_T(b_8)$ [GeV]",
         "dr_bb_all": r"$\Delta R(b,b)$",
         "dr_associated_bb": r"$\Delta R(b,b)_{\mathrm{assoc}}$",
-        "dr_higgs_bb": r"$\Delta R(b,b)_{h}$",
+        "dr_higgs_bb": r"$\Delta R(b,b)_{\mathrm{same}\ h}$",
         "dr_cross_bb": r"$\Delta R(b_{\mathrm{assoc}},b_h)$",
+        "dr_associated_higgs_cross_bb": r"$\Delta R(b_{\mathrm{assoc}},b_h)$",
+        "dr_inter_higgs_cross_bb": r"$\Delta R(b_{h_i},b_{h_j})$",
         "dr_min_bb": r"$\min\,\Delta R(b,b)$",
         "m_bb_all": r"$m(b,b)$ [GeV]",
+        "m_associated_bb": r"$m(b,b)_{\mathrm{assoc}}$ [GeV]",
+        "m_higgs_bb": r"$m(b,b)_{\mathrm{same}\ h}$ [GeV]",
+        "m_associated_higgs_cross_bb": r"$m(b_{\mathrm{assoc}},b_h)$ [GeV]",
+        "m_inter_higgs_cross_bb": r"$m(b_{h_i},b_{h_j})$ [GeV]",
         "m_4b": r"$m(4b)$ [GeV]",
+        "h_pt": r"$p_T(h)$ [GeV]",
+        "h_eta": r"$\eta(h)$",
+        "dr_higgs_bb_hpt_lt150": r"$\Delta R(b,b)_{\mathrm{same}\ h},\ p_T(h)<150~\mathrm{GeV}$",
+        "dr_higgs_bb_hpt_150_300": r"$\Delta R(b,b)_{\mathrm{same}\ h},\ 150<p_T(h)<300~\mathrm{GeV}$",
+        "dr_higgs_bb_hpt_ge300": r"$\Delta R(b,b)_{\mathrm{same}\ h},\ p_T(h)>300~\mathrm{GeV}$",
+        "cos_theta_star_higgs_b": r"$\cos\theta^*(h\rightarrow b\bar{b})$",
+        "m_8b": r"$m(8b)$ [GeV]",
+        "ht_b": r"$H_T(b)$ [GeV]",
     }
     if name in validation_labels:
         return validation_labels[name]
@@ -811,7 +829,15 @@ def sample_style(index):
     }
 
 
-def write_observable_shape_plot(path, observable_name, samples):
+def write_observable_shape_plot(
+    path,
+    observable_name,
+    samples,
+    min_bins=5,
+    max_bins=60,
+    entries_per_bin=10.0,
+    title=None,
+):
     """Write a normalized observable-shape plot in the sample-report style."""
 
     import os
@@ -842,7 +868,13 @@ def write_observable_shape_plot(path, observable_name, samples):
         prepared_samples.append(prepared)
 
     pooled = np.concatenate(pooled_values) if pooled_values else np.asarray([])
-    edges = feature_bin_edges(pooled, sample_weights)
+    edges = feature_bin_edges(
+        pooled,
+        sample_weights,
+        min_bins=min_bins,
+        max_bins=max_bins,
+        entries_per_bin=entries_per_bin,
+    )
     centers = 0.5 * (edges[:-1] + edges[1:])
 
     fig, ax = plt.subplots(figsize=(7.2, 5.2))
@@ -878,7 +910,9 @@ def write_observable_shape_plot(path, observable_name, samples):
         plotted = True
 
     ax.set_xlabel(observable_axis_label(observable_name))
-    ax.set_ylabel("Normalized events / bin")
+    ax.set_ylabel(r"$\mathrm{Normalized\ events}/\mathrm{bin}$")
+    if title:
+        ax.set_title(title)
     ax.grid(True, which="major", linewidth=0.4, alpha=0.35)
     if plotted:
         ax.legend(frameon=False, fontsize=8)

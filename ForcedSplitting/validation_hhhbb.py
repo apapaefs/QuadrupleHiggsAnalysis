@@ -111,6 +111,15 @@ HHHBB_OBSERVABLE_TITLES = {
 }
 
 
+HHHBB_SPLIT_LABEL = r"$gg \rightarrow hhhg,\ g\rightarrow b\bar{b}$ (forced split)"
+HHHBB_DIRECT_LABEL = r"$gg \rightarrow h h h b\bar{b}$ (direct)"
+HHHBB_REPORT_TITLE = r"4H HEFT LHE 8b Validation Observables ($m_t \rightarrow \infty$)"
+HHHBB_PLOT_TITLE = r"HEFT validation, $m_t \rightarrow \infty$"
+HHHBB_SHAPE_MIN_BINS = 5
+HHHBB_SHAPE_MAX_BINS = 35
+HHHBB_SHAPE_ENTRIES_PER_BIN = 25.0
+
+
 @dataclass
 class HHHBBValidationRunConfig(object):
     split_input_lhe: Path
@@ -530,8 +539,11 @@ def write_lhe_8b_validation_report_from_samples(
     samples,
     output_dir,
     correction_summary=None,
-    title="4H HEFT LHE 8b Validation Observables",
-    report_line="Final-state 8b LHE comparison; BR(h->bb)=1; validation outputs only.",
+    title=HHHBB_REPORT_TITLE,
+    report_line=(
+        "Final-state 8b LHE comparison in the HEFT/infinite-top-mass limit; "
+        "BR(h->bb)=1; validation outputs only."
+    ),
 ):
     """Write a validation report from extracted LHE 8b samples."""
 
@@ -556,7 +568,15 @@ def write_lhe_8b_validation_report_from_samples(
                     "style": sample_style(index),
                 }
             )
-        write_observable_shape_plot(plot_path, observable, plot_samples)
+        write_observable_shape_plot(
+            plot_path,
+            observable,
+            plot_samples,
+            min_bins=HHHBB_SHAPE_MIN_BINS,
+            max_bins=HHHBB_SHAPE_MAX_BINS,
+            entries_per_bin=HHHBB_SHAPE_ENTRIES_PER_BIN,
+            title=HHHBB_PLOT_TITLE,
+        )
         plot_rows.append(
             {
                 "feature": HHHBB_OBSERVABLE_TITLES.get(observable, observable),
@@ -580,6 +600,11 @@ def write_lhe_8b_validation_report_from_samples(
         "samples": [sample["summary"] for sample in samples],
         "normalisation": {
             "histograms": "weighted LHE events, normalized per observable and sample",
+            "shape_plot_binning": {
+                "min_bins": HHHBB_SHAPE_MIN_BINS,
+                "max_bins": HHHBB_SHAPE_MAX_BINS,
+                "entries_per_bin": HHHBB_SHAPE_ENTRIES_PER_BIN,
+            },
             "higgs_branching_ratio": "BR(h->bb)=1 validation",
             "pair_assignment": (
                 "associated/direct bb pairs use source pre-decay LHE four-momentum matching; "
@@ -606,8 +631,8 @@ def write_lhe_8b_validation_report(
     split_lhe,
     direct_lhe,
     output_dir,
-    split_label="gg_hhhg_forced_split",
-    direct_label="gg_hhhbb_direct",
+    split_label=HHHBB_SPLIT_LABEL,
+    direct_label=HHHBB_DIRECT_LABEL,
     split_source_lhe=None,
     direct_source_lhe=None,
     correction_summary=None,
