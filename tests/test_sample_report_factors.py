@@ -38,15 +38,16 @@ class SampleReportFactorTests(unittest.TestCase):
             rows = list(csv.DictReader(handle))
 
         process_ids = [row["process_id"] for row in rows]
-        ttbar_ids = ["ttbar4b_1c3j", "ttbar4b_2c2j", "ttbar4b_0c4j"]
+        restored_ids = ["ttbar4b_1c3j", "ttbar4b_2c2j", "ttbar4b_0c4j", "gg_to_4b_4j"]
 
-        for process_id in ttbar_ids:
+        for process_id in restored_ids:
             self.assertIn(process_id, process_ids)
 
         by_id = {row["process_id"]: row for row in rows}
         self.assertEqual(by_id["ttbar4b_1c3j"]["local_lhe"], "merged_ttbar4b_1c3j_events_20k_1_20260706_weighted.lhe")
         self.assertEqual(by_id["ttbar4b_2c2j"]["local_lhe"], "merged_ttbar4b_2c2j_events_20k_1_snapshot_20260706_weighted.lhe")
         self.assertEqual(by_id["ttbar4b_0c4j"]["local_lhe"], "merged_ttbar4b_0c4j_events_more_20k_snapshot_20260706_weighted.lhe")
+        self.assertEqual(by_id["gg_to_4b_4j"]["local_lhe"], "merged_gg4b4j_events_10k_1_snapshot_20260706_weighted.lhe")
 
     def test_signal_generation_factor_excludes_btagging(self):
         self.assertTrue(
