@@ -472,7 +472,7 @@ def _current_mg5_processes(mg5_dir):
         return []
     lines = []
     for line in proc.stdout.splitlines():
-        if "pgrep -af" in line:
+        if "pgrep -af" in line or "monitor-mg5" in line:
             continue
         lines.append(line)
     return lines
@@ -484,6 +484,14 @@ def _debug_log_run_name(path):
     if marker in name:
         return name.split(marker, 1)[0]
     return name.rsplit("_debug.log", 1)[0]
+
+
+def _latest_mg5_progress_line(lines):
+    progress = ""
+    for line in lines:
+        if "Idle:" in line and "Running:" in line and "Completed:" in line:
+            progress = line
+    return progress
 
 
 def monitor_mg5_grid(
@@ -548,6 +556,7 @@ def monitor_mg5_grid(
         for path in debug_logs[: max(0, int(show_points))]
     ]
     current_processes = _current_mg5_processes(mg5_dir)
+    grid_log_tail = _tail_lines(grid_log, tail)
     summary = {
         "process": process,
         "mg5_dir": str(mg5_dir),
@@ -562,10 +571,11 @@ def monitor_mg5_grid(
         "grid_log_mtime": grid_log.stat().st_mtime if grid_log.exists() else None,
         "current_processes": current_processes,
         "current_process_count": len(current_processes),
+        "latest_progress_line": _latest_mg5_progress_line(grid_log_tail),
         "total_counted_events": total_events if count_events else None,
         "points": rows,
         "recent_debug_logs": debug_summaries,
-        "grid_log_tail": _tail_lines(grid_log, tail),
+        "grid_log_tail": grid_log_tail,
     }
     return summary
 
@@ -579,6 +589,8 @@ def _print_mg5_monitor(summary, show_points=8):
     print("  pending run dirs:", summary["pending_run_dirs"])
     print("  debug logs:", summary["debug_logs"])
     print("  matching processes:", summary["current_process_count"])
+    if summary["latest_progress_line"]:
+        print("  latest MG5 progress:", summary["latest_progress_line"])
     if summary["grid_log"]:
         mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(summary["grid_log_mtime"]))
         print("  grid log:", summary["grid_log"], "(updated %s)" % mtime)

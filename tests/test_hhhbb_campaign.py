@@ -144,7 +144,12 @@ class HHHBBCampaignTests(unittest.TestCase):
             debug_log.write_text("Traceback\ninternal.MadGraph5Error: failed initialization\n")
             deck_dir = mg5_dir / "ForcedSplittingDecks"
             deck_dir.mkdir(parents=True)
-            (deck_dir / "mg5_grid.log").write_text("line 1\nError: something went wrong\nline 3\n")
+            (deck_dir / "mg5_grid.log").write_text(
+                "line 1\n"
+                "INFO:  Idle: 1,  Running: 56,  Completed: 0 [ current time: 16h28 ]\n"
+                "Error: something went wrong\n"
+                "line 3\n"
+            )
             manifest = tmpdir / "reference_manifest.csv"
             _write_manifest(manifest, [("0.0", "0.0"), ("1.0", "100.0"), ("2.0", "200.0")])
 
@@ -152,7 +157,7 @@ class HHHBBCampaignTests(unittest.TestCase):
                 mg5_dir=mg5_dir,
                 reference_grid_manifest=manifest,
                 count_events=True,
-                tail=2,
+                tail=4,
                 show_points=3,
             )
 
@@ -162,7 +167,8 @@ class HHHBBCampaignTests(unittest.TestCase):
         self.assertEqual(summary["pending_run_dirs"], 1)
         self.assertEqual(summary["debug_logs"], 1)
         self.assertEqual(summary["total_counted_events"], 2)
-        self.assertEqual(summary["grid_log_tail"], ["Error: something went wrong", "line 3"])
+        self.assertEqual(summary["grid_log_tail"][-2:], ["Error: something went wrong", "line 3"])
+        self.assertIn("Running: 56", summary["latest_progress_line"])
         self.assertIn("MadGraph5Error", "\n".join(summary["recent_debug_logs"][0]["errors"]))
 
     def test_c3d4_metadata_accepts_hhhg_campaign_names(self):
