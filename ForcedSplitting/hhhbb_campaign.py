@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -440,6 +441,185 @@ def check_campaign(workdir):
     return summary
 
 
+def _tail_lines(path, limit):
+    path = Path(path)
+    if not path.exists() or limit <= 0:
+        return []
+    lines = path.read_text(errors="replace").splitlines()
+    return lines[-int(limit) :]
+
+
+def _interesting_log_lines(path, limit=8):
+    wanted = ("error", "failed", "traceback", "madgraph5error", "command not executed")
+    lines = []
+    for line in Path(path).read_text(errors="replace").splitlines():
+        lowered = line.lower()
+        if any(token in lowered for token in wanted):
+            lines.append(line)
+    return lines[-int(limit) :]
+
+
+def _current_mg5_processes(mg5_dir):
+    try:
+        proc = subprocess.run(
+            ["pgrep", "-af", str(Path(mg5_dir).resolve())],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except (FileNotFoundError, OSError):
+        return []
+    lines = []
+    for line in proc.stdout.splitlines():
+        if "pgrep -af" in line:
+            continue
+        lines.append(line)
+    return lines
+
+
+def _debug_log_run_name(path):
+    name = Path(path).name
+    marker = "_tag_"
+    if marker in name:
+        return name.split(marker, 1)[0]
+    return name.rsplit("_debug.log", 1)[0]
+
+
+def monitor_mg5_grid(
+    mg5_dir,
+    reference_grid_manifest,
+    process="gg_hhhg",
+    count_events=False,
+    tail=25,
+    show_points=8,
+):
+    """Summarize MG5 hard-process grid progress for the hhhbb campaign."""
+
+    if process not in MG5_PROCESS_CONFIGS:
+        raise ValueError("Unknown MG5 forced-splitting process %r" % process)
+    mg5_dir = Path(mg5_dir)
+    process_config = MG5_PROCESS_CONFIGS[process]
+    points = load_signal_grid(reference_grid_manifest)
+    rows = []
+    counts = {"complete": 0, "incomplete": 0, "pending": 0}
+    total_events = 0
+    for point in points:
+        run_name = _run_name(process_config, point)
+        run_dir = mg5_dir / "Events" / run_name
+        lhe = _find_lhe(run_dir)
+        event_count = None
+        if lhe is not None:
+            status = "complete"
+            counts["complete"] += 1
+            if count_events:
+                event_count = count_lhe_events(lhe)
+                total_events += event_count
+        elif run_dir.exists():
+            status = "incomplete"
+            counts["incomplete"] += 1
+        else:
+            status = "pending"
+            counts["pending"] += 1
+        rows.append(
+            {
+                "status": status,
+                "run_name": run_name,
+                "run_group": point["run_group"],
+                "c3": point["c3"],
+                "d4": point["d4"],
+                "run_dir": str(run_dir),
+                "lhe_file": "" if lhe is None else str(lhe),
+                "event_count": event_count,
+            }
+        )
+
+    deck_dir = mg5_dir / "ForcedSplittingDecks"
+    grid_manifest = deck_dir / "mg5_grid_manifest.csv"
+    grid_log = deck_dir / "mg5_grid.log"
+    debug_logs = sorted(mg5_dir.glob("run_*_tag_*_debug.log"), key=lambda path: path.stat().st_mtime, reverse=True)
+    debug_summaries = [
+        {
+            "run_name": _debug_log_run_name(path),
+            "path": str(path),
+            "mtime": path.stat().st_mtime,
+            "errors": _interesting_log_lines(path, limit=8),
+        }
+        for path in debug_logs[: max(0, int(show_points))]
+    ]
+    current_processes = _current_mg5_processes(mg5_dir)
+    summary = {
+        "process": process,
+        "mg5_dir": str(mg5_dir),
+        "reference_grid_manifest": str(reference_grid_manifest),
+        "grid_points": len(points),
+        "complete_lhes": counts["complete"],
+        "incomplete_run_dirs": counts["incomplete"],
+        "pending_run_dirs": counts["pending"],
+        "debug_logs": len(debug_logs),
+        "grid_manifest": str(grid_manifest) if grid_manifest.exists() else "",
+        "grid_log": str(grid_log) if grid_log.exists() else "",
+        "grid_log_mtime": grid_log.stat().st_mtime if grid_log.exists() else None,
+        "current_processes": current_processes,
+        "current_process_count": len(current_processes),
+        "total_counted_events": total_events if count_events else None,
+        "points": rows,
+        "recent_debug_logs": debug_summaries,
+        "grid_log_tail": _tail_lines(grid_log, tail),
+    }
+    return summary
+
+
+def _print_mg5_monitor(summary, show_points=8):
+    print("MG5 hhhbb hard-process monitor")
+    print("  process dir:", summary["mg5_dir"])
+    print("  grid points:", summary["grid_points"])
+    print("  completed LHEs:", "%d/%d" % (summary["complete_lhes"], summary["grid_points"]))
+    print("  incomplete run dirs:", summary["incomplete_run_dirs"])
+    print("  pending run dirs:", summary["pending_run_dirs"])
+    print("  debug logs:", summary["debug_logs"])
+    print("  matching processes:", summary["current_process_count"])
+    if summary["grid_log"]:
+        mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(summary["grid_log_mtime"]))
+        print("  grid log:", summary["grid_log"], "(updated %s)" % mtime)
+    if summary["total_counted_events"] is not None:
+        print("  counted LHE events:", summary["total_counted_events"])
+
+    for status, label in (
+        ("complete", "recent/completed points"),
+        ("incomplete", "incomplete run dirs"),
+        ("pending", "pending points"),
+    ):
+        selected = [row for row in summary["points"] if row["status"] == status][: int(show_points)]
+        if not selected:
+            continue
+        print()
+        print("  %s:" % label)
+        for row in selected:
+            suffix = "" if row["event_count"] is None else " events=%s" % row["event_count"]
+            print("    {run_name} c3={c3} d4={d4}{suffix}".format(suffix=suffix, **row))
+
+    if summary["recent_debug_logs"]:
+        print()
+        print("  recent debug-log errors:")
+        for debug in summary["recent_debug_logs"]:
+            print("   ", debug["run_name"], "->", debug["path"])
+            for line in debug["errors"][-3:]:
+                print("      ", line)
+
+    if summary["current_processes"]:
+        print()
+        print("  matching processes:")
+        for line in summary["current_processes"][: int(show_points)]:
+            print("   ", line)
+
+    if summary["grid_log_tail"]:
+        print()
+        print("  grid log tail:")
+        for line in summary["grid_log_tail"]:
+            print("   ", line)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command")
@@ -477,6 +657,15 @@ def main(argv=None):
 
     check = subparsers.add_parser("check", help="summarize an existing campaign workdir")
     check.add_argument("--workdir", required=True, type=Path)
+
+    monitor = subparsers.add_parser("monitor-mg5", help="summarize MG5 hard-process grid progress")
+    monitor.add_argument("--mg5-dir", required=True, type=Path)
+    monitor.add_argument("--reference-grid-manifest", required=True, type=Path)
+    monitor.add_argument("--process", choices=sorted(MG5_PROCESS_CONFIGS), default="gg_hhhg")
+    monitor.add_argument("--count-events", action="store_true", help="Count events inside completed LHE files; slower.")
+    monitor.add_argument("--tail", type=int, default=25, help="Number of mg5_grid.log tail lines to print.")
+    monitor.add_argument("--show-points", type=int, default=8, help="Number of point/debug/process rows to show per section.")
+    monitor.add_argument("--json", action="store_true", help="Write the full monitor summary as JSON.")
 
     args = parser.parse_args(argv)
     if args.command == "prepare-mg5":
@@ -519,6 +708,19 @@ def main(argv=None):
         print(json.dumps(summary, indent=2, sort_keys=True))
     elif args.command == "check":
         check_campaign(args.workdir)
+    elif args.command == "monitor-mg5":
+        summary = monitor_mg5_grid(
+            mg5_dir=args.mg5_dir,
+            reference_grid_manifest=args.reference_grid_manifest,
+            process=args.process,
+            count_events=args.count_events,
+            tail=args.tail,
+            show_points=args.show_points,
+        )
+        if args.json:
+            print(json.dumps(summary, indent=2, sort_keys=True))
+        else:
+            _print_mg5_monitor(summary, show_points=args.show_points)
     else:
         parser.print_help()
         return 1

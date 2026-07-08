@@ -30,7 +30,7 @@ sys.modules.setdefault(
 sys.modules.setdefault("tqdm", types.ModuleType("tqdm"))
 sys.modules.setdefault("tqdm.auto", types.SimpleNamespace(tqdm=lambda iterable=None, *args, **kwargs: iterable))
 
-from ForcedSplitting.hhhbb_campaign import HHHBBCampaignConfig, run_hhhbb_campaign  # noqa: E402
+from ForcedSplitting.hhhbb_campaign import HHHBBCampaignConfig, monitor_mg5_grid, run_hhhbb_campaign  # noqa: E402
 from ForcedSplitting.lhe_merge import merge_weighted_lhe_chunks  # noqa: E402
 from xgboost_root_varfiles_module import (  # noqa: E402
     _point_metadata_from_path,
@@ -130,6 +130,40 @@ class HHHBBCampaignTests(unittest.TestCase):
             self.assertIn("set ForceSplitVeto:ProbeTrials 90000", first_card)
             stage2_card = Path(point["stage2_card"]).read_text()
             self.assertIn(str(Path(point["merged_weighted_lhe"])), stage2_card)
+
+    def test_monitor_mg5_grid_summarizes_complete_incomplete_and_failed_points(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            mg5_dir = tmpdir / "MG5" / "gg_hhhg"
+            complete = mg5_dir / "Events" / "run_gg_hhhg_4_0.0_0.0"
+            incomplete = mg5_dir / "Events" / "run_gg_hhhg_4_1.0_100.0"
+            complete.mkdir(parents=True)
+            incomplete.mkdir(parents=True)
+            (complete / "unweighted_events.lhe").write_text(_lhe_document([1.0, 2.0], xsec_pb=0.25))
+            debug_log = mg5_dir / "run_gg_hhhg_4_1.0_100.0_tag_1_debug.log"
+            debug_log.write_text("Traceback\ninternal.MadGraph5Error: failed initialization\n")
+            deck_dir = mg5_dir / "ForcedSplittingDecks"
+            deck_dir.mkdir(parents=True)
+            (deck_dir / "mg5_grid.log").write_text("line 1\nError: something went wrong\nline 3\n")
+            manifest = tmpdir / "reference_manifest.csv"
+            _write_manifest(manifest, [("0.0", "0.0"), ("1.0", "100.0"), ("2.0", "200.0")])
+
+            summary = monitor_mg5_grid(
+                mg5_dir=mg5_dir,
+                reference_grid_manifest=manifest,
+                count_events=True,
+                tail=2,
+                show_points=3,
+            )
+
+        self.assertEqual(summary["grid_points"], 3)
+        self.assertEqual(summary["complete_lhes"], 1)
+        self.assertEqual(summary["incomplete_run_dirs"], 1)
+        self.assertEqual(summary["pending_run_dirs"], 1)
+        self.assertEqual(summary["debug_logs"], 1)
+        self.assertEqual(summary["total_counted_events"], 2)
+        self.assertEqual(summary["grid_log_tail"], ["Error: something went wrong", "line 3"])
+        self.assertIn("MadGraph5Error", "\n".join(summary["recent_debug_logs"][0]["errors"]))
 
     def test_c3d4_metadata_accepts_hhhg_campaign_names(self):
         metadata = _point_metadata_from_path(

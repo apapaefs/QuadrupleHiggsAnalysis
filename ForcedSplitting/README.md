@@ -187,6 +187,20 @@ python3 -m ForcedSplitting.hhhbb_campaign run \
   --allow-zero-probe-successes
 ```
 
+While the MG5 grid is running, monitor the hard-process generation with:
+
+```sh
+python3 -m ForcedSplitting.hhhbb_campaign monitor-mg5 \
+  --mg5-dir ~/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15/gg_hhhg \
+  --reference-grid-manifest HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv \
+  --tail 30
+```
+
+This reports completed LHEs, incomplete run directories, pending points,
+recent MG5 debug-log errors, matching processes, and the tail of
+`ForcedSplittingDecks/mg5_grid.log`.  Add `--count-events` for a slower check
+that opens completed LHE files and counts their `<event>` blocks.
+
 The Stage-1 card writer caps the effective `ProbeTrials` value under Herwig's
 legal `ShowerHandler:MaxTry` limit while leaving post-probe attempts to produce
 accepted events.  Each point writes:
