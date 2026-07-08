@@ -177,6 +177,29 @@ class SampleReportFactorTests(unittest.TestCase):
         self.assertNotIn("$", table)
         self.assertIn("+", table)
 
+    def test_terminal_cutflow_table_prints_raw_generation_cross_section_when_available(self):
+        rows = [
+            {
+                "label": "background",
+                "raw_xsec_fb": 10.0,
+                "generation_xsec_fb": 20.0,
+                "generation_events": 60000.0,
+                "input_xsec_fb": 5.0,
+                "input_events": 15000.0,
+                "xgboost_xsec_fb": 1.0,
+                "xgboost_events": 3000.0,
+            }
+        ]
+
+        table = terminal_cutflow_table(rows, luminosity=3000.0, threshold=0.5)
+        row_line = next(line for line in table.splitlines() if "background" in line)
+        cells = [cell.strip() for cell in row_line.strip("|").split("|")]
+
+        self.assertEqual(cells[1], "10")
+        self.assertEqual(cells[2], "3e+04")
+        self.assertEqual(cells[3], "5")
+        self.assertIn("Generation columns omit K-factors", table)
+
     def test_terminal_cutflow_table_keeps_sm_first_then_orders_by_xgboost_yield(self):
         rows = [
             {
@@ -286,6 +309,25 @@ class SampleReportFactorTests(unittest.TestCase):
         )
 
         self.assertTrue(calls_sorter)
+
+    def test_latex_cutflow_writer_uses_display_generation_columns(self):
+        module_path = CODE_DIR / "xgboost_root_varfiles_module.py"
+        tree = ast.parse(module_path.read_text())
+        writer = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_write_cutflow_latex_table"
+        )
+        call_names = {
+            node.func.id
+            for node in ast.walk(writer)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        module_text = module_path.read_text()
+
+        self.assertIn("display_generation_xsec_fb", call_names)
+        self.assertIn("display_generation_events", call_names)
+        self.assertIn("raw generator cross sections without K-factors", module_text)
 
     def test_poisson_event_interval_reports_zero_count_upper_limit(self):
         interval = poisson_event_interval(

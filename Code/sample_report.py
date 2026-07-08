@@ -124,6 +124,24 @@ def cutflow_rates(
     }
 
 
+def display_generation_xsec_fb(row):
+    row = row or {}
+    value = row.get("raw_xsec_fb")
+    if value is None:
+        value = row.get("generation_xsec_fb", 0.0)
+    return float(value)
+
+
+def display_generation_events(row, luminosity):
+    row = row or {}
+    value = row.get("raw_generation_events")
+    if value is not None:
+        return float(value)
+    if row.get("raw_xsec_fb") is not None:
+        return float(luminosity) * float(row.get("raw_xsec_fb"))
+    return float(row.get("generation_events", 0.0))
+
+
 def effective_entries(weights):
     """Effective MC entries for weighted events."""
 
@@ -1200,8 +1218,8 @@ def terminal_cutflow_table(rows, luminosity, threshold):
     table_rows = [
         [
             terminal_label(row["label"]),
-            terminal_number(row["generation_xsec_fb"]),
-            terminal_number(row["generation_events"]),
+            terminal_number(display_generation_xsec_fb(row)),
+            terminal_number(display_generation_events(row, luminosity)),
             terminal_number(row["input_xsec_fb"]),
             terminal_number(row["input_events"]),
             terminal_number(row["xgboost_xsec_fb"]),
@@ -1211,7 +1229,7 @@ def terminal_cutflow_table(rows, luminosity, threshold):
     ]
     lines = [
         f"4H sample cutflow / rates (L = {float(luminosity):g} fb^-1, XGBoost threshold = {float(threshold):g})",
-        "Generation columns include K-factors and decay BRs; input/XGBoost columns also include b-tag/mistag factors.",
+        "Generation columns omit K-factors; input/XGBoost columns include K-factors, decay BRs, and b-tag/mistag factors.",
         "N_XGB uncertainties are Poisson 95% CL intervals from selected MC counts.",
         _terminal_table(headers, table_rows, right_aligned=set(range(1, len(headers)))),
     ]

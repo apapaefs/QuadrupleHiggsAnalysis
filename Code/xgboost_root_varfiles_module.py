@@ -30,6 +30,8 @@ from sample_report import (
     background_variation_scale_factors,
     best_significance_threshold,
     cutflow_rates,
+    display_generation_events,
+    display_generation_xsec_fb,
     event_interval_text,
     html_escape,
     latex_number,
@@ -641,8 +643,8 @@ def _write_cutflow_latex_table(path, rows, luminosity, threshold):
     lines = [
         rf"% Luminosity: {luminosity:g} fb^{{-1}}",
         rf"% XGBoost threshold: {threshold:g}",
-        "% Generation columns include K-factors and decay branching ratios.",
-        "% Input-selection and XGBoost columns additionally include b-tag and mistag factors.",
+        "% Generation columns omit K-factors.",
+        "% Input-selection and XGBoost columns include K-factors, decay branching ratios, b-tag, and mistag factors.",
         "% N_XGB entries include Poisson 95% CL intervals from selected MC counts.",
         r"\begin{tabular}{lrrrrrr}",
         r"\hline",
@@ -658,8 +660,8 @@ def _write_cutflow_latex_table(path, rows, luminosity, threshold):
             " & ".join(
                 [
                     row["label"],
-                    f"${latex_number(row['generation_xsec_fb'])}$",
-                    f"${latex_number(row['generation_events'])}$",
+                    f"${latex_number(display_generation_xsec_fb(row))}$",
+                    f"${latex_number(display_generation_events(row, luminosity))}$",
                     f"${latex_number(row['input_xsec_fb'])}$",
                     f"${latex_number(row['input_events'])}$",
                     f"${latex_number(row['xgboost_xsec_fb'])}$",
@@ -964,7 +966,7 @@ def write_sample_report(
         "plots": plot_rows,
         "samples": report_rows,
         "normalisation": {
-            "generation_columns": "K-factors and decay branching ratios",
+            "generation_columns": "raw generator cross sections without K-factors",
             "input_and_xgboost_columns": "K-factors, decay branching ratios, and b-tag/mistag factors",
         },
     }
