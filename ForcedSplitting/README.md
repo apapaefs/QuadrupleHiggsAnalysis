@@ -146,6 +146,83 @@ named like `Events/run_gg_hhhg_4_<c3>_<d4>/`,
 `Events/run_gg_hhgg_4_<c3>_<d4>/`, or
 `Events/run_gg_hggg_4_<c3>_<d4>/`.
 
+## hhhbb c3/d4 Production Campaign
+
+Use `hhhbb_campaign` for the production approximation
+`gg -> hhhg, g -> b bbar`.  It uses the same 57-point reference grid as the
+`hhhh` signal, splits each MG5 LHE into independent chunks, applies
+`ProbeTrials` sidecar weights per chunk, merges the weighted split LHE files
+once with `XSECUP = mean(XWGTUP)`, and then runs one Stage-2 HwSim card per
+point with forced `h0 -> b,bbar`.
+
+On odysseus, first prepare/check the MG5 hard samples:
+
+```sh
+cd ~/Projects/QuadrupleHiggsAnalysis
+git pull origin main
+module load herwig/730
+
+python3 -m ForcedSplitting.hhhbb_campaign prepare-mg5 \
+  --mg5-root ~/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15 \
+  --reference-grid-manifest HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv \
+  --events 10000 \
+  --dry-run
+
+python3 -m ForcedSplitting.hhhbb_campaign prepare-mg5 \
+  --mg5-root ~/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15 \
+  --reference-grid-manifest HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv \
+  --events 10000
+```
+
+Then run the forced-splitting production campaign:
+
+```sh
+python3 -m ForcedSplitting.hhhbb_campaign run \
+  --mg5-dir ~/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15/gg_hhhg \
+  --reference-grid-manifest HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv \
+  --workdir HerwigForcedSplitting/gg_hhhg_c3d4_10k_hhhbb \
+  --events 10000 \
+  --jobs 32 \
+  --probe-trials 99999 \
+  --allow-zero-probe-successes
+```
+
+The Stage-1 card writer caps the effective `ProbeTrials` value under Herwig's
+legal `ShowerHandler:MaxTry` limit while leaving post-probe attempts to produce
+accepted events.  Each point writes:
+
+- `run_gg_hhhg_4_<c3>_<d4>/jobs/job*/` with chunk inputs, Stage-1 cards,
+  sidecars, and weighted split LHE chunks;
+- `run_gg_hhhg_4_<c3>_<d4>_split.weighted.merged.lhe.gz`;
+- `run_gg_hhhg_4_<c3>_<d4>/merge_summary.json`;
+- `events/run_gg_hhhg_4_<c3>_<d4>_hhhbb_stage2.root`;
+- top-level `hhhbb_campaign_manifest.csv` and `hhhbb_campaign_summary.json`.
+
+Check a completed or partially completed campaign with:
+
+```sh
+python3 -m ForcedSplitting.hhhbb_campaign check \
+  --workdir HerwigForcedSplitting/gg_hhhg_c3d4_10k_hhhbb
+```
+
+After copying `HerwigForcedSplitting/gg_hhhg_c3d4_10k_hhhbb/events/` to the
+analysis machine, score hhhh as before and add hhhbb only to the final
+Poisson 95% CL signal yield:
+
+```sh
+python3 4h_analyzer.py --run-c3d4-limit-scan \
+  --background-csv Backgrounds/processes.csv \
+  --analysis-jobs 6 \
+  --hhhbb-signal-dir HerwigForcedSplitting/gg_hhhg_c3d4_10k_hhhbb/events
+```
+
+The SM-trained XGBoost model and threshold are still optimized with the hhhh
+SM signal plus backgrounds only.  The hhhbb grid is scored separately in
+`xgboost_c3d4_scan/hhhbb_signal_scores/` and is combined with hhhh only in the
+rows passed to `write_c3d4_limit_scan`.  The hhhh rate factor remains
+`K_signal * BR(h->bb)^4 * btag^8`; the hhhbb rate factor is
+`K_signal * BR(h->bb)^3 * btag^8`.
+
 For an MG5 process directory with an `Events/` subdirectory, prepare the paired
 Stage-1 and Stage-2 Herwig cards with:
 

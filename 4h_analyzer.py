@@ -50,6 +50,10 @@ def _metadata_for_root_file(root_file):
     root_file = _Path(root_file)
     sample_name = root_file.name.split("_var.smear", 1)[0]
     out_file = root_file.parent.parent / f"{sample_name}.out"
+    if not out_file.exists():
+        matches = sorted(root_file.parent.parent.rglob(f"{sample_name}.out"))
+        if matches:
+            out_file = matches[0]
     xsec_fb, generated = _parse_herwig_total_xsec(out_file)
     return xsec_fb, generated, out_file
 
@@ -100,7 +104,7 @@ def _parse_mg5_banner_metadata(banner_file):
 def _metadata_for_score_root(root_file, default_generated_events=None):
     root_file = _Path(root_file)
     for parent in [root_file.parent] + list(root_file.parents):
-        if not parent.name.startswith("run_gg_4h_"):
+        if not (parent.name.startswith("run_gg_4h_") or parent.name.startswith("run_gg_hhhg_")):
             continue
         banners = sorted(parent.glob("*_banner.txt"))
         metadata = _parse_mg5_banner_metadata(banners[0] if banners else None)
@@ -1330,6 +1334,28 @@ def _print_xgboost_threshold_summary(threshold, sm_signal_rows, background_rows,
     )
 
 
+def _print_sm_hhhbb_summary(hhhbb_rows):
+    sm_rows = [
+        row
+        for row in (hhhbb_rows or [])
+        if row.get("c3") is not None
+        and row.get("d4") is not None
+        and abs(float(row.get("c3"))) < 1.0e-9
+        and abs(float(row.get("d4"))) < 1.0e-9
+    ]
+    if not sm_rows:
+        print("SM hhhbb forced-splitting contribution: no (c3,d4)=(0,0) row was found.")
+        return
+    row = sm_rows[0]
+    print("SM hhhbb forced-splitting contribution")
+    print(f"  xsec = {float(row.get('xsec_fb', 0.0)):g} fb")
+    print(f"  effective xsec = {float(row.get('effective_xsec_fb', 0.0)):g} fb")
+    print(f"  selected events = {float(row.get('expected_selected_events', 0.0)):g}")
+    print(f"  analysis efficiency = {float(row.get('analysis_efficiency', 0.0)):g}")
+    print(f"  XGBoost efficiency = {float(row.get('xgboost_efficiency', 0.0)):g}")
+    print(f"  selected MC count = {int(row.get('selected_entries', 0) or 0)} / {int(row.get('entries', 0) or 0)}")
+
+
 def _physics_rate_factor(hbb_branching_ratio, hbb_power, btagging_rate, btag_power):
     return float(hbb_branching_ratio) ** int(hbb_power) * float(btagging_rate) ** int(btag_power)
 
@@ -1348,6 +1374,15 @@ def _signal_tag_rate_factor_for_cli(args):
 
 def _signal_final_rate_factor_for_cli(args):
     return _signal_generation_rate_factor_for_cli(args) * _signal_tag_rate_factor_for_cli(args)
+
+
+def _hhhbb_signal_rate_factor_for_cli(args):
+    hhhbb_generation_factor = signal_generation_rate_factor(
+        args.hbb_branching_ratio,
+        3,
+        args.signal_k_factor,
+    )
+    return hhhbb_generation_factor * _signal_tag_rate_factor_for_cli(args)
 
 
 def _background_rate_factor_from_metadata(
@@ -1647,6 +1682,7 @@ def _run_local_xgboost_cli():
     import json
 
     from xgboost_root_varfiles_module import (
+        combine_signal_component_rows,
         run_signal_background_analysis,
         score_background_files,
         score_signal_files,
@@ -1899,6 +1935,26 @@ def _run_local_xgboost_cli():
         type=int,
         default=10000,
         help="Fallback generated-event count for c3/d4 scan files.",
+    )
+    parser.add_argument(
+        "--hhhbb-signal-root",
+        action="append",
+        type=_Path,
+        help="hhhbb forced-splitting signal _var.smear*.root or raw ROOT file. May be repeated.",
+    )
+    parser.add_argument(
+        "--hhhbb-signal-dir",
+        action="append",
+        type=_Path,
+        help="Directory searched recursively for hhhbb ROOT files scored and added only to final c3/d4 limits.",
+    )
+    parser.add_argument("--hhhbb-signal-xsec-fb", action="append", type=float, help="Cross section in fb for hhhbb signal files.")
+    parser.add_argument("--hhhbb-signal-generated-events", action="append", type=int, help="Generated event counts for hhhbb signal files.")
+    parser.add_argument(
+        "--hhhbb-default-generated-events",
+        type=int,
+        default=10000,
+        help="Fallback generated-event count for hhhbb signal files.",
     )
     parser.add_argument("--no-c3d4-chebyshev-fit", action="store_true", help="Disable the Chebyshev-Lobatto sigma*eff fit and plot only scored points.")
     parser.add_argument("--c3d4-fit-k3-min", type=float, default=-29.0, help="Minimum k3=1+c3 used to scale the Chebyshev fit.")
@@ -2186,8 +2242,69 @@ def _run_local_xgboost_cli():
             max_events=args.max_events,
             write_event_scores=args.write_event_scores,
         )
+        rows_for_limit = scored_rows
+        hhhbb_score_rows = []
+        hhhbb_inputs = []
+        if args.hhhbb_signal_root:
+            hhhbb_inputs.extend(args.hhhbb_signal_root)
+        if args.hhhbb_signal_dir:
+            hhhbb_inputs.extend(args.hhhbb_signal_dir)
+        if hhhbb_inputs:
+            hhhbb_files = _ensure_analysis_var_roots(
+                hhhbb_inputs,
+                executable=args.analysis_exe,
+                source_file=args.analysis_source,
+                include_auxiliary=args.include_auxiliary_samples,
+                jobs=args.analysis_jobs,
+                max_events=args.analysis_max_events,
+                force=args.force_analysis,
+                run_missing=not args.no_run_missing_analysis,
+            )
+            if not hhhbb_files:
+                raise SystemExit(
+                    "No hhhbb ROOT variable files found. Pass --hhhbb-signal-root/--hhhbb-signal-dir "
+                    "with campaign ROOT outputs or precomputed *_var.smear*.root files."
+                )
+
+            hhhbb_xsecs, hhhbb_generated, hhhbb_normalisation_weights = _infer_scored_signal_metadata(
+                hhhbb_files,
+                args.hhhbb_signal_xsec_fb,
+                args.hhhbb_signal_generated_events,
+                args.hhhbb_default_generated_events,
+                "hhhbb signal",
+            )
+            hhhbb_rate_factor = _hhhbb_signal_rate_factor_for_cli(args)
+            rate_metadata["hhhbb_signal_hbb_power"] = 3
+            rate_metadata["hhhbb_signal_rate_factor"] = hhhbb_rate_factor
+            print("hhhbb signal files:")
+            for path, xsec, generated, normalisation_weight in zip(
+                hhhbb_files,
+                hhhbb_xsecs,
+                hhhbb_generated,
+                hhhbb_normalisation_weights,
+            ):
+                print(
+                    f"  {path}  xsec={xsec:g} fb  generated={generated}  "
+                    f"normalisation_weight={_format_weight(normalisation_weight)}  "
+                    f"rate_factor={hhhbb_rate_factor:g}"
+                )
+            hhhbb_score_rows = score_signal_files(
+                signal_files=hhhbb_files,
+                model_file=model_file,
+                output_dir=args.c3d4_scan_outdir / "hhhbb_signal_scores",
+                threshold=threshold,
+                signal_xsecs_fb=hhhbb_xsecs,
+                signal_rate_factors=hhhbb_rate_factor,
+                signal_generated_events=hhhbb_generated,
+                signal_normalisation_weights=hhhbb_normalisation_weights,
+                luminosity=args.luminosity,
+                max_events=args.max_events,
+                write_event_scores=args.write_event_scores,
+            )
+            _print_sm_hhhbb_summary(hhhbb_score_rows)
+            rows_for_limit = combine_signal_component_rows(scored_rows, hhhbb_score_rows)
         write_c3d4_limit_scan(
-            scored_rows,
+            rows_for_limit,
             output_dir=args.c3d4_scan_outdir,
             background_events=background_events,
             threshold=threshold,

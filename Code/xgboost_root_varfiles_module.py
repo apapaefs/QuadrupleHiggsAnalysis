@@ -1192,7 +1192,7 @@ def run_signal_background_analysis(
 
 
 _C3D4_RUN_PATTERN = re.compile(
-    r"run_gg_4h_([^_/]+)_"
+    r"run_gg_(4h|hhhg)_([^_/]+)_"
     r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)_"
     r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
 )
@@ -1205,13 +1205,28 @@ def _point_metadata_from_path(path):
             continue
         try:
             return {
-                "run_group": match.group(1),
-                "c3": float(match.group(2)),
-                "d4": float(match.group(3)),
+                "process": "gg_" + match.group(1),
+                "run_group": match.group(2),
+                "c3": float(match.group(3)),
+                "d4": float(match.group(4)),
             }
         except ValueError:
             continue
-    return {"run_group": "", "c3": None, "d4": None}
+    return {"process": "", "run_group": "", "c3": None, "d4": None}
+
+
+def _metadata_value(file_metadata, path_metadata, key):
+    value = (file_metadata or {}).get(key)
+    if value not in (None, ""):
+        return value
+    return (path_metadata or {}).get(key)
+
+
+def _metadata_float(file_metadata, path_metadata, key):
+    value = _metadata_value(file_metadata, path_metadata, key)
+    if value in (None, ""):
+        return None
+    return float(value)
 
 
 def score_signal_files(
@@ -1283,15 +1298,17 @@ def score_signal_files(
             if np.sum(raw_weights) != 0.0
             else 0.0
         )
-        metadata = _point_metadata_from_path(path)
+        path_metadata = _point_metadata_from_path(path)
+        file_metadata = dict(file_metadata or {})
 
-        row = dict(file_metadata or {})
+        row = dict(file_metadata)
         row.update(
             {
                 "file": str(path),
-                "run_group": metadata["run_group"],
-                "c3": metadata["c3"],
-                "d4": metadata["d4"],
+                "process": _metadata_value(file_metadata, path_metadata, "process"),
+                "run_group": _metadata_value(file_metadata, path_metadata, "run_group"),
+                "c3": _metadata_float(file_metadata, path_metadata, "c3"),
+                "d4": _metadata_float(file_metadata, path_metadata, "d4"),
                 "entries": int(len(raw_weights)),
                 "selected_entries": int(np.sum(selected)),
                 "threshold": float(threshold),
@@ -1346,6 +1363,7 @@ def score_signal_files(
     summary_json = output_dir / "scored_signal_points.json"
     fieldnames = [
         "file",
+        "process",
         "process_id",
         "description",
         "local_lhe",
@@ -1423,6 +1441,187 @@ def score_signal_files(
         print("Wrote", event_scores)
 
     return rows
+
+
+def _component_key(row):
+    return (
+        str(row.get("run_group", "")),
+        round(float(row.get("c3", 0.0)), 9) if row.get("c3") not in (None, "") else None,
+        round(float(row.get("d4", 0.0)), 9) if row.get("d4") not in (None, "") else None,
+    )
+
+
+def _index_component_rows(rows):
+    indexed = {}
+    for row in rows or []:
+        key = _component_key(row)
+        if key in indexed:
+            raise ValueError("Duplicate signal component row for run_group/c3/d4 = %s" % (key,))
+        indexed[key] = dict(row)
+    return indexed
+
+
+def _sum_row_values(rows, key, default=0.0):
+    return sum(float(row.get(key, default) or 0.0) for row in rows)
+
+
+def _sum_row_ints(rows, key):
+    return sum(int(row.get(key, 0) or 0) for row in rows)
+
+
+def _copy_component_fields(target, component, prefix):
+    fields = [
+        "file",
+        "entries",
+        "selected_entries",
+        "xsec_fb",
+        "raw_xsec_fb",
+        "rate_factor",
+        "effective_xsec_fb",
+        "generated_events",
+        "normalisation_weight",
+        "expected_preselected_events",
+        "expected_selected_events",
+        "expected_selected_error",
+        "raw_sigma_eff_fb",
+        "effective_sigma_eff_fb",
+        "analysis_efficiency",
+        "xgboost_efficiency",
+        "final_efficiency",
+        "weighted_efficiency",
+        "raw_weight_efficiency",
+        "mean_score",
+    ]
+    for field in fields:
+        target["%s_%s" % (prefix, field)] = component.get(field)
+
+
+def combine_signal_component_rows(hhhh_rows, hhhbb_rows):
+    """Sum hhhh and hhhbb scored rows by c3/d4 for final limit setting only."""
+
+    hhhh_by_key = _index_component_rows(hhhh_rows)
+    hhhbb_by_key = _index_component_rows(hhhbb_rows)
+    combined = []
+    for key in sorted(
+        set(hhhh_by_key) | set(hhhbb_by_key),
+        key=lambda item: (item[0], float("nan") if item[1] is None else item[1], float("nan") if item[2] is None else item[2]),
+    ):
+        hhhh = hhhh_by_key.get(key)
+        hhhbb = hhhbb_by_key.get(key)
+        components = []
+        component_rows = []
+        base = dict(hhhh or hhhbb or {})
+        if hhhh is not None:
+            components.append("hhhh")
+            component_rows.append(hhhh)
+            _copy_component_fields(base, hhhh, "hhhh")
+        if hhhbb is not None:
+            components.append("hhhbb")
+            component_rows.append(hhhbb)
+            _copy_component_fields(base, hhhbb, "hhhbb")
+
+        expected_selected_error = math.sqrt(
+            sum(float(row.get("expected_selected_error", 0.0) or 0.0) ** 2 for row in component_rows)
+        )
+        expected_preselected = _sum_row_values(component_rows, "expected_preselected_events")
+        expected_selected = _sum_row_values(component_rows, "expected_selected_events")
+        effective_xsec = _sum_row_values(component_rows, "effective_xsec_fb")
+        raw_xsec = _sum_row_values(component_rows, "xsec_fb")
+        raw_sigma_eff = _sum_row_values(component_rows, "raw_sigma_eff_fb")
+        effective_sigma_eff = _sum_row_values(component_rows, "effective_sigma_eff_fb")
+        entries = _sum_row_ints(component_rows, "entries")
+        selected_entries = _sum_row_ints(component_rows, "selected_entries")
+
+        base.update(
+            {
+                "signal_components": ",".join(components),
+                "files": ",".join(str(row.get("file", "")) for row in component_rows if row.get("file")),
+                "entries": entries,
+                "selected_entries": selected_entries,
+                "xsec_fb": raw_xsec,
+                "raw_xsec_fb": raw_xsec,
+                "rate_factor": 1.0,
+                "effective_xsec_fb": effective_xsec,
+                "generated_events": _sum_row_ints(component_rows, "generated_events"),
+                "expected_preselected_events": expected_preselected,
+                "expected_selected_events": expected_selected,
+                "expected_selected_error": expected_selected_error,
+                "raw_sigma_eff_fb": raw_sigma_eff,
+                "effective_sigma_eff_fb": effective_sigma_eff,
+                "weighted_efficiency": (
+                    expected_selected / expected_preselected if expected_preselected != 0.0 else 0.0
+                ),
+                "xgboost_efficiency": (
+                    expected_selected / expected_preselected if expected_preselected != 0.0 else 0.0
+                ),
+                "final_efficiency": expected_selected / (3000.0 * effective_xsec) if effective_xsec != 0.0 else 0.0,
+                "raw_weight_efficiency": 0.0,
+                "mean_score": (
+                    sum(float(row.get("mean_score", 0.0) or 0.0) * int(row.get("entries", 0) or 0) for row in component_rows)
+                    / entries
+                    if entries
+                    else 0.0
+                ),
+            }
+        )
+        attach_poisson_event_interval(
+            base,
+            selected_entries_key="selected_entries",
+            expected_events_key="expected_selected_events",
+            input_entries_key="entries",
+            expected_input_events_key="expected_preselected_events",
+            output_prefix="expected_selected_events",
+            confidence_level=0.95,
+        )
+        base["expected_selected_error"] = expected_selected_error
+        combined.append(base)
+    return combined
+
+
+SIGNAL_COMPONENT_LIMIT_FIELDS = [
+    "signal_components",
+    "files",
+    "hhhh_file",
+    "hhhh_entries",
+    "hhhh_selected_entries",
+    "hhhh_xsec_fb",
+    "hhhh_raw_xsec_fb",
+    "hhhh_rate_factor",
+    "hhhh_effective_xsec_fb",
+    "hhhh_generated_events",
+    "hhhh_normalisation_weight",
+    "hhhh_expected_preselected_events",
+    "hhhh_expected_selected_events",
+    "hhhh_expected_selected_error",
+    "hhhh_raw_sigma_eff_fb",
+    "hhhh_effective_sigma_eff_fb",
+    "hhhh_analysis_efficiency",
+    "hhhh_xgboost_efficiency",
+    "hhhh_final_efficiency",
+    "hhhh_weighted_efficiency",
+    "hhhh_raw_weight_efficiency",
+    "hhhh_mean_score",
+    "hhhbb_file",
+    "hhhbb_entries",
+    "hhhbb_selected_entries",
+    "hhhbb_xsec_fb",
+    "hhhbb_raw_xsec_fb",
+    "hhhbb_rate_factor",
+    "hhhbb_effective_xsec_fb",
+    "hhhbb_generated_events",
+    "hhhbb_normalisation_weight",
+    "hhhbb_expected_preselected_events",
+    "hhhbb_expected_selected_events",
+    "hhhbb_expected_selected_error",
+    "hhhbb_raw_sigma_eff_fb",
+    "hhhbb_effective_sigma_eff_fb",
+    "hhhbb_analysis_efficiency",
+    "hhhbb_xgboost_efficiency",
+    "hhhbb_final_efficiency",
+    "hhhbb_weighted_efficiency",
+    "hhhbb_raw_weight_efficiency",
+    "hhhbb_mean_score",
+]
 
 
 def score_background_files(
@@ -3201,57 +3400,58 @@ def write_c3d4_limit_scan(
         gaussian_excluded_by_s_over_sqrt_b = bool(s_over_sqrt_b is not None and s_over_sqrt_b >= cl_target)
         excluded_95cl = bool(signal_events >= required_signal_events)
 
-        rows.append(
-            {
-                "file": row.get("file", ""),
-                "run_group": row.get("run_group", ""),
-                "c3": _json_safe_float(row.get("c3")),
-                "d4": _json_safe_float(row.get("d4")),
-                "entries": int(row.get("entries", 0)),
-                "selected_entries": int(row.get("selected_entries", 0)),
-                "threshold": float(row.get("threshold", threshold if threshold is not None else 0.0)),
-                "xsec_fb": xsec_fb,
-                "rate_factor": rate_factor,
-                "effective_xsec_fb": effective_xsec_fb,
-                "generated_events": row.get("generated_events"),
-                "expected_preselected_events": preselected_events,
-                "expected_selected_events": signal_events,
-                "expected_selected_error": selected_error,
-                "expected_selected_events_lower_95cl": row.get("expected_selected_events_lower_95cl"),
-                "expected_selected_events_upper_95cl": row.get("expected_selected_events_upper_95cl"),
-                "expected_selected_events_error_low_95cl": row.get("expected_selected_events_error_low_95cl"),
-                "expected_selected_events_error_high_95cl": row.get("expected_selected_events_error_high_95cl"),
-                "expected_selected_events_upper_limit_95cl": row.get("expected_selected_events_upper_limit_95cl"),
-                "expected_selected_events_is_upper_limit": row.get("expected_selected_events_is_upper_limit"),
-                "expected_selected_events_confidence_level": row.get("expected_selected_events_confidence_level"),
-                "raw_sigma_eff_fb": raw_sigma_eff_fb,
-                "effective_sigma_eff_fb": effective_sigma_eff_fb,
-                "effective_sigma_eff_error_fb": effective_sigma_eff_error_fb,
-                "weighted_efficiency": float(weighted_efficiency),
-                "raw_weight_efficiency": float(row.get("raw_weight_efficiency", 0.0)),
-                "mean_score": float(row.get("mean_score", 0.0)),
-                "background_events": background_events,
-                "limit_method": f"poisson_{poisson_limit['method']}",
-                "poisson_confidence_level": poisson_confidence_level,
-                "poisson_observed_events": int(poisson_limit["observed_events"]),
-                "required_signal_events_95cl": required_signal_events,
-                "s_over_sqrt_b": _json_safe_float(s_over_sqrt_b),
-                "significance_with_systematics": _json_safe_float(significance_with_systematics),
-                "signal_scale_to_95cl": _json_safe_float(scale_to_95cl),
-                "xsec_95cl_fb": _json_safe_float(xsec_95cl_fb),
-                "excluded_95cl": excluded_95cl,
-                "gaussian_cl_target_s_over_sqrt_b": cl_target,
-                "gaussian_required_signal_events": _json_safe_float(gaussian_required_signal_events),
-                "gaussian_signal_scale_to_target": _json_safe_float(gaussian_signal_scale_to_target),
-                "gaussian_xsec_target_fb": _json_safe_float(gaussian_xsec_target_fb),
-                "gaussian_excluded_by_s_over_sqrt_b": gaussian_excluded_by_s_over_sqrt_b,
-                "fitted_effective_sigma_eff_fb": None,
-                "fitted_expected_selected_events": None,
-                "fitted_s_over_sqrt_b": None,
-                "fitted_significance_with_systematics": None,
-                "fitted_excluded_95cl": None,
-            }
-        )
+        limit_row = {
+            "file": row.get("file", ""),
+            "run_group": row.get("run_group", ""),
+            "c3": _json_safe_float(row.get("c3")),
+            "d4": _json_safe_float(row.get("d4")),
+            "entries": int(row.get("entries", 0)),
+            "selected_entries": int(row.get("selected_entries", 0)),
+            "threshold": float(row.get("threshold", threshold if threshold is not None else 0.0)),
+            "xsec_fb": xsec_fb,
+            "rate_factor": rate_factor,
+            "effective_xsec_fb": effective_xsec_fb,
+            "generated_events": row.get("generated_events"),
+            "expected_preselected_events": preselected_events,
+            "expected_selected_events": signal_events,
+            "expected_selected_error": selected_error,
+            "expected_selected_events_lower_95cl": row.get("expected_selected_events_lower_95cl"),
+            "expected_selected_events_upper_95cl": row.get("expected_selected_events_upper_95cl"),
+            "expected_selected_events_error_low_95cl": row.get("expected_selected_events_error_low_95cl"),
+            "expected_selected_events_error_high_95cl": row.get("expected_selected_events_error_high_95cl"),
+            "expected_selected_events_upper_limit_95cl": row.get("expected_selected_events_upper_limit_95cl"),
+            "expected_selected_events_is_upper_limit": row.get("expected_selected_events_is_upper_limit"),
+            "expected_selected_events_confidence_level": row.get("expected_selected_events_confidence_level"),
+            "raw_sigma_eff_fb": raw_sigma_eff_fb,
+            "effective_sigma_eff_fb": effective_sigma_eff_fb,
+            "effective_sigma_eff_error_fb": effective_sigma_eff_error_fb,
+            "weighted_efficiency": float(weighted_efficiency),
+            "raw_weight_efficiency": float(row.get("raw_weight_efficiency", 0.0)),
+            "mean_score": float(row.get("mean_score", 0.0)),
+            "background_events": background_events,
+            "limit_method": f"poisson_{poisson_limit['method']}",
+            "poisson_confidence_level": poisson_confidence_level,
+            "poisson_observed_events": int(poisson_limit["observed_events"]),
+            "required_signal_events_95cl": required_signal_events,
+            "s_over_sqrt_b": _json_safe_float(s_over_sqrt_b),
+            "significance_with_systematics": _json_safe_float(significance_with_systematics),
+            "signal_scale_to_95cl": _json_safe_float(scale_to_95cl),
+            "xsec_95cl_fb": _json_safe_float(xsec_95cl_fb),
+            "excluded_95cl": excluded_95cl,
+            "gaussian_cl_target_s_over_sqrt_b": cl_target,
+            "gaussian_required_signal_events": _json_safe_float(gaussian_required_signal_events),
+            "gaussian_signal_scale_to_target": _json_safe_float(gaussian_signal_scale_to_target),
+            "gaussian_xsec_target_fb": _json_safe_float(gaussian_xsec_target_fb),
+            "gaussian_excluded_by_s_over_sqrt_b": gaussian_excluded_by_s_over_sqrt_b,
+            "fitted_effective_sigma_eff_fb": None,
+            "fitted_expected_selected_events": None,
+            "fitted_s_over_sqrt_b": None,
+            "fitted_significance_with_systematics": None,
+            "fitted_excluded_95cl": None,
+        }
+        for field in SIGNAL_COMPONENT_LIMIT_FIELDS:
+            limit_row[field] = row.get(field)
+        rows.append(limit_row)
 
     if fit_terms is None:
         fit_terms = DEFAULT_C3D4_CHEBYSHEV_TERMS
@@ -3419,6 +3619,8 @@ def write_c3d4_limit_scan(
 
     fieldnames = [
         "file",
+        "signal_components",
+        "files",
         "run_group",
         "c3",
         "d4",
@@ -3466,6 +3668,9 @@ def write_c3d4_limit_scan(
         "fitted_significance_with_systematics",
         "fitted_excluded_95cl",
     ]
+    for field in SIGNAL_COMPONENT_LIMIT_FIELDS:
+        if field not in fieldnames:
+            fieldnames.append(field)
     with open(limit_csv, "w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
