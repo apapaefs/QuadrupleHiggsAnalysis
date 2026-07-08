@@ -1,8 +1,10 @@
 """Validate HEFT hhh+bb against hhh+g forced g -> b bbar at LHE 8b level."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import math
+import re
 import sys
 from dataclasses import dataclass
 from itertools import combinations, permutations
@@ -12,6 +14,7 @@ import subprocess
 from .herwig_cards import DEFAULT_HERWIG_PDF_NAME, PROCESS_CONFIGS, higgs_decay_lhewriter_card, stage1_lhewriter_card
 from .lhe_validation import normalize_lhe_file_process_ids, parse_lhe_events
 from .lhe_weights import apply_weights, verify_weighted_lhe
+from .run_chain import count_lhe_events
 from .validation_hbb import (
     HIGGS_PT_BINS,
     SOURCE_MATCH_MAX_SCORE,
@@ -138,10 +141,137 @@ class HHHBBValidationRunConfig(object):
     allow_input_oversampling: bool = False
     overwrite: bool = False
     dry_run: bool = False
+    write_report: bool = True
+
+
+@dataclass
+class HHHBBParallelValidationRunConfig(HHHBBValidationRunConfig):
+    jobs: int = 1
 
 
 def _default_runner(command, cwd):
     subprocess.run(command, cwd=str(cwd), check=True)
+
+
+_RAW_EVENT_RE = re.compile(r"<event>.*?</event>\s*", re.DOTALL)
+
+
+def _lhe_event_parts(path):
+    text = _read_lhe_text(path)
+    matches = list(_RAW_EVENT_RE.finditer(text))
+    if not matches:
+        raise RuntimeError("Input LHE contains no <event> blocks: %s" % path)
+    preamble = text[: matches[0].start()]
+    events = [match.group(0) for match in matches]
+    footer = text[matches[-1].end() :]
+    return preamble, events, footer
+
+
+def _event_ranges(total, chunks):
+    if chunks < 1:
+        raise ValueError("number of chunks must be positive")
+    if total < 1:
+        raise ValueError("cannot split zero events")
+    chunks = min(chunks, total)
+    base, extra = divmod(total, chunks)
+    ranges = []
+    start = 0
+    for index in range(chunks):
+        count = base + (1 if index < extra else 0)
+        stop = start + count
+        ranges.append((start, stop))
+        start = stop
+    return ranges
+
+
+def _write_lhe_event_slice(input_lhe, output_lhe, start, stop, overwrite):
+    preamble, events, footer = _lhe_event_parts(input_lhe)
+    selected = events[start:stop]
+    if not selected:
+        raise RuntimeError("Requested empty LHE event slice %s:%s from %s" % (start, stop, input_lhe))
+    output_lhe = Path(output_lhe)
+    output_lhe.parent.mkdir(parents=True, exist_ok=True)
+    _write_text(output_lhe, preamble + "".join(selected) + footer, overwrite)
+    return len(selected)
+
+
+def _combine_weight_checks(job_summaries):
+    checks = []
+    for job in job_summaries:
+        weight_check = job.get("weight_check")
+        if not weight_check:
+            continue
+        checks.append(
+            {
+                "run_name": job.get("run_name"),
+                "correction_rows": int(weight_check.get("correction_rows", 0)),
+                "zero_success_rows": int(weight_check.get("zero_success_rows", 0)),
+                "nonzero_weight_rows": int(weight_check.get("nonzero_weight_rows", 0)),
+                "mean_p_hat": float(weight_check.get("mean_p_hat", 0.0)),
+            }
+        )
+    if not checks:
+        return None
+    rows = sum(check["correction_rows"] for check in checks)
+    weighted_mean = (
+        sum(check["mean_p_hat"] * check["correction_rows"] for check in checks) / rows
+        if rows
+        else 0.0
+    )
+    return {
+        "parallel_jobs": len(job_summaries),
+        "correction_rows": rows,
+        "zero_success_rows": sum(check["zero_success_rows"] for check in checks),
+        "nonzero_weight_rows": sum(check["nonzero_weight_rows"] for check in checks),
+        "mean_p_hat": weighted_mean,
+        "jobs": checks,
+    }
+
+
+def _weighted_summary_mean(samples, key):
+    numerator = 0.0
+    denominator = 0.0
+    for sample in samples:
+        value = sample["summary"].get(key)
+        if value is None:
+            continue
+        weight = max(1, int(sample["summary"].get("accepted_8b_events", 0)))
+        numerator += float(value) * weight
+        denominator += weight
+    return numerator / denominator if denominator else None
+
+
+def _combine_extracted_samples(samples, label):
+    combined_observables = _empty_observables()
+    pair_classification = {
+        "associated_source_match": 0,
+        "associated_from_higgs_remainder": 0,
+        "associated_unmatched": 0,
+        "higgs_ancestry_pairs": 0,
+        "source_higgs_match_pairs": 0,
+        "higgs_mass_fallback_pairs": 0,
+    }
+    for sample in samples:
+        for observable in HHHBB_OBSERVABLE_ORDER:
+            combined_observables[observable]["values"].extend(sample["observables"][observable]["values"])
+            combined_observables[observable]["weights"].extend(sample["observables"][observable]["weights"])
+        for key, value in sample["summary"].get("pair_classification", {}).items():
+            pair_classification[key] = pair_classification.get(key, 0) + int(value)
+
+    summary = {
+        "label": label,
+        "file": "parallel combination of %d files" % len(samples),
+        "xsec_pb": _weighted_summary_mean(samples, "xsec_pb"),
+        "xsec_error_pb": _weighted_summary_mean(samples, "xsec_error_pb"),
+        "event_count": sum(int(sample["summary"]["event_count"]) for sample in samples),
+        "accepted_8b_events": sum(int(sample["summary"]["accepted_8b_events"]) for sample in samples),
+        "skipped_events": sum(int(sample["summary"]["skipped_events"]) for sample in samples),
+        "weighted_event_sum": sum(float(sample["summary"]["weighted_event_sum"]) for sample in samples),
+        "source_file": "parallel combination",
+        "source_event_count": sum(int(sample["summary"].get("source_event_count", 0)) for sample in samples),
+        "pair_classification": pair_classification,
+    }
+    return {"label": label, "file": summary["file"], "observables": combined_observables, "summary": summary}
 
 
 def _eta(particle):
@@ -761,7 +891,7 @@ def run_hhhbb_validation_chain(config, runner=None):
     commands.append(_run_herwig(config.herwig, "run", direct_decay_run.name, workdir, runner, config.dry_run))
 
     report_metadata = None
-    if not config.dry_run:
+    if not config.dry_run and config.write_report:
         for output in (split_final_lhe, direct_final_lhe):
             if not output.exists():
                 raise FileNotFoundError("Final validation LHE was not produced: %s" % output)
@@ -809,6 +939,140 @@ def run_hhhbb_validation_chain(config, runner=None):
     return summary
 
 
+def run_hhhbb_validation_parallel(config, runner=None):
+    """Run the HEFT hhhbb validation in independent parallel Herwig jobs."""
+
+    if runner is None:
+        runner = _default_runner
+    if config.jobs < 1:
+        raise ValueError("--jobs must be positive")
+
+    split_input_lhe = Path(config.split_input_lhe).resolve()
+    direct_input_lhe = Path(config.direct_input_lhe).resolve()
+    split_input_event_count = _validate_input_events(
+        split_input_lhe,
+        config.events,
+        config.allow_input_oversampling,
+    )
+    direct_input_event_count = _validate_input_events(
+        direct_input_lhe,
+        config.events,
+        config.allow_input_oversampling,
+    )
+
+    active_jobs = min(int(config.jobs), int(config.events), split_input_event_count, direct_input_event_count)
+    if active_jobs < 1:
+        raise RuntimeError("No parallel jobs can be created from the requested inputs")
+
+    workdir = Path(config.workdir)
+    chunk_dir = workdir / "chunks"
+    jobs_dir = workdir / "jobs"
+    report_dir = workdir / "report"
+    workdir.mkdir(parents=True, exist_ok=True)
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+
+    requested_event_ranges = _event_ranges(int(config.events), active_jobs)
+    split_input_ranges = _event_ranges(split_input_event_count, active_jobs)
+    direct_input_ranges = _event_ranges(min(direct_input_event_count, int(config.events)), active_jobs)
+
+    job_configs = []
+    for job_index, ((event_start, event_stop), (split_start, split_stop), (direct_start, direct_stop)) in enumerate(
+        zip(requested_event_ranges, split_input_ranges, direct_input_ranges),
+        start=1,
+    ):
+        job_events = event_stop - event_start
+        job_name = "%s_job%03d" % (config.run_name, job_index)
+        split_chunk = chunk_dir / ("%s_split_input.lhe" % job_name)
+        direct_chunk = chunk_dir / ("%s_direct_input.lhe" % job_name)
+        _write_lhe_event_slice(split_input_lhe, split_chunk, split_start, split_stop, config.overwrite)
+        _write_lhe_event_slice(direct_input_lhe, direct_chunk, direct_start, direct_stop, config.overwrite)
+        job_configs.append(
+            HHHBBValidationRunConfig(
+                split_input_lhe=split_chunk,
+                direct_input_lhe=direct_chunk,
+                workdir=jobs_dir / job_name,
+                events=job_events,
+                probe_trials=config.probe_trials,
+                run_name=job_name,
+                herwig=config.herwig,
+                seed_stage1=config.seed_stage1 + 1000003 * job_index,
+                seed_split_decay=config.seed_split_decay + 1000033 * job_index,
+                seed_direct_decay=config.seed_direct_decay + 1000037 * job_index,
+                pdf_name=config.pdf_name,
+                input_xsec_error=config.input_xsec_error,
+                allow_zero_probe_successes=config.allow_zero_probe_successes,
+                allow_input_oversampling=config.allow_input_oversampling,
+                overwrite=config.overwrite,
+                dry_run=config.dry_run,
+                write_report=False,
+            )
+        )
+
+    job_summaries = []
+    if config.dry_run or active_jobs == 1:
+        for job_config in job_configs:
+            job_summaries.append(run_hhhbb_validation_chain(job_config, runner=runner))
+    else:
+        with ThreadPoolExecutor(max_workers=active_jobs) as executor:
+            futures = {executor.submit(run_hhhbb_validation_chain, job_config, runner): job_config for job_config in job_configs}
+            for future in as_completed(futures):
+                job_summaries.append(future.result())
+        job_summaries.sort(key=lambda summary: summary["run_name"])
+
+    report_metadata = None
+    correction_summary = _combine_weight_checks(job_summaries)
+    if not config.dry_run:
+        split_samples = []
+        direct_samples = []
+        for job_summary in job_summaries:
+            split_samples.append(
+                extract_lhe_8b_sample(
+                    job_summary["split_final_lhe"],
+                    label=HHHBB_SPLIT_LABEL,
+                    source_lhe=job_summary["split_decay_source_lhe"],
+                )
+            )
+            direct_samples.append(
+                extract_lhe_8b_sample(
+                    job_summary["direct_final_lhe"],
+                    label=HHHBB_DIRECT_LABEL,
+                    source_lhe=job_summary["direct_decay_source_lhe"],
+                )
+            )
+        report_metadata = write_lhe_8b_validation_report_from_samples(
+            samples=[
+                _combine_extracted_samples(split_samples, HHHBB_SPLIT_LABEL),
+                _combine_extracted_samples(direct_samples, HHHBB_DIRECT_LABEL),
+            ],
+            output_dir=report_dir,
+            correction_summary=correction_summary,
+        )
+
+    summary_file = workdir / ("%s_parallel_summary.json" % config.run_name)
+    summary = {
+        "run_name": config.run_name,
+        "parallel_jobs": active_jobs,
+        "requested_jobs": int(config.jobs),
+        "events": int(config.events),
+        "probe_trials": int(config.probe_trials),
+        "split_input_lhe": str(split_input_lhe),
+        "direct_input_lhe": str(direct_input_lhe),
+        "split_input_event_count": int(split_input_event_count),
+        "direct_input_event_count": int(direct_input_event_count),
+        "workdir": str(workdir),
+        "chunks": str(chunk_dir),
+        "jobs_dir": str(jobs_dir),
+        "jobs": job_summaries,
+        "weight_check": correction_summary,
+        "report": None if report_metadata is None else str(report_metadata["index"]),
+        "dry_run": bool(config.dry_run),
+        "summary": str(summary_file),
+    }
+    _write_text(summary_file, json.dumps(summary, indent=2, sort_keys=True) + "\n", True)
+    return summary
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command")
@@ -830,6 +1094,28 @@ def main(argv=None):
     run.add_argument("--allow-input-oversampling", action="store_true")
     run.add_argument("--overwrite", action="store_true")
     run.add_argument("--dry-run", action="store_true")
+
+    parallel_run = subparsers.add_parser(
+        "parallel-run",
+        help="run split/direct HEFT hhhbb validation in parallel Herwig subjobs and combine the report",
+    )
+    parallel_run.add_argument("--split-lhe", type=Path, required=True)
+    parallel_run.add_argument("--direct-lhe", type=Path, required=True)
+    parallel_run.add_argument("--workdir", type=Path, required=True)
+    parallel_run.add_argument("--events", type=int, required=True)
+    parallel_run.add_argument("--jobs", type=int, required=True)
+    parallel_run.add_argument("--probe-trials", type=int, default=0)
+    parallel_run.add_argument("--run-name", default="hhhbb_validation")
+    parallel_run.add_argument("--herwig", default="Herwig")
+    parallel_run.add_argument("--seed-stage1", type=int, default=31122002)
+    parallel_run.add_argument("--seed-split-decay", type=int, default=44071981)
+    parallel_run.add_argument("--seed-direct-decay", type=int, default=44071982)
+    parallel_run.add_argument("--pdf-name", default=DEFAULT_HERWIG_PDF_NAME)
+    parallel_run.add_argument("--input-xsec-error", type=float)
+    parallel_run.add_argument("--allow-zero-probe-successes", action="store_true")
+    parallel_run.add_argument("--allow-input-oversampling", action="store_true")
+    parallel_run.add_argument("--overwrite", action="store_true")
+    parallel_run.add_argument("--dry-run", action="store_true")
 
     compare = subparsers.add_parser("compare", help="write a validation report from existing final 8b LHE files")
     compare.add_argument("--split-lhe", type=Path, required=True)
@@ -866,6 +1152,34 @@ def main(argv=None):
         for line in weight_check_report_lines(summary):
             print(line)
         return 0
+    if args.command == "parallel-run":
+        summary = run_hhhbb_validation_parallel(
+            HHHBBParallelValidationRunConfig(
+                split_input_lhe=args.split_lhe,
+                direct_input_lhe=args.direct_lhe,
+                workdir=args.workdir,
+                events=args.events,
+                jobs=args.jobs,
+                probe_trials=args.probe_trials,
+                run_name=args.run_name,
+                herwig=args.herwig,
+                seed_stage1=args.seed_stage1,
+                seed_split_decay=args.seed_split_decay,
+                seed_direct_decay=args.seed_direct_decay,
+                pdf_name=args.pdf_name,
+                input_xsec_error=args.input_xsec_error,
+                allow_zero_probe_successes=args.allow_zero_probe_successes,
+                allow_input_oversampling=args.allow_input_oversampling,
+                overwrite=args.overwrite,
+                dry_run=args.dry_run,
+            )
+        )
+        print("Parallel validation summary:", summary["summary"])
+        if summary["report"]:
+            print("Validation report:", summary["report"])
+        for line in weight_check_report_lines({"runs": summary["jobs"]}):
+            print(line)
+        return 0
     if args.command == "compare":
         metadata = write_lhe_8b_validation_report(
             split_lhe=args.split_lhe,
@@ -876,7 +1190,7 @@ def main(argv=None):
         )
         print("Validation report:", metadata["index"])
         return 0
-    parser.error("choose a command: run or compare")
+    parser.error("choose a command: run, parallel-run, or compare")
 
 
 if __name__ == "__main__":

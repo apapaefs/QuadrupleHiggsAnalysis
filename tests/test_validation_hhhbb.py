@@ -13,15 +13,18 @@ sys.path.insert(0, str(REPO_DIR / "Code"))
 from ForcedSplitting.validation_hhhbb import (  # noqa: E402
     HHHBB_DIRECT_LABEL,
     HHHBB_OBSERVABLE_ORDER,
+    HHHBBParallelValidationRunConfig,
     HHHBB_REPORT_TITLE,
     HHHBB_SHAPE_MAX_BINS,
     HHHBB_SPLIT_LABEL,
     HHHBBValidationRunConfig,
     extract_lhe_8b_sample,
+    run_hhhbb_validation_parallel,
     run_hhhbb_validation_chain,
     weight_check_report_lines,
     write_lhe_8b_validation_report,
 )
+from ForcedSplitting.run_chain import count_lhe_events  # noqa: E402
 from sample_report import observable_axis_label  # noqa: E402
 
 
@@ -150,6 +153,13 @@ def split_input_lhe_text(weight=1.0, xsec_pb=3.0):
         ],
         xsec_pb=xsec_pb,
     )
+
+
+def repeat_lhe_events(text, count):
+    prefix, rest = text.split("<event>", 1)
+    event_body, suffix = rest.rsplit("</event>", 1)
+    event = "<event>" + event_body + "</event>\n"
+    return prefix + event * count + suffix
 
 
 class HHHBBValidationTests(unittest.TestCase):
@@ -282,6 +292,45 @@ class HHHBBValidationTests(unittest.TestCase):
             self.assertIn("decaymode h0->b,bbar; 1.0 1 /Herwig/Decays/Hff", direct_decay_card.read_text())
             self.assertEqual(len(summary["commands"]), 6)
             self.assertTrue(Path(summary["summary"]).exists())
+
+    def test_hhhbb_parallel_run_dry_run_slices_inputs_and_writes_job_cards(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            split_input = tmpdir / "gg_hhhg.lhe"
+            direct_input = tmpdir / "gg_hhhbb.lhe"
+            split_input.write_text(repeat_lhe_events(split_input_lhe_text(weight=1.0), 6))
+            direct_input.write_text(repeat_lhe_events(source_hhhbb_lhe_text(weight=1.0), 5))
+
+            summary = run_hhhbb_validation_parallel(
+                HHHBBParallelValidationRunConfig(
+                    split_input_lhe=split_input,
+                    direct_input_lhe=direct_input,
+                    workdir=tmpdir / "parallel",
+                    events=5,
+                    jobs=3,
+                    probe_trials=11,
+                    dry_run=True,
+                    overwrite=True,
+                )
+            )
+
+            self.assertEqual(summary["parallel_jobs"], 3)
+            self.assertIsNone(summary["report"])
+            self.assertEqual([job["events"] for job in summary["jobs"]], [2, 2, 1])
+            self.assertEqual(
+                [count_lhe_events(Path(job["split_input_lhe"])) for job in summary["jobs"]],
+                [2, 2, 2],
+            )
+            self.assertEqual(
+                [count_lhe_events(Path(job["direct_input_lhe"])) for job in summary["jobs"]],
+                [2, 2, 1],
+            )
+            for job in summary["jobs"]:
+                stage1_card = Path(job["split_stage1_card"])
+                self.assertTrue(stage1_card.exists())
+                self.assertIn("set ForceSplitVeto:ProbeTrials 11", stage1_card.read_text())
+                self.assertIn("set ForceSplitVeto:ResetAfterAttempts 100011", stage1_card.read_text())
+                self.assertIn("set ShowerHandler:MaxTry 100011", stage1_card.read_text())
 
     def test_weight_check_report_lines_print_unsuccessful_rows(self):
         lines = weight_check_report_lines(
