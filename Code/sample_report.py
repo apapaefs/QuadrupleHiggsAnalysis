@@ -798,7 +798,6 @@ def write_stacked_input_cross_section_plot(path, observable_name, samples, signa
     if plotted:
         ax.text(0.06, 0.94, "4H analysis", transform=ax.transAxes, ha="left", va="top", fontweight="bold", fontstyle="italic", fontsize=14)
         ax.text(0.06, 0.875, "Input-level samples", transform=ax.transAxes, ha="left", va="top", fontsize=10)
-        ax.text(0.06, 0.065, r"Norm: $\sigma_\mathrm{input}$ per bin", transform=ax.transAxes, ha="left", va="bottom", fontsize=9)
         ax.legend(frameon=False, loc="upper right", handlelength=1.6, borderaxespad=0.6)
     else:
         ax.text(0.5, 0.5, "No finite entries", transform=ax.transAxes, ha="center", va="center")

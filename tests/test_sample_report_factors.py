@@ -1,4 +1,5 @@
 import ast
+import csv
 import math
 import sys
 import tempfile
@@ -32,6 +33,21 @@ from sample_report import (  # noqa: E402
 
 
 class SampleReportFactorTests(unittest.TestCase):
+    def test_background_processes_csv_includes_ttbar_samples(self):
+        with (REPO_DIR / "Backgrounds" / "processes.csv").open(newline="") as handle:
+            rows = list(csv.DictReader(handle))
+
+        process_ids = [row["process_id"] for row in rows]
+        ttbar_ids = ["ttbar4b_1c3j", "ttbar4b_2c2j", "ttbar4b_0c4j"]
+
+        for process_id in ttbar_ids:
+            self.assertIn(process_id, process_ids)
+
+        by_id = {row["process_id"]: row for row in rows}
+        self.assertEqual(by_id["ttbar4b_1c3j"]["local_lhe"], "merged_ttbar4b_1c3j_events_20k_1_20260706_weighted.lhe")
+        self.assertEqual(by_id["ttbar4b_2c2j"]["local_lhe"], "merged_ttbar4b_2c2j_events_20k_1_snapshot_20260706_weighted.lhe")
+        self.assertEqual(by_id["ttbar4b_0c4j"]["local_lhe"], "merged_ttbar4b_0c4j_events_more_20k_snapshot_20260706_weighted.lhe")
+
     def test_signal_generation_factor_excludes_btagging(self):
         self.assertTrue(
             math.isclose(
@@ -617,6 +633,39 @@ class SampleReportFactorTests(unittest.TestCase):
             self.assertTrue(any(r"\slashed{b}" in label for label in plot_labels))
             self.assertFalse(any(r"\not{b}" in label for label in plot_labels))
             self.assertTrue(any(r"\mathbf{\times 1000}" in label for label in display_labels))
+
+    def test_stacked_input_plot_writer_omits_norm_annotation(self):
+        import matplotlib.axes
+
+        text_calls = []
+        original_text = matplotlib.axes.Axes.text
+
+        def capture_text(self, x, y, s, *args, **kwargs):
+            text_calls.append(str(s))
+            return original_text(self, x, y, s, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plot_path = Path(tmp) / "bjet1_pt_stacked_input_xsec.png"
+            matplotlib.axes.Axes.text = capture_text
+            try:
+                write_stacked_input_cross_section_plot(
+                    plot_path,
+                    "bjet1_pt",
+                    [
+                        {
+                            "label": "8b",
+                            "process_id": "gg_to_8b",
+                            "values": [10.0, 20.0],
+                            "weights": [1.0, 1.0],
+                            "input_xsec_fb": 2.0,
+                            "is_signal": False,
+                        },
+                    ],
+                )
+            finally:
+                matplotlib.axes.Axes.text = original_text
+
+        self.assertFalse(any("Norm:" in text for text in text_calls))
 
     def test_stacked_input_plot_writer_restores_matplotlib_text_renderer(self):
         import matplotlib
