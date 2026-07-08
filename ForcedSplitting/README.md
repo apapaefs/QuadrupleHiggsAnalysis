@@ -388,3 +388,60 @@ python3 -m ForcedSplitting.validation_hhhbb compare \
   --direct-source-lhe "$DIRECT_LHE" \
   --output-dir HerwigForcedSplitting/hhhbb_heft_validation_baseline/report
 ```
+
+## hh+4b 8b Validation
+
+The `validation_hhbbbb` helper is the `hhgg` analogue of `validation_hhhbb`.
+It compares `gg -> hhgg` plus two distinct forced final-state
+`g -> b,bbar` splittings with a direct `gg -> hh b bbar b bbar` reference
+sample.  Both branches are then passed through the validation-only LHEWriter
+Higgs decay card, forcing `h0 -> b,bbar` with BR set to one.
+
+The final 8b report includes the same global/ranked/all-pair plots as the
+`hhhbb` validation, plus plots specific to the four associated/direct b quarks:
+associated-pair `DeltaR`, associated-pair `m(bb)`, minimum associated
+`DeltaR`, associated `m(4b)`, associated `H_T`, Higgs-decay pairs,
+associated-vs-Higgs cross-pairs, and different-Higgs cross-pairs.
+
+Run the baseline validation with explicit LHE paths:
+
+```sh
+cd /mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis
+module load herwig/730
+
+SPLIT_LHE=/home/apapaefs/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15/gg_hhgg/Events/run_01/unweighted_events.lhe.gz
+DIRECT_LHE=/home/apapaefs/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15/gg_hhbbbb/Events/run_01/unweighted_events.lhe.gz
+
+python3 -m ForcedSplitting.validation_hhbbbb run \
+  --split-lhe "$SPLIT_LHE" \
+  --direct-lhe "$DIRECT_LHE" \
+  --workdir HerwigForcedSplitting/hhbbbb_validation_baseline \
+  --events 10000 \
+  --run-name hhbbbb_validation \
+  --overwrite
+```
+
+For the split-filter weighted version, add probe trials:
+
+```sh
+python3 -m ForcedSplitting.validation_hhbbbb run \
+  --split-lhe "$SPLIT_LHE" \
+  --direct-lhe "$DIRECT_LHE" \
+  --workdir HerwigForcedSplitting/hhbbbb_validation_baseline_weighted \
+  --events 10000 \
+  --probe-trials 10000 \
+  --run-name hhbbbb_validation \
+  --overwrite \
+  --allow-zero-probe-successes
+```
+
+Regenerate only the webpage from existing final 8b LHE files with:
+
+```sh
+python3 -m ForcedSplitting.validation_hhbbbb compare \
+  --split-lhe HerwigForcedSplitting/hhbbbb_validation_baseline/hhbbbb_validation_split_final8b.lhe \
+  --direct-lhe HerwigForcedSplitting/hhbbbb_validation_baseline/hhbbbb_validation_direct_final8b.lhe \
+  --split-source-lhe HerwigForcedSplitting/hhbbbb_validation_baseline/hhbbbb_validation_split_stage1.lhe \
+  --direct-source-lhe "$DIRECT_LHE" \
+  --output-dir HerwigForcedSplitting/hhbbbb_validation_baseline/report
+```

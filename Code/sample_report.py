@@ -402,6 +402,7 @@ def observable_axis_label(name):
         "b8_pt": r"$p_T(b_8)$ [GeV]",
         "dr_bb_all": r"$\Delta R(b,b)$",
         "dr_associated_bb": r"$\Delta R(b,b)_{\mathrm{assoc}}$",
+        "dr_associated_min_bb": r"$\min\,\Delta R(b,b)_{\mathrm{assoc}}$",
         "dr_higgs_bb": r"$\Delta R(b,b)_{\mathrm{same}\ h}$",
         "dr_cross_bb": r"$\Delta R(b_{\mathrm{assoc}},b_h)$",
         "dr_associated_higgs_cross_bb": r"$\Delta R(b_{\mathrm{assoc}},b_h)$",
@@ -409,6 +410,7 @@ def observable_axis_label(name):
         "dr_min_bb": r"$\min\,\Delta R(b,b)$",
         "m_bb_all": r"$m(b,b)$ [GeV]",
         "m_associated_bb": r"$m(b,b)_{\mathrm{assoc}}$ [GeV]",
+        "m_associated_4b": r"$m(4b)_{\mathrm{assoc}}$ [GeV]",
         "m_higgs_bb": r"$m(b,b)_{\mathrm{same}\ h}$ [GeV]",
         "m_associated_higgs_cross_bb": r"$m(b_{\mathrm{assoc}},b_h)$ [GeV]",
         "m_inter_higgs_cross_bb": r"$m(b_{h_i},b_{h_j})$ [GeV]",
@@ -420,6 +422,7 @@ def observable_axis_label(name):
         "dr_higgs_bb_hpt_ge300": r"$\Delta R(b,b)_{\mathrm{same}\ h},\ p_T(h)>300~\mathrm{GeV}$",
         "cos_theta_star_higgs_b": r"$\cos\theta^*(h\rightarrow b\bar{b})$",
         "m_8b": r"$m(8b)$ [GeV]",
+        "ht_associated_b": r"$H_T(b_{\mathrm{assoc}})$ [GeV]",
         "ht_b": r"$H_T(b)$ [GeV]",
     }
     if name in validation_labels:
