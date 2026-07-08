@@ -1194,7 +1194,7 @@ def run_signal_background_analysis(
 
 
 _C3D4_RUN_PATTERN = re.compile(
-    r"run_gg_(4h|hhhg|hhgg)_([^_/]+)_"
+    r"run_gg_(4h|hhhg|hhgg|hhbbbb_heft)_([^_/]+)_"
     r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)_"
     r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
 )

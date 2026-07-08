@@ -108,6 +108,7 @@ def _metadata_for_score_root(root_file, default_generated_events=None):
             parent.name.startswith("run_gg_4h_")
             or parent.name.startswith("run_gg_hhhg_")
             or parent.name.startswith("run_gg_hhgg_")
+            or parent.name.startswith("run_gg_hhbbbb_heft_")
         ):
             continue
         banners = sorted(parent.glob("*_banner.txt"))

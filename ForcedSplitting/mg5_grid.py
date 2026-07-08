@@ -39,6 +39,21 @@ MG5_PROCESS_CONFIGS = {
         default_process_dir="gg_hggg",
         process_card_line="generate g g > h g g g [noborn=QCD]",
     ),
+    "gg_hhbbbb_heft": MG5ProcessConfig(
+        process="gg_hhbbbb_heft",
+        run_prefix="run_gg_hhbbbb_heft",
+        default_process_dir="gg_hhbbbb_heft",
+        process_card_line="generate g g > h h b b~ b b~",
+    ),
+}
+
+
+MG5_PROCESS_RUN_SETTINGS = {
+    "gg_hhbbbb_heft": [
+        "set ptb 15.0",
+        "set etab 3.0",
+        "set drbb 0.3",
+    ],
 }
 
 
@@ -205,7 +220,7 @@ def _execution_settings(cores):
     return ["set run_mode %d" % run_mode, "set nb_core %d" % cores]
 
 
-def _launch_block(run_name, point, events, run_settings, accuracy, points, iterations, seed):
+def _launch_block(run_name, point, events, run_settings, accuracy, points, iterations, seed, extra_run_settings=None):
     lines = [
         "launch %s --accuracy=%s --points=%s --iterations=%s" % (run_name, accuracy, points, iterations),
         "0",
@@ -213,6 +228,7 @@ def _launch_block(run_name, point, events, run_settings, accuracy, points, itera
     for key in RUN_CARD_KEYS:
         if key in run_settings:
             lines.append("set %s %s" % (key, run_settings[key]))
+    lines.extend(str(setting) for setting in (extra_run_settings or []))
     lines.extend(
         [
             "set c3 %s" % point["c3"],
@@ -314,7 +330,19 @@ def prepare_mg5_grid(
 
         row["status"] = "scheduled"
         rows.append(row)
-        blocks.append(_launch_block(run_name, point, events, run_settings, accuracy, points, iterations, seed))
+        blocks.append(
+            _launch_block(
+                run_name,
+                point,
+                events,
+                run_settings,
+                accuracy,
+                points,
+                iterations,
+                seed,
+                extra_run_settings=MG5_PROCESS_RUN_SETTINGS.get(process, []),
+            )
+        )
 
     deck_blocks = ["\n".join(_execution_settings(cores))] + blocks if blocks else []
     deck.write_text("\n\n".join(deck_blocks))

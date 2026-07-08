@@ -281,6 +281,31 @@ class MG5GridTests(unittest.TestCase):
             self.assertEqual(summary["scheduled_points"], 2)
             self.assertTrue(summary["c3_only"])
 
+    def test_mg5_grid_supports_hhbbbb_heft_c3_only_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            process_dir = tmpdir / "gg_hhbbbb_heft"
+            process_dir.mkdir()
+            manifest = tmpdir / "signal_manifest.csv"
+            write_manifest(manifest)
+
+            summary = prepare_mg5_grid(
+                process="gg_hhbbbb_heft",
+                process_dir=process_dir,
+                reference_grid_manifest=manifest,
+                events=1000,
+                dry_run=True,
+                c3_only=True,
+            )
+
+            deck_text = Path(summary["deck"]).read_text()
+            self.assertIn("generate g g > h h b b~ b b~", MG5_PROCESS_CONFIGS["gg_hhbbbb_heft"].process_card_line)
+            self.assertIn("launch run_gg_hhbbbb_heft_4_0.0_0.0", deck_text)
+            self.assertIn("launch run_gg_hhbbbb_heft_4_1.0_0.0", deck_text)
+            self.assertNotIn("run_gg_hhbbbb_heft_4_1.0_100.0", deck_text)
+            self.assertEqual(summary["scheduled_points"], 2)
+            self.assertTrue(summary["c3_only"])
+
 
 if __name__ == "__main__":
     unittest.main()

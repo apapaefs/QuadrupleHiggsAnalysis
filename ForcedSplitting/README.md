@@ -325,6 +325,85 @@ The hhhh rate factor remains `K_signal * BR(h->bb)^4 * btag^8`, hhhbb uses
 `K_signal * BR(h->bb)^3 * btag^8`, and hhbbbb uses
 `K_signal * BR(h->bb)^2 * btag^8`.
 
+## hhbbbb HEFT c3-only Production Campaign
+
+If the full loop `hh+4b` process is too expensive, use
+`hhbbbb_heft_campaign` for the direct HEFT estimate from an existing MG5
+process directory named `gg_hhbbbb_heft`.  This is also a `c3`-only process:
+the launcher schedules one hard sample for each unique `c3` value in the
+reference grid and fixes `d4 = 0.0` in the run name and param card.
+
+The MG5 deck uses the same 14 TeV setup as the signal grid and adds direct-b
+generation cuts:
+
+- `ptb = 15.0`;
+- `etab = 3.0`;
+- `drbb = 0.3`.
+
+Prepare/check the 21 MG5 hard samples on odysseus:
+
+```sh
+cd ~/Projects/QuadrupleHiggsAnalysis
+git pull origin main
+module load herwig/730
+
+python3 -m ForcedSplitting.hhbbbb_heft_campaign prepare-mg5 \
+  --mg5-root ~/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15 \
+  --reference-grid-manifest HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv \
+  --events 10000 \
+  --cores 324 \
+  --dry-run
+
+python3 -m ForcedSplitting.hhbbbb_heft_campaign prepare-mg5 \
+  --mg5-root ~/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15 \
+  --reference-grid-manifest HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv \
+  --events 10000 \
+  --cores 324
+```
+
+Monitor MG5:
+
+```sh
+python3 -m ForcedSplitting.hhbbbb_heft_campaign monitor-mg5 \
+  --mg5-dir ~/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15/gg_hhbbbb_heft \
+  --reference-grid-manifest HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv \
+  --tail 30
+```
+
+Run the Herwig/HwSim stage.  There is no forced-splitting Stage 1 here; this
+stage only reads the direct HEFT `hh+4b` LHE, forces `h0 -> b,bbar`, and writes
+the usual ROOT output.
+
+```sh
+python3 -m ForcedSplitting.hhbbbb_heft_campaign run \
+  --mg5-dir ~/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15/gg_hhbbbb_heft \
+  --reference-grid-manifest HerwigSignalPoints/c3d4_10k/herwig_inputs_manifest.csv \
+  --workdir HerwigForcedSplitting/gg_hhbbbb_heft_c3_10k \
+  --events 10000
+```
+
+Check the campaign:
+
+```sh
+python3 -m ForcedSplitting.hhbbbb_heft_campaign check \
+  --workdir HerwigForcedSplitting/gg_hhbbbb_heft_c3_10k
+```
+
+After copying `HerwigForcedSplitting/gg_hhbbbb_heft_c3_10k/events/` to the
+analysis machine, use the same c3-only `hhbbbb` scoring hook:
+
+```sh
+python3 4h_analyzer.py --run-c3d4-limit-scan \
+  --background-csv Backgrounds/processes.csv \
+  --analysis-jobs 6 \
+  --hhhbb-signal-dir HerwigForcedSplitting/gg_hhhg_c3d4_10k_hhhbb/events \
+  --hhbbbb-signal-dir HerwigForcedSplitting/gg_hhbbbb_heft_c3_10k/events
+```
+
+This direct HEFT component uses the same `hhbbbb` final-state rate factor,
+`K_signal * BR(h->bb)^2 * btag^8`, and is added only to the final Poisson
+signal yield.
+
 For an MG5 process directory with an `Events/` subdirectory, prepare the paired
 Stage-1 and Stage-2 Herwig cards with:
 
