@@ -14,6 +14,8 @@
 #include <TChain.h>
 #include <TFile.h>
 #include <TLorentzVector.h>
+#include <TNamed.h>
+#include <TParameter.h>
 #include <TRandom3.h>
 #include <TTree.h>
 
@@ -22,6 +24,7 @@
 #include <boost/algorithm/string.hpp>
 
 #include "TopHist.h"
+#include "Extended91Observables.h"
 
 using fastjet::PseudoJet;
 
@@ -31,6 +34,7 @@ constexpr int kSelectedBJets = 8;
 constexpr int kHiggsCount = 4;
 constexpr int kHiggsPairCount = kHiggsCount * (kHiggsCount - 1) / 2;
 constexpr int kVariableCount = 29;
+constexpr double kZBosonMass = 91.1876;
 
 using Pairing = std::array<int, kSelectedBJets>;
 
@@ -61,6 +65,8 @@ struct Reconstruction {
   std::array<PseudoJet, kHiggsCount> higgses = {};
 };
 
+using ExtendedReconstruction = extended91::Reconstruction<PseudoJet>;
+
 char* getCmdOption(char** begin, char** end, const std::string& option);
 bool cmdOptionExists(char** begin, char** end, const std::string& option);
 int parseNonNegativeIntOption(char** begin, char** end, const std::string& option, int default_value);
@@ -82,6 +88,17 @@ Reconstruction findBestReconstruction(const std::vector<PseudoJet>& bjets,
 std::array<double, kHiggsCount> sortedDeltaM(const std::array<double, kHiggsCount>& delta_m);
 std::array<double, kHiggsPairCount> higgsDeltaR(const std::vector<PseudoJet>& higgses);
 std::array<double, kHiggsCount> bbDeltaR(const std::vector<PseudoJet>& bjets, const Pairing& pairing);
+void fillExtendedFeatures(const ExtendedReconstruction& reconstruction,
+                          double* features,
+                          long long& undefined_helicity_count,
+                          long long& sanitized_feature_count);
+double absoluteHelicityCosine(const PseudoJet& constituent,
+                              const PseudoJet& higgs,
+                              const PseudoJet& four_higgs,
+                              bool& defined);
+const std::vector<std::string>& extendedFeatureNames();
+const std::vector<std::string>& extendedFeatureUnits();
+std::string jsonStringArray(const std::vector<std::string>& values);
 
 template <typename T, std::size_t N>
 bool allBelow(const std::array<T, N>& values, const std::array<T, N>& cuts) {
@@ -182,6 +199,10 @@ int main(int argc, char* argv[]) {
     tag = std::string("-") + getCmdOption(argv, argv + argc, "-t");
     std::cout << "Adding tag: " << tag << std::endl;
   }
+  const bool write_extended_v2 = tag == "-extended-v2";
+  if (write_extended_v2) {
+    std::cout << "Enabling extended-91-v2 Data3 output" << std::endl;
+  }
 
   int maxevents = event_number;
   int minevents = 0;
@@ -263,6 +284,22 @@ int main(int argc, char* argv[]) {
   Data2.Branch("variables", variables, variable_leaflist.c_str());
   Data2.Branch("weight", &weight, "weight/D");
 
+  TTree* Data3 = nullptr;
+  double extended_features[extended91::kFeatureCount] = {};
+  double extended_weight = 0.0;
+  Long64_t extended_event_index = -1;
+  ULong64_t extended_cut_mask = 0;
+  Bool_t passes_legacy_full_selection = false;
+  if (write_extended_v2) {
+    Data3 = new TTree("Data3", "Extended 91-observable data tree");
+    Data3->Branch("features", extended_features, "features[91]/D");
+    Data3->Branch("weight", &extended_weight, "weight/D");
+    Data3->Branch("event_index", &extended_event_index, "event_index/L");
+    Data3->Branch("cut_mask", &extended_cut_mask, "cut_mask/l");
+    Data3->Branch("passes_legacy_full_selection", &passes_legacy_full_selection,
+                  "passes_legacy_full_selection/O");
+  }
+
   double pass_8b = 0.0;
   double pass_ptb = 0.0;
   double pass_drbb = 0.0;
@@ -276,6 +313,10 @@ int main(int argc, char* argv[]) {
   double preselection_eventcount = 0.0;
   double total_event_in = 0.0;
   double total_weight_in = 0.0;
+  double feature_tree_eventcount = 0.0;
+  double feature_tree_weight_out = 0.0;
+  long long undefined_helicity_count = 0;
+  long long sanitized_extended_feature_count = 0;
 
   TopHist h_dummy(10, output_top, "dummy histo", 0, 1);
   TopHist h_pT_b(60, output_top, "pT of selected b jets", 0, 300);
@@ -305,6 +346,22 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   std::cout << "Generated " << pairings.size() << " unique 8b pairings" << std::endl;
+
+  std::vector<extended91::CanonicalPairing> extended_pairings;
+  if (write_extended_v2) {
+    extended_pairings = extended91::makeCanonicalPairings();
+    if (extended_pairings.size() != static_cast<std::size_t>(extended91::kPairingCount)) {
+      std::cerr << "Error: Expected " << extended91::kPairingCount
+                << " canonical v2 pairings, generated " << extended_pairings.size() << std::endl;
+      return 1;
+    }
+    if (extendedFeatureNames().size() != static_cast<std::size_t>(extended91::kFeatureCount) ||
+        extendedFeatureUnits().size() != static_cast<std::size_t>(extended91::kFeatureCount)) {
+      std::cerr << "Error: extended-91-v2 feature metadata does not contain exactly "
+                << extended91::kFeatureCount << " entries" << std::endl;
+      return 1;
+    }
+  }
 
   for (int ii = minevents; ii < maxevents; ++ii) {
     if (!basic && passed_previous.find(ii) == passed_previous.end()) {
@@ -417,7 +474,8 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < kSelectedBJets; ++i) {
       bjet_pts[i] = bjets[i].perp();
     }
-    if (passed_all_cuts && allAbove(bjet_pts, kSelectedBJetPtCuts)) {
+    const bool pass_bjet_pt_requirement = allAbove(bjet_pts, kSelectedBJetPtCuts);
+    if (passed_all_cuts && pass_bjet_pt_requirement) {
       pass_ptb += evweight;
       preselection_eventcount += 1.0;
     } else {
@@ -431,13 +489,15 @@ int main(int argc, char* argv[]) {
     const std::array<double, kHiggsPairCount> dr_hh = higgsDeltaR(higgses);
     const std::array<double, kHiggsCount> dr_bb = bbDeltaR(bjets, reco.pairing);
 
-    if (passed_all_cuts && reco.chi8 < kMaxChi8) {
+    const bool pass_chi8_requirement = reco.chi8 < kMaxChi8;
+    if (passed_all_cuts && pass_chi8_requirement) {
       pass_chi8 += evweight;
     } else {
       passed_all_cuts = false;
     }
 
-    if (passed_all_cuts && allBelow(delta_m, kDeltaMCuts)) {
+    const bool pass_delta_m_requirement = allBelow(delta_m, kDeltaMCuts);
+    if (passed_all_cuts && pass_delta_m_requirement) {
       pass_DeltaM += evweight;
     } else {
       passed_all_cuts = false;
@@ -447,19 +507,22 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < kHiggsCount; ++i) {
       higgs_pts[i] = higgses[i].perp();
     }
-    if (passed_all_cuts && allAbove(higgs_pts, kHiggsPtCuts)) {
+    const bool pass_higgs_pt_requirement = allAbove(higgs_pts, kHiggsPtCuts);
+    if (passed_all_cuts && pass_higgs_pt_requirement) {
       pass_pthiggses += evweight;
     } else {
       passed_all_cuts = false;
     }
 
-    if (passed_all_cuts && allBelow(dr_bb, kMaxDeltaRBBInHiggs)) {
+    const bool pass_higgs_drbb_requirement = allBelow(dr_bb, kMaxDeltaRBBInHiggs);
+    if (passed_all_cuts && pass_higgs_drbb_requirement) {
       pass_dRbbhiggses += evweight;
     } else {
       passed_all_cuts = false;
     }
 
-    if (passed_all_cuts && allBelow(dr_hh, kMaxDeltaRHiggses)) {
+    const bool pass_higgs_dr_requirement = allBelow(dr_hh, kMaxDeltaRHiggses);
+    if (passed_all_cuts && pass_higgs_dr_requirement) {
       pass_dRhiggses += evweight;
     } else {
       passed_all_cuts = false;
@@ -495,6 +558,44 @@ int main(int argc, char* argv[]) {
     weight = evweight;
     Data2.Fill();
 
+    if (write_extended_v2) {
+      feature_tree_eventcount += 1.0;
+      feature_tree_weight_out += evweight;
+      const ExtendedReconstruction extended_reconstruction =
+          extended91::reconstruct(bjets, extended_pairings, kHiggsMassTargets, kMaxChi8);
+      fillExtendedFeatures(extended_reconstruction, extended_features,
+                           undefined_helicity_count, sanitized_extended_feature_count);
+      extended_weight = evweight;
+      extended_event_index = static_cast<Long64_t>(ii);
+      extended_cut_mask = 1ULL << 0;
+      if (pass_min_drbb) {
+        extended_cut_mask |= 1ULL << 1;
+      }
+      if (pass_bjet_pt_requirement) {
+        extended_cut_mask |= 1ULL << 2;
+      }
+      if (pass_chi8_requirement) {
+        extended_cut_mask |= 1ULL << 3;
+      }
+      if (pass_delta_m_requirement) {
+        extended_cut_mask |= 1ULL << 4;
+      }
+      if (pass_higgs_pt_requirement) {
+        extended_cut_mask |= 1ULL << 5;
+      }
+      if (pass_higgs_drbb_requirement) {
+        extended_cut_mask |= 1ULL << 6;
+      }
+      if (pass_higgs_dr_requirement) {
+        extended_cut_mask |= 1ULL << 7;
+      }
+      if (passed_all_cuts) {
+        extended_cut_mask |= 1ULL << 8;
+      }
+      passes_legacy_full_selection = passed_all_cuts;
+      Data3->Fill();
+    }
+
     for (int i = 0; i < kSelectedBJets; ++i) {
       h_pT_b.thfill(bjets[i].perp(), evweight);
       h_pT_b_rank[i].thfill(bjets[i].perp(), evweight);
@@ -513,6 +614,28 @@ int main(int argc, char* argv[]) {
 
   dat2.cd();
   Data2.Write();
+  if (write_extended_v2) {
+    Data3->Write();
+    TNamed observable_schema("Data3_observable_schema", "extended-91-v2");
+    observable_schema.Write();
+    TNamed feature_names("Data3_feature_names_json",
+                         jsonStringArray(extendedFeatureNames()).c_str());
+    feature_names.Write();
+    TNamed feature_units("Data3_feature_units_json",
+                         jsonStringArray(extendedFeatureUnits()).c_str());
+    feature_units.Write();
+    TNamed cut_mask_definition(
+        "Data3_cut_mask_json",
+        "{\"0\":\"eight_candidate_population\",\"1\":\"min_dr_bb\","
+        "\"2\":\"bjet_pt\",\"3\":\"legacy_chi8\",\"4\":\"legacy_delta_m\","
+        "\"5\":\"legacy_higgs_pt\",\"6\":\"legacy_higgs_drbb\","
+        "\"7\":\"legacy_higgs_drhh\",\"8\":\"legacy_full_selection\"}");
+    cut_mask_definition.Write();
+    TParameter<int> feature_count("Data3_feature_count", extended91::kFeatureCount);
+    feature_count.Write();
+    TParameter<int> pairing_count("Data3_pairing_count", extended91::kPairingCount);
+    pairing_count.Write();
+  }
   dat2.Close();
   std::cout << "A root tree has been written to the file: " << fnameroot << std::endl;
 
@@ -535,6 +658,8 @@ int main(int argc, char* argv[]) {
 
   const double efficiency = total_weight_in != 0.0 ? passcuts / total_weight_in : 0.0;
   const double preselection_efficiency = total_weight_in != 0.0 ? pass_ptb / total_weight_in : 0.0;
+  const double feature_tree_efficiency =
+      total_weight_in != 0.0 ? feature_tree_weight_out / total_weight_in : 0.0;
   std::cout << "------------------" << std::endl;
   std::cout << "total weight in =\t\t\t\t\t\t" << total_weight_in << std::endl;
   std::cout << "total MC events in =\t\t\t\t\t\t" << total_event_in << std::endl;
@@ -553,6 +678,14 @@ int main(int argc, char* argv[]) {
   std::cout << "preselection weight out =\t\t\t\t\t" << pass_ptb << std::endl;
   std::cout << "preselection efficiency =\t\t\t\t\t" << preselection_efficiency << std::endl;
   std::cout << "------------------" << std::endl;
+  if (write_extended_v2) {
+    std::cout << "feature-tree MC events = \t\t\t\t\t" << feature_tree_eventcount << std::endl;
+    std::cout << "feature-tree weight out =\t\t\t\t\t" << feature_tree_weight_out << std::endl;
+    std::cout << "feature-tree efficiency =\t\t\t\t\t" << feature_tree_efficiency << std::endl;
+    std::cout << "undefined helicity axes =\t\t\t\t\t" << undefined_helicity_count << std::endl;
+    std::cout << "sanitized non-finite v2 features =\t\t\t\t" << sanitized_extended_feature_count << std::endl;
+    std::cout << "------------------" << std::endl;
+  }
   std::cout << "total weight out =\t\t\t\t\t\t" << passcuts << std::endl;
   std::cout << "actual MC events = \t\t\t\t\t\t" << eventcount << std::endl;
   std::cout << "efficiency =\t\t\t\t\t\t\t" << efficiency << std::endl;
@@ -563,6 +696,9 @@ int main(int argc, char* argv[]) {
   if (outsummary) {
     outsummary << "{\n";
     outsummary << "  \"input_file\": \"" << infile << "\",\n";
+    if (write_extended_v2) {
+      outsummary << "  \"observable_schema\": \"extended-91-v2\",\n";
+    }
     outsummary << "  \"c_mistags\": " << c_mistags << ",\n";
     outsummary << "  \"light_mistags\": " << light_mistags << ",\n";
     outsummary << "  \"required_true_bjets\": " << required_true_bjets << ",\n";
@@ -574,6 +710,14 @@ int main(int argc, char* argv[]) {
     outsummary << "  \"preselection_mc_events_out\": " << preselection_eventcount << ",\n";
     outsummary << "  \"preselection_weight_out\": " << pass_ptb << ",\n";
     outsummary << "  \"preselection_efficiency\": " << preselection_efficiency << ",\n";
+    if (write_extended_v2) {
+      outsummary << "  \"feature_tree_mc_events_out\": " << feature_tree_eventcount << ",\n";
+      outsummary << "  \"feature_tree_weight_out\": " << feature_tree_weight_out << ",\n";
+      outsummary << "  \"feature_tree_efficiency\": " << feature_tree_efficiency << ",\n";
+      outsummary << "  \"undefined_helicity_axis_count\": " << undefined_helicity_count << ",\n";
+      outsummary << "  \"sanitized_extended_feature_count\": "
+                 << sanitized_extended_feature_count << ",\n";
+    }
     outsummary << "  \"analysis_mc_events_out\": " << eventcount << ",\n";
     outsummary << "  \"analysis_weight_out\": " << passcuts << ",\n";
     outsummary << "  \"analysis_efficiency\": " << efficiency << "\n";
@@ -778,6 +922,224 @@ std::array<double, kHiggsCount> bbDeltaR(const std::vector<PseudoJet>& bjets, co
     result[h] = deltaR(bjets[pairing[2 * h]], bjets[pairing[2 * h + 1]]);
   }
   return result;
+}
+
+double absoluteHelicityCosine(const PseudoJet& constituent,
+                              const PseudoJet& higgs,
+                              const PseudoJet& four_higgs,
+                              bool& defined) {
+  const extended91::CartesianFourVector constituent_momentum = {
+      constituent.px(), constituent.py(), constituent.pz(), constituent.e()};
+  const extended91::CartesianFourVector higgs_momentum = {
+      higgs.px(), higgs.py(), higgs.pz(), higgs.e()};
+  const extended91::CartesianFourVector four_higgs_momentum = {
+      four_higgs.px(), four_higgs.py(), four_higgs.pz(), four_higgs.e()};
+  return extended91::absoluteHelicityCosine(
+      constituent_momentum, higgs_momentum, four_higgs_momentum, defined);
+}
+
+void fillExtendedFeatures(const ExtendedReconstruction& reconstruction,
+                          double* features,
+                          long long& undefined_helicity_count,
+                          long long& sanitized_feature_count) {
+  std::fill(features, features + extended91::kFeatureCount, 0.0);
+  const std::array<PseudoJet, kSelectedBJets>& bjets = reconstruction.canonical_jets;
+
+  PseudoJet four_higgs = reconstruction.higgses[0];
+  for (int h = 1; h < kHiggsCount; ++h) {
+    four_higgs += reconstruction.higgses[h];
+  }
+
+  double ht_8b = 0.0;
+  std::vector<std::pair<double, double> > transverse_momenta;
+  std::vector<std::pair<double, double> > pt_and_energy;
+  transverse_momenta.reserve(kSelectedBJets);
+  pt_and_energy.reserve(kSelectedBJets);
+  for (int jet_index = 0; jet_index < kSelectedBJets; ++jet_index) {
+    features[jet_index] = bjets[jet_index].perp();
+    ht_8b += bjets[jet_index].perp();
+    transverse_momenta.push_back(std::make_pair(bjets[jet_index].px(), bjets[jet_index].py()));
+    pt_and_energy.push_back(std::make_pair(bjets[jet_index].perp(), bjets[jet_index].e()));
+  }
+  features[8] = std::accumulate(bjets.begin() + 1, bjets.end(), bjets[0]).m();
+  features[9] = reconstruction.chi8;
+
+  std::array<double, kHiggsCount> sorted_delta_m = reconstruction.delta_m;
+  std::sort(sorted_delta_m.begin(), sorted_delta_m.end());
+  for (int h = 0; h < kHiggsCount; ++h) {
+    features[10 + h] = sorted_delta_m[h];
+    features[14 + h] = reconstruction.higgses[h].perp();
+  }
+
+  int hh_pair_index = 0;
+  for (int first = 0; first < kHiggsCount; ++first) {
+    for (int second = first + 1; second < kHiggsCount; ++second) {
+      features[18 + hh_pair_index] =
+          deltaR(reconstruction.higgses[first], reconstruction.higgses[second]);
+      ++hh_pair_index;
+    }
+  }
+
+  std::array<double, kHiggsCount> candidate_masses = {};
+  for (int h = 0; h < kHiggsCount; ++h) {
+    const extended91::ConstituentPair& pair = reconstruction.pairing[h];
+    features[24 + h] = deltaR(bjets[pair[0]], bjets[pair[1]]);
+    candidate_masses[h] = reconstruction.higgses[h].m();
+    features[28 + h] = candidate_masses[h];
+  }
+  features[32] = reconstruction.chi8_second;
+  features[33] = reconstruction.chi8_second - reconstruction.chi8;
+  features[34] = static_cast<double>(reconstruction.n_pairings_chi8_lt60);
+
+  hh_pair_index = 0;
+  for (int first = 0; first < kHiggsCount; ++first) {
+    for (int second = first + 1; second < kHiggsCount; ++second) {
+      const std::array<int, 2> indices = {{first, second}};
+      features[35 + hh_pair_index] =
+          extended91::subsystemMass(reconstruction.higgses, indices);
+      ++hh_pair_index;
+    }
+  }
+
+  const std::array<std::array<int, 3>, 4> triple_indices = {{
+      {{0, 1, 2}}, {{0, 1, 3}}, {{0, 2, 3}}, {{1, 2, 3}},
+  }};
+  for (int triple = 0; triple < kHiggsCount; ++triple) {
+    const std::array<int, 3>& indices = triple_indices[triple];
+    features[41 + triple] = extended91::subsystemMass(reconstruction.higgses, indices);
+  }
+
+  for (int h = 0; h < kHiggsCount; ++h) {
+    const extended91::ConstituentPair& pair = reconstruction.pairing[h];
+    const double first_pt = bjets[pair[0]].perp();
+    const double second_pt = bjets[pair[1]].perp();
+    features[45 + h] = extended91::momentumBalanceFraction(first_pt, second_pt);
+  }
+  features[49] = extended91::boundedRatio(four_higgs.perp(), four_higgs.m());
+  features[50] = std::fabs(four_higgs.rap());
+  features[51] = ht_8b;
+
+  const std::array<double, 3> mass_summary = extended91::massSummary(candidate_masses, 125.0);
+  features[52] = mass_summary[0];
+  features[53] = mass_summary[1];
+  features[54] = mass_summary[2];
+
+  for (int h = 0; h < kHiggsCount; ++h) {
+    const extended91::ConstituentPair& pair = reconstruction.pairing[h];
+    bool helicity_is_defined = false;
+    features[55 + h] = absoluteHelicityCosine(
+        bjets[pair[0]], reconstruction.higgses[h], four_higgs, helicity_is_defined);
+    if (!helicity_is_defined) {
+      ++undefined_helicity_count;
+    }
+    features[59 + h] = std::fabs(bjets[pair[0]].eta() - bjets[pair[1]].eta());
+    features[63 + h] =
+        extended91::absoluteDeltaPhi(bjets[pair[0]].phi(), bjets[pair[1]].phi());
+  }
+
+  std::vector<double> all_pair_delta_r;
+  std::vector<double> all_pair_masses;
+  all_pair_delta_r.reserve(28);
+  all_pair_masses.reserve(28);
+  for (int first = 0; first < kSelectedBJets; ++first) {
+    for (int second = first + 1; second < kSelectedBJets; ++second) {
+      all_pair_delta_r.push_back(deltaR(bjets[first], bjets[second]));
+      all_pair_masses.push_back((bjets[first] + bjets[second]).m());
+    }
+  }
+  std::sort(all_pair_delta_r.begin(), all_pair_delta_r.end());
+  std::sort(all_pair_masses.begin(), all_pair_masses.end());
+  for (int rank = 0; rank < 4; ++rank) {
+    features[67 + rank] = all_pair_delta_r[rank];
+    features[71 + rank] = all_pair_masses[rank];
+  }
+
+  double minimum_higgs_rapidity = reconstruction.higgses[0].rap();
+  double maximum_higgs_rapidity = reconstruction.higgses[0].rap();
+  for (int h = 1; h < kHiggsCount; ++h) {
+    minimum_higgs_rapidity = std::min(minimum_higgs_rapidity, reconstruction.higgses[h].rap());
+    maximum_higgs_rapidity = std::max(maximum_higgs_rapidity, reconstruction.higgses[h].rap());
+  }
+  features[75] = maximum_higgs_rapidity - minimum_higgs_rapidity;
+
+  hh_pair_index = 0;
+  for (int first = 0; first < kHiggsCount; ++first) {
+    for (int second = first + 1; second < kHiggsCount; ++second) {
+      features[76 + hh_pair_index] =
+          std::fabs(reconstruction.higgses[first].rap() - reconstruction.higgses[second].rap());
+      features[82 + hh_pair_index] = extended91::absoluteDeltaPhi(
+          reconstruction.higgses[first].phi(), reconstruction.higgses[second].phi());
+      ++hh_pair_index;
+    }
+  }
+
+  features[88] = extended91::centrality(pt_and_energy);
+  features[89] = extended91::transverseSphericity(transverse_momenta);
+  features[90] = extended91::minimumMassDistance(all_pair_masses, kZBosonMass);
+
+  for (int feature_index = 0; feature_index < extended91::kFeatureCount; ++feature_index) {
+    if (!std::isfinite(features[feature_index])) {
+      features[feature_index] = 0.0;
+      ++sanitized_feature_count;
+    }
+  }
+}
+
+const std::vector<std::string>& extendedFeatureNames() {
+  static const std::vector<std::string> names = {
+      "bjet1_pt", "bjet2_pt", "bjet3_pt", "bjet4_pt", "bjet5_pt", "bjet6_pt",
+      "bjet7_pt", "bjet8_pt", "m8b", "chi8", "delta_m_min", "delta_m_med1",
+      "delta_m_med2", "delta_m_max", "higgs1_pt", "higgs2_pt", "higgs3_pt",
+      "higgs4_pt", "dr_hh_12", "dr_hh_13", "dr_hh_14", "dr_hh_23", "dr_hh_24",
+      "dr_hh_34", "dr_bb_h1", "dr_bb_h2", "dr_bb_h3", "dr_bb_h4", "m_bb_h1",
+      "m_bb_h2", "m_bb_h3", "m_bb_h4", "chi8_second", "delta_chi8",
+      "n_pairings_chi8_lt60", "m_hh_12", "m_hh_13", "m_hh_14", "m_hh_23",
+      "m_hh_24", "m_hh_34", "m_hhh_123", "m_hhh_124", "m_hhh_134", "m_hhh_234",
+      "z_bb_h1", "z_bb_h2", "z_bb_h3", "z_bb_h4", "pt_4h_over_m_4h", "abs_y_4h",
+      "ht_8b", "mean_m_bb", "std_m_bb", "max_abs_m_bb_minus_125",
+      "abs_cos_theta_star_h1", "abs_cos_theta_star_h2", "abs_cos_theta_star_h3",
+      "abs_cos_theta_star_h4", "abs_deta_bb_h1", "abs_deta_bb_h2", "abs_deta_bb_h3",
+      "abs_deta_bb_h4", "abs_dphi_bb_h1", "abs_dphi_bb_h2", "abs_dphi_bb_h3",
+      "abs_dphi_bb_h4", "min_dr_bpair_1", "min_dr_bpair_2", "min_dr_bpair_3",
+      "min_dr_bpair_4", "min_m_bpair_1", "min_m_bpair_2", "min_m_bpair_3",
+      "min_m_bpair_4", "higgs_rapidity_span", "abs_dy_hh_12", "abs_dy_hh_13",
+      "abs_dy_hh_14", "abs_dy_hh_23", "abs_dy_hh_24", "abs_dy_hh_34",
+      "abs_dphi_hh_12", "abs_dphi_hh_13", "abs_dphi_hh_14", "abs_dphi_hh_23",
+      "abs_dphi_hh_24", "abs_dphi_hh_34", "centrality", "transverse_sphericity", "zness",
+  };
+  return names;
+}
+
+const std::vector<std::string>& extendedFeatureUnits() {
+  static const std::vector<std::string> units = {
+      "GeV", "GeV", "GeV", "GeV", "GeV", "GeV", "GeV", "GeV", "GeV", "GeV",
+      "GeV", "GeV", "GeV", "GeV", "GeV", "GeV", "GeV", "GeV",
+      "dimensionless", "dimensionless", "dimensionless", "dimensionless", "dimensionless",
+      "dimensionless", "dimensionless", "dimensionless", "dimensionless", "dimensionless",
+      "GeV", "GeV", "GeV", "GeV", "GeV", "GeV", "count", "GeV", "GeV", "GeV",
+      "GeV", "GeV", "GeV", "GeV", "GeV", "GeV", "GeV", "dimensionless",
+      "dimensionless", "dimensionless", "dimensionless", "dimensionless", "dimensionless",
+      "GeV", "GeV", "GeV", "GeV", "dimensionless", "dimensionless", "dimensionless",
+      "dimensionless", "dimensionless", "dimensionless", "dimensionless", "dimensionless",
+      "rad", "rad", "rad", "rad", "dimensionless", "dimensionless", "dimensionless",
+      "dimensionless", "GeV", "GeV", "GeV", "GeV", "dimensionless", "dimensionless",
+      "dimensionless", "dimensionless", "dimensionless", "dimensionless", "dimensionless",
+      "rad", "rad", "rad", "rad", "rad", "rad", "dimensionless", "dimensionless", "GeV",
+  };
+  return units;
+}
+
+std::string jsonStringArray(const std::vector<std::string>& values) {
+  std::ostringstream output;
+  output << "[";
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    if (index != 0) {
+      output << ",";
+    }
+    output << "\"" << values[index] << "\"";
+  }
+  output << "]";
+  return output.str();
 }
 
 }  // namespace

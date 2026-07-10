@@ -25,6 +25,7 @@ from tqdm.auto import tqdm
 
 # functions to load root varfiles from HwSim
 from read_root_varfiles import *
+from observable_schemas import LEGACY_SCHEMA_ID, validate_model_contract
 from sample_report import (
     attach_poisson_event_interval,
     background_variation_scale_factors,
@@ -193,9 +194,10 @@ def save_model(model, filename):
     #    pickle.dump(model,f)
 
 # load the model:
-def load_model(filename):
+def load_model(filename, observable_set=LEGACY_SCHEMA_ID, feature_profile="corrected28"):
     model = xgb.XGBClassifier()
     model.load_model(filename)
+    validate_model_contract(model, observable_set, feature_profile)
     #with open(filename, 'rb') as f:
     #    model = pickle.load(f)
     return model
