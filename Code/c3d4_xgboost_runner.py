@@ -31,7 +31,9 @@ from c3d4_xgboost_study import (
     enumerate_score_binnings,
     exact_cls_signal_upper_limit,
     limit_objective,
+    make_background_parameter_replicas,
     optimize_point_threshold,
+    parameterize_features,
     parameterized_gate,
     pyhf_combined_limit,
     pyhf_one_bin_limit,
@@ -43,6 +45,7 @@ from c3d4_xgboost_study import (
 from observable_schemas import (
     EXTENDED_SCHEMA_ID,
     LEGACY_SCHEMA_ID,
+    PARAMETERIZED_ML_FEATURES,
     attach_model_metadata,
     canonical_sample_id,
     get_feature_contract,
@@ -271,17 +274,41 @@ def _training_arrays(
         total = float(np.sum(raw))
         if total <= 0.0:
             raise ValueError(f"{sample.sample_id}: zero absolute signal training weight")
-        signal_features.append(sample.features[mask][:, profile_indices])
+        features = sample.features[mask][:, profile_indices]
+        if strategy == "parameterized-crossfit-v1":
+            if sample.c3 is None or sample.d4 is None:
+                raise ValueError("parameterized signal training requires c3,d4 coordinates")
+            features = parameterize_features(features, sample.c3, sample.d4)
+        signal_features.append(features)
         signal_weights.append(raw / total / point_count)
 
     background_features = []
     background_weights = []
+    grid_points = np.asarray(
+        [(sample.c3, sample.d4) for sample in grid_samples], dtype=float
+    )
     for sample in background_samples:
         mask = _fold_mask(sample, rotation, "train", n_folds)
-        background_features.append(sample.features[mask][:, profile_indices])
         # Absolute weights are required by XGBoost.  Their physical factors
         # retain the relative process mixture within the background class.
-        background_weights.append(np.abs(sample.physical_weights[mask]))
+        weights = np.abs(sample.physical_weights[mask])
+        features = sample.features[mask][:, profile_indices]
+        if strategy == "parameterized-crossfit-v1":
+            replicas = make_background_parameter_replicas(
+                features,
+                weights,
+                sample.folds[mask],
+                np.full(np.sum(mask), sample.sample_id, dtype=object),
+                sample.event_indices[mask],
+                grid_points,
+                replicas_per_event=3,
+                seed=BASE_SEED,
+            )
+            background_features.append(replicas["features"])
+            background_weights.append(replicas["training_weights"])
+        else:
+            background_features.append(features)
+            background_weights.append(weights)
 
     signal_X = np.concatenate(signal_features, axis=0)
     background_X = np.concatenate(background_features, axis=0)
@@ -318,11 +345,20 @@ def _train_model(
     model = xgb.XGBClassifier(**model_params)
     model.fit(X, y, sample_weight=weights, verbose=False)
     contract = get_feature_contract(observable_set, profile)
-    model.get_booster().feature_names = list(contract.feature_names)
+    ml_parameters = (
+        PARAMETERIZED_ML_FEATURES
+        if strategy == "parameterized-crossfit-v1"
+        else None
+    )
+    model_feature_names = list(contract.feature_names)
+    if ml_parameters:
+        model_feature_names.extend(name for name, _ in ml_parameters)
+    model.get_booster().feature_names = model_feature_names
     metadata = attach_model_metadata(
         model,
         observable_set=observable_set,
         feature_profile=profile,
+        ml_parameter_features=ml_parameters,
         training_strategy=strategy,
         method_version=METHOD_VERSION,
         fold=int(rotation),
@@ -330,27 +366,42 @@ def _train_model(
         seed=int(seed),
         source_commit=source_commit,
     )
-    validate_model_contract(model, observable_set, profile)
+    validate_model_contract(
+        model,
+        observable_set,
+        profile,
+        ml_parameter_features=ml_parameters,
+    )
     return model, metadata, model_params
 
 
-def _predict(model: Any, sample: EventSample, mask: np.ndarray, profile_indices: np.ndarray) -> np.ndarray:
+def _predict(
+    model: Any,
+    sample: EventSample,
+    mask: np.ndarray,
+    profile_indices: np.ndarray,
+    parameter_point: tuple[float, float] | None = None,
+) -> np.ndarray:
     if not np.any(mask):
         return np.asarray([], dtype=float)
-    return np.asarray(model.predict_proba(sample.features[mask][:, profile_indices])[:, 1], dtype=float)
+    features = sample.features[mask][:, profile_indices]
+    if parameter_point is not None:
+        features = parameterize_features(features, parameter_point[0], parameter_point[1])
+    return np.asarray(model.predict_proba(features)[:, 1], dtype=float)
 
 
-def _partition_scale(weights: np.ndarray, mask: np.ndarray) -> float:
-    full = float(np.sum(weights))
-    part = float(np.sum(weights[mask]))
-    if part == 0.0:
-        if full == 0.0:
-            return 1.0
-        raise ValueError("A validation partition has zero signed yield for a non-zero source")
-    scale = full / part
-    if not math.isfinite(scale) or scale <= 0.0:
-        raise ValueError(f"Invalid validation source scale {scale}")
-    return scale
+def _partition_scale(n_folds: int) -> float:
+    """Return the predeclared validation-to-full-luminosity scale.
+
+    Round-robin assignment makes every validation fold an unbiased one-in-K
+    subsample.  Using K is independent of all held-out test-fold weights,
+    unlike closing a validation source to its subsequently observed full sum.
+    """
+
+    n_folds = int(n_folds)
+    if n_folds < 2:
+        raise ValueError("n_folds must be at least two")
+    return float(n_folds)
 
 
 def _score_partition(
@@ -362,15 +413,30 @@ def _score_partition(
     n_folds: int,
     profile_indices: np.ndarray,
     scale_validation_to_full: bool,
+    parameterized: bool = False,
+    parameter_point: tuple[float, float] | None = None,
 ) -> dict[str, dict[str, Any]]:
     output: dict[str, dict[str, Any]] = {}
     for sample in samples:
         mask = _fold_mask(sample, rotation, split, n_folds)
-        scale = _partition_scale(sample.physical_weights, mask) if scale_validation_to_full else 1.0
+        scale = _partition_scale(n_folds) if scale_validation_to_full else 1.0
+        scoring_point = parameter_point
+        if parameterized and scoring_point is None:
+            if sample.c3 is None or sample.d4 is None:
+                raise ValueError(
+                    "parameterized scoring requires either a point or signal coordinates"
+                )
+            scoring_point = (float(sample.c3), float(sample.d4))
         output[sample.sample_id] = {
             "sample": sample,
             "mask": mask,
-            "scores": _predict(model, sample, mask, profile_indices),
+            "scores": _predict(
+                model,
+                sample,
+                mask,
+                profile_indices,
+                scoring_point if parameterized else None,
+            ),
             "physical_weights": sample.physical_weights[mask] * scale,
             "unit_xsec_weights": sample.unit_xsec_weights[mask] * scale,
             "raw_weights": sample.raw_weights[mask],
@@ -401,6 +467,7 @@ def _validation_limits(
     profile_indices: np.ndarray,
     min_background_raw: int = 25,
     min_background_neff: float = 10.0,
+    parameterized: bool = False,
 ) -> dict[str, Any]:
     signal_rows = _score_partition(
         model,
@@ -410,29 +477,56 @@ def _validation_limits(
         n_folds=n_folds,
         profile_indices=profile_indices,
         scale_validation_to_full=True,
+        parameterized=parameterized,
     )
-    background_rows = _score_partition(
-        model,
-        background_samples,
-        rotation=rotation,
-        split="validation",
-        n_folds=n_folds,
-        profile_indices=profile_indices,
-        scale_validation_to_full=True,
-    )
-    background_scores = _concatenate_partition(background_rows, "scores")
-    background_weights = _concatenate_partition(background_rows, "physical_weights")
     thresholds = np.linspace(0.0, 1.0, 1001)
-    reusable_background_scan = background_threshold_scan(
-        background_scores,
-        background_weights,
-        thresholds=thresholds,
-    )
+    background_rows = None
+    reusable_background_scan = None
+    if not parameterized:
+        background_rows = _score_partition(
+            model,
+            background_samples,
+            rotation=rotation,
+            split="validation",
+            n_folds=n_folds,
+            profile_indices=profile_indices,
+            scale_validation_to_full=True,
+        )
+        background_scores = _concatenate_partition(background_rows, "scores")
+        background_weights = _concatenate_partition(background_rows, "physical_weights")
+        reusable_background_scan = background_threshold_scan(
+            background_scores,
+            background_weights,
+            thresholds=thresholds,
+        )
 
     point_results: dict[str, dict[str, Any]] = {}
     sigma_values = []
     for sample in grid_samples:
         row = signal_rows[sample.sample_id]
+        if parameterized:
+            point_background_rows = _score_partition(
+                model,
+                background_samples,
+                rotation=rotation,
+                split="validation",
+                n_folds=n_folds,
+                profile_indices=profile_indices,
+                scale_validation_to_full=True,
+                parameterized=True,
+                parameter_point=(float(sample.c3), float(sample.d4)),
+            )
+            background_scores = _concatenate_partition(point_background_rows, "scores")
+            background_weights = _concatenate_partition(
+                point_background_rows, "physical_weights"
+            )
+            point_background_scan = background_threshold_scan(
+                background_scores,
+                background_weights,
+                thresholds=thresholds,
+            )
+        else:
+            point_background_scan = reusable_background_scan
         try:
             optimum = optimize_point_threshold(
                 row["scores"],
@@ -443,7 +537,7 @@ def _validation_limits(
                 thresholds=thresholds,
                 min_background_raw=min_background_raw,
                 min_background_neff=min_background_neff,
-                background_scan=reusable_background_scan,
+                background_scan=point_background_scan,
             )
         except NoValidThresholdError as exc:
             raise NoValidThresholdError(
@@ -465,7 +559,8 @@ def _validation_limits(
         "objective": limit_objective(sigma_values),
         "points": point_results,
         "signal_rows": signal_rows,
-        "background_rows": background_rows,
+        "background_rows": background_rows or {},
+        "parameterized": bool(parameterized),
     }
 
 
@@ -512,6 +607,7 @@ def _fit_rotation(
         rotation=rotation,
         n_folds=n_folds,
         profile_indices=indices,
+        parameterized=strategy == "parameterized-crossfit-v1",
     )
     validation["n_train"] = int(X.shape[0])
     return model, validation, model_metadata, model_params
@@ -637,6 +733,7 @@ def _evaluate_test_rotation(
     rotation: int,
     n_folds: int,
     profile_indices: np.ndarray,
+    parameterized: bool = False,
 ) -> dict[str, Any]:
     signal_rows = _score_partition(
         model,
@@ -646,20 +743,39 @@ def _evaluate_test_rotation(
         n_folds=n_folds,
         profile_indices=profile_indices,
         scale_validation_to_full=False,
+        parameterized=parameterized,
     )
-    background_rows = _score_partition(
-        model,
-        background_samples,
-        rotation=rotation,
-        split="test",
-        n_folds=n_folds,
-        profile_indices=profile_indices,
-        scale_validation_to_full=False,
-    )
-    background_scores = _concatenate_partition(background_rows, "scores")
-    background_weights = _concatenate_partition(background_rows, "physical_weights")
+    background_rows = None
+    if not parameterized:
+        background_rows = _score_partition(
+            model,
+            background_samples,
+            rotation=rotation,
+            split="test",
+            n_folds=n_folds,
+            profile_indices=profile_indices,
+            scale_validation_to_full=False,
+        )
+        background_scores = _concatenate_partition(background_rows, "scores")
+        background_weights = _concatenate_partition(background_rows, "physical_weights")
     point_rows = {}
     for sample in grid_samples:
+        if parameterized:
+            point_background_rows = _score_partition(
+                model,
+                background_samples,
+                rotation=rotation,
+                split="test",
+                n_folds=n_folds,
+                profile_indices=profile_indices,
+                scale_validation_to_full=False,
+                parameterized=True,
+                parameter_point=(float(sample.c3), float(sample.d4)),
+            )
+            background_scores = _concatenate_partition(point_background_rows, "scores")
+            background_weights = _concatenate_partition(
+                point_background_rows, "physical_weights"
+            )
         threshold = float(validation["points"][sample.point_id]["threshold"])
         signal = signal_rows[sample.sample_id]
         signal_selected = signal["scores"] >= threshold
@@ -701,7 +817,8 @@ def _evaluate_test_rotation(
         "rotation": int(rotation),
         "points": point_rows,
         "signal_rows": signal_rows,
-        "background_rows": background_rows,
+        "background_rows": background_rows or {},
+        "parameterized": bool(parameterized),
     }
 
 
@@ -788,22 +905,21 @@ def _aggregate_validation_crossfit(
     rotation_limits = []
     for rotation in rotations:
         fold_limits = []
-        background_rows = rotation["validation"]["background_rows"]
         for point_id, sample in by_point.items():
             selected = rotation["validation"]["points"][point_id]
             threshold = float(selected["threshold"])
-            signal_row = rotation["validation"]["signal_rows"][sample.sample_id]
-            signal_mask = signal_row["scores"] >= threshold
-            signal_unscaled = signal_row["unit_xsec_weights"][signal_mask] / float(signal_row["scale"])
-            background_yield = 0.0
-            for background_row in background_rows.values():
-                mask = background_row["scores"] >= threshold
-                background_yield += float(
-                    np.sum(background_row["physical_weights"][mask]) / float(background_row["scale"])
-                )
-            point_totals[point_id]["signal"] += float(np.sum(signal_unscaled))
+            arrays = _validation_fold_arrays(rotation, sample)
+            signal_mask = arrays["signal_scores"] >= threshold
+            background_mask = arrays["background_scores"] >= threshold
+            signal_yield = float(np.sum(arrays["signal_weights"][signal_mask]))
+            background_yield = float(
+                np.sum(arrays["background_weights"][background_mask])
+            )
+            point_totals[point_id]["signal"] += signal_yield
             point_totals[point_id]["background"] += background_yield
             fold_limits.append(float(selected["sigma95_fb"]))
+            if rotation["validation"].get("parameterized"):
+                rotation.get("_validation_parameter_cache", {}).pop(point_id, None)
         rotation_limits.append(fold_limits)
 
     rows = []
@@ -969,6 +1085,7 @@ def _run_fingerprint(
     fold_digest: str,
     normalization_inputs: Mapping[str, Any],
     input_hashes: Mapping[str, str],
+    package_versions: Mapping[str, Any],
 ) -> str:
     payload = {
         "method_version": METHOD_VERSION,
@@ -982,6 +1099,7 @@ def _run_fingerprint(
         "fold_assignment_sha256": fold_digest,
         "normalization_inputs": normalization_inputs,
         "input_hashes": dict(sorted(input_hashes.items())),
+        "package_versions": dict(sorted(package_versions.items())),
         "search_space": {
             "n_estimators": [200, 800, 100],
             "max_depth": [2, 6],
@@ -1170,7 +1288,7 @@ def _compact_validation(validation: Mapping[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in validation.items()
-        if key not in {"signal_rows", "background_rows"}
+        if key not in {"signal_rows", "background_rows", "background_rows_by_point"}
     }
 
 
@@ -1198,9 +1316,27 @@ def _validation_fold_arrays(
 ) -> dict[str, np.ndarray]:
     validation = record["validation"]
     signal = validation["signal_rows"][sample.sample_id]
+    if validation.get("parameterized"):
+        cache = record.setdefault("_validation_parameter_cache", {})
+        if sample.point_id not in cache:
+            rows = _score_partition(
+                record["_model_object"],
+                record["_background_samples"],
+                rotation=int(record["rotation"]),
+                split="validation",
+                n_folds=int(record["_n_folds"]),
+                profile_indices=record["_profile_indices"],
+                scale_validation_to_full=True,
+                parameterized=True,
+                parameter_point=(float(sample.c3), float(sample.d4)),
+            )
+            cache[sample.point_id] = rows
+        background_rows = cache[sample.point_id]
+    else:
+        background_rows = validation["background_rows"]
     background_scores = []
     background_weights = []
-    for row in validation["background_rows"].values():
+    for row in background_rows.values():
         background_scores.append(np.asarray(row["scores"], dtype=float))
         background_weights.append(
             np.asarray(row["physical_weights"], dtype=float) / float(row["scale"])
@@ -1217,25 +1353,42 @@ def _validation_fold_arrays(
 def _test_fold_arrays(record: Mapping[str, Any], sample: EventSample) -> dict[str, np.ndarray]:
     test = record["test"]
     signal = test["signal_rows"][sample.sample_id]
+    if test.get("parameterized"):
+        cache = record.setdefault("_test_parameter_cache", {})
+        if sample.point_id not in cache:
+            cache[sample.point_id] = _score_partition(
+                record["_model_object"],
+                record["_background_samples"],
+                rotation=int(record["rotation"]),
+                split="test",
+                n_folds=int(record["_n_folds"]),
+                profile_indices=record["_profile_indices"],
+                scale_validation_to_full=False,
+                parameterized=True,
+                parameter_point=(float(sample.c3), float(sample.d4)),
+            )
+        background_rows = cache[sample.point_id]
+    else:
+        background_rows = test["background_rows"]
     return {
         "signal_scores": np.asarray(signal["scores"], dtype=float),
         "signal_weights": np.asarray(signal["unit_xsec_weights"], dtype=float),
-        "background_scores": _concatenate_partition(test["background_rows"], "scores"),
+        "background_scores": _concatenate_partition(background_rows, "scores"),
         "background_weights": _concatenate_partition(
-            test["background_rows"], "physical_weights"
+            background_rows, "physical_weights"
         ),
     }
 
 
 def _candidate_maps_for_validation(
     records: Sequence[Mapping[str, Any]],
+    sample: EventSample,
 ) -> tuple[list[dict[tuple[int, ...], Mapping[str, Any]]], list[tuple[int, ...]]]:
     maps = []
     common: set[tuple[int, ...]] | None = None
     # The background score distribution alone defines the quantile edges.
-    dummy_sample = next(iter(records[0]["validation"]["signal_rows"].values()))["sample"]
     for record in records:
-        arrays = _validation_fold_arrays(record, dummy_sample)
+        arrays = _validation_fold_arrays(record, sample)
         candidates = enumerate_score_binnings(
             arrays["background_scores"],
             arrays["background_weights"],
@@ -1426,9 +1579,56 @@ def _shape_results(
     grid_samples: Sequence[EventSample],
     records: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    candidate_maps, common_candidates = _candidate_maps_for_validation(records)
+    parameterized = any(record["validation"].get("parameterized") for record in records)
+    shared_candidates = (
+        None
+        if parameterized
+        else _candidate_maps_for_validation(records, grid_samples[0])
+    )
     rows = []
+
+    def clear_parameter_caches(point_id: str | None = None) -> None:
+        if not parameterized:
+            return
+        for record in records:
+            for cache_name in ("_validation_parameter_cache", "_test_parameter_cache"):
+                cache = record.setdefault(cache_name, {})
+                if point_id is None:
+                    cache.clear()
+                else:
+                    cache.pop(point_id, None)
+
     for sample in grid_samples:
+        clear_parameter_caches()
+        candidate_maps, common_candidates = (
+            _candidate_maps_for_validation(records, sample)
+            if parameterized
+            else shared_candidates
+        )
+        test_arrays = [_test_fold_arrays(record, sample) for record in records]
+        one_bin_signal = [float(np.sum(arrays["signal_weights"])) for arrays in test_arrays]
+        one_bin_background = [
+            float(np.sum(arrays["background_weights"])) for arrays in test_arrays
+        ]
+        one_bin_signal_sumw2 = [
+            float(np.sum(np.square(arrays["signal_weights"]))) for arrays in test_arrays
+        ]
+        one_bin_background_sumw2 = [
+            float(np.sum(np.square(arrays["background_weights"]))) for arrays in test_arrays
+        ]
+        total_signal = float(sum(one_bin_signal))
+        total_background = float(sum(one_bin_background))
+        one_bin_estimate = (
+            exact_cls_signal_upper_limit(total_background) / total_signal
+            if total_signal > 0.0 and total_background >= 0.0
+            else 100.0
+        )
+        one_bin = pyhf_one_bin_limit(
+            one_bin_signal,
+            one_bin_background,
+            include_staterror=False,
+            poi_bounds=(0.0, max(100.0, 100.0 * one_bin_estimate)),
+        )
         selection = _select_shape_candidate(
             records,
             sample,
@@ -1441,9 +1641,14 @@ def _shape_results(
             "d4": sample.d4,
             "status": selection["status"],
             "validation_binning": selection,
+            "pyhf_one_bin_control": one_bin,
+            "pyhf_one_bin_sigma95_fb": one_bin.get("expected_median"),
+            "one_bin_signal_sumw2": one_bin_signal_sumw2,
+            "one_bin_background_sumw2": one_bin_background_sumw2,
         }
         if selection["status"] != "ok":
             rows.append(base)
+            clear_parameter_caches(sample.point_id)
             continue
 
         chosen_channels = None
@@ -1451,7 +1656,8 @@ def _shape_results(
         attempts = []
         for fallback_level, candidate in enumerate(selection["fallback_hierarchy"]):
             channels = []
-            positive = True
+            positive_background = True
+            positive_signal = True
             for rotation, record in enumerate(records):
                 arrays = _test_fold_arrays(record, sample)
                 edges = candidate["fold_edges"][rotation]
@@ -1464,16 +1670,19 @@ def _shape_results(
                     edges,
                 )
                 if np.any(np.asarray(channel["background"], dtype=float) <= 0.0):
-                    positive = False
+                    positive_background = False
+                if np.any(np.asarray(channel["signal"], dtype=float) <= 0.0):
+                    positive_signal = False
                 channels.append(channel)
             attempts.append(
                 {
                     "fallback_level": fallback_level,
                     "n_bins": candidate["n_bins"],
-                    "positive_test_background": positive,
+                    "positive_test_background": positive_background,
+                    "positive_test_signal": positive_signal,
                 }
             )
-            if positive:
+            if positive_background and positive_signal:
                 chosen_channels = channels
                 chosen = candidate
                 break
@@ -1481,28 +1690,13 @@ def _shape_results(
             rows.append(
                 {
                     **base,
-                    "status": "failed_nonpositive_test_background",
+                    "status": "failed_nonpositive_test_bin",
                     "test_binning_attempts": attempts,
                 }
             )
+            clear_parameter_caches(sample.point_id)
             continue
 
-        one_bin_signal = [float(np.sum(channel["signal"])) for channel in chosen_channels]
-        one_bin_background = [float(np.sum(channel["background"])) for channel in chosen_channels]
-        one_bin_signal_sumw2 = [
-            float(np.sum(np.square(channel["signal_staterror"])))
-            for channel in chosen_channels
-        ]
-        one_bin_background_sumw2 = [
-            float(np.sum(np.square(channel["background_staterror"])))
-            for channel in chosen_channels
-        ]
-        one_bin = pyhf_one_bin_limit(
-            one_bin_signal,
-            one_bin_background,
-            include_staterror=False,
-            poi_bounds=_poi_bounds_for_channels(chosen_channels),
-        )
         poi_bounds = _poi_bounds_for_channels(chosen_channels)
         shape_no_stat = pyhf_combined_limit(
             chosen_channels, include_staterror=False, poi_bounds=poi_bounds
@@ -1558,6 +1752,7 @@ def _shape_results(
                 "one_bin_background_sumw2": one_bin_background_sumw2,
             }
         )
+        clear_parameter_caches(sample.point_id)
     rows.sort(key=lambda row: (float(row["c3"]), float(row["d4"])))
     return rows
 
@@ -1801,6 +1996,7 @@ def run_c3d4_study(
                         fold_digest=fold_digest,
                         normalization_inputs=normalization_inputs,
                         input_hashes=input_hashes,
+                        package_versions=runtime_versions,
                     ),
                 )
             else:
@@ -1948,17 +2144,189 @@ def run_c3d4_study(
         )
         _write_json(output_dir / "parameterized_classifier_gate.json", gate)
 
-    if training_strategy == "parameterized-crossfit-v1":
-        if not gate or not gate["passed"]:
-            manifest["parameterized_classifier"] = {
-                "status": "not_implemented_gate_failed",
-                "gate": gate,
-            }
-        else:
-            raise RuntimeError(
-                "The pooled validation gate passed. Implement the parameterized branch before "
-                "claiming a parameterized result."
+    run_parameterized = bool(
+        gate
+        and gate.get("passed")
+        and training_strategy in {"pooled-crossfit-v2", "parameterized-crossfit-v1"}
+    )
+    if run_parameterized:
+        strategy = "parameterized-crossfit-v1"
+        strategy_dir = output_dir / strategy
+        records = []
+        parameterized_trials = 30
+        print(
+            f"Pooled gate passed; tuning {strategy} with {parameterized_trials} trials per fold"
+        )
+        for rotation in range(cv_folds):
+            fold_seed = seed + rotation
+            best_params, tuning = _tune_rotation(
+                sm_samples,
+                grid_samples,
+                background_samples,
+                strategy=strategy,
+                observable_set=observable_set,
+                profile=selected_profile,
+                rotation=rotation,
+                n_folds=cv_folds,
+                trials=parameterized_trials,
+                output_dir=strategy_dir / "optuna",
+                seed=fold_seed,
+                source_commit=source_commit,
+                run_fingerprint=_run_fingerprint(
+                    observable_set=observable_set,
+                    profile=selected_profile,
+                    strategy=strategy,
+                    rotation=rotation,
+                    n_folds=cv_folds,
+                    seed=fold_seed,
+                    source_commit=source_commit,
+                    fold_digest=fold_digest,
+                    normalization_inputs=normalization_inputs,
+                    input_hashes=input_hashes,
+                    package_versions=runtime_versions,
+                ),
             )
+            model, validation, metadata, fitted_params = _fit_rotation(
+                sm_samples,
+                grid_samples,
+                background_samples,
+                strategy=strategy,
+                observable_set=observable_set,
+                profile=selected_profile,
+                rotation=rotation,
+                n_folds=cv_folds,
+                params=best_params,
+                seed=fold_seed,
+                source_commit=source_commit,
+            )
+            model_path = strategy_dir / "models" / f"fold_{rotation}.json"
+            metadata = dict(metadata)
+            metadata["normalization_inputs"] = normalization_inputs
+            metadata["package_versions"] = runtime_versions
+            metadata["fold_assignment_sha256"] = fold_digest
+            attach_model_metadata(model, metadata=metadata)
+            model_path.parent.mkdir(parents=True, exist_ok=True)
+            model.save_model(model_path)
+            test = _evaluate_test_rotation(
+                model,
+                validation,
+                grid_samples,
+                background_samples,
+                rotation=rotation,
+                n_folds=cv_folds,
+                profile_indices=indices,
+                parameterized=True,
+            )
+            record = {
+                "rotation": rotation,
+                "model": str(model_path),
+                "model_metadata": metadata,
+                "parameters": fitted_params,
+                "tuning": tuning,
+                "validation": validation,
+                "test": test,
+                # In-memory-only objects used to rescore background test and
+                # validation events at each evaluated parameter point.
+                "_model_object": model,
+                "_background_samples": background_samples,
+                "_profile_indices": indices,
+                "_n_folds": cv_folds,
+            }
+            records.append(record)
+            _write_json(strategy_dir / "optuna" / f"fold_{rotation}_history.json", tuning)
+            _write_json(
+                strategy_dir / "validation" / f"fold_{rotation}.json",
+                _compact_validation(validation),
+            )
+            _write_json(
+                strategy_dir / "test" / f"fold_{rotation}.json",
+                {"rotation": test["rotation"], "points": test["points"]},
+            )
+
+        aggregate = _aggregate_cut_results(
+            grid_samples, [record["test"] for record in records]
+        )
+        validation_aggregate, rotation_validation_limits = _aggregate_validation_crossfit(
+            grid_samples, records
+        )
+        print(f"Selecting pyhf score shapes for {strategy}")
+        shape = _shape_results(grid_samples, records) if run_shape else [
+            {
+                "point_id": sample.point_id,
+                "c3": sample.c3,
+                "d4": sample.d4,
+                "status": "disabled",
+            }
+            for sample in grid_samples
+        ]
+        shape_by_point = {row["point_id"]: row for row in shape}
+        for row in aggregate:
+            shape_row = shape_by_point[row["point_id"]]
+            for key in (
+                "status",
+                "bin_count",
+                "used_fallback",
+                "fallback_level",
+                "pyhf_one_bin_sigma95_fb",
+                "shape_sigma95_no_mcstat_fb",
+                "shape_sigma95_fb",
+                "shape_sigma95_background_x0p25_fb",
+                "shape_sigma95_background_x4_fb",
+            ):
+                row[f"shape_{key}" if key == "status" else key] = shape_row.get(key)
+            one_bin = shape_row.get("pyhf_one_bin_sigma95_fb")
+            shape_limit = shape_row.get("shape_sigma95_fb")
+            row["shape_ratio_to_pyhf_one_bin"] = (
+                float(shape_limit) / float(one_bin)
+                if shape_limit is not None and one_bin is not None and float(one_bin) > 0.0
+                else None
+            )
+        sm_parameter_reference = {
+            (float(row["c3"]), float(row["d4"])): float(row["cut_sigma95_fb"])
+            for row in strategy_results["sm-crossfit-v2"]["aggregate"]
+        }
+        pooled_reference = {
+            (float(row["c3"]), float(row["d4"])): float(row["cut_sigma95_fb"])
+            for row in strategy_results["pooled-crossfit-v2"]["aggregate"]
+        }
+        _add_baseline_ratios(aggregate, legacy, pooled_reference)
+        for row in aggregate:
+            key = (float(row["c3"]), float(row["d4"]))
+            row["cut_ratio_to_sm"] = (
+                float(row["cut_sigma95_fb"]) / sm_parameter_reference[key]
+                if sm_parameter_reference[key] > 0.0
+                else None
+            )
+            row["cut_ratio_to_pooled"] = row.get("cut_ratio_to_reference")
+        strategy_results[strategy] = {
+            "records": records,
+            "aggregate": aggregate,
+            "validation_aggregate": validation_aggregate,
+            "rotation_validation_limits": rotation_validation_limits,
+            "shape": shape,
+        }
+        _write_rows(strategy_dir / "per_fold_validation.csv", _flatten_fold_points(records, "validation"))
+        _write_rows(strategy_dir / "per_fold_test.csv", _flatten_fold_points(records, "test"))
+        _write_rows(strategy_dir / "cut_results.csv", aggregate)
+        _write_json(strategy_dir / "cut_results.json", aggregate)
+        _write_rows(strategy_dir / "shape_results.csv", shape)
+        _write_json(strategy_dir / "shape_results.json", shape)
+        _write_standard_maps(aggregate, strategy_dir / "maps", strategy)
+        manifest["parameterized_classifier"] = {
+            "status": "complete",
+            "gate": gate,
+            "optuna_trials_per_fold": parameterized_trials,
+            "background_replicas_per_event": 3,
+            "parameter_features": [
+                {"name": name, "unit": unit}
+                for name, unit in PARAMETERIZED_ML_FEATURES
+            ],
+        }
+    elif gate is not None:
+        manifest["parameterized_classifier"] = {
+            "status": "gate_failed" if not gate.get("passed") else "not_requested",
+            "gate": gate,
+        }
 
     sample_manifests = []
     for sample in [*sm_samples, *grid_samples, *background_samples]:
@@ -1969,6 +2337,14 @@ def run_c3d4_study(
         fold_assignment_file,
         [*sm_samples, *grid_samples, *background_samples],
     )
+    output_manifest = {
+        "feature_profile_selection": str(output_dir / "feature_profile_selection.json"),
+        "fold_assignments": str(fold_assignment_file),
+    }
+    if gate is not None:
+        output_manifest["parameterized_gate"] = str(
+            output_dir / "parameterized_classifier_gate.json"
+        )
     manifest.update(
         {
             "status": "complete",
@@ -1981,11 +2357,7 @@ def run_c3d4_study(
             "parameterized_gate": gate,
             "inputs": sample_manifests,
             "fold_assignment_sha256": fold_digest,
-            "outputs": {
-                "feature_profile_selection": str(output_dir / "feature_profile_selection.json"),
-                "parameterized_gate": str(output_dir / "parameterized_classifier_gate.json"),
-                "fold_assignments": str(fold_assignment_file),
-            },
+            "outputs": output_manifest,
         }
     )
     _write_json(output_dir / "method_manifest.json", manifest)

@@ -256,10 +256,19 @@ inline double absoluteHelicityCosine(const CartesianFourVector& constituent,
                                      const CartesianFourVector& four_candidate,
                                      bool& defined) {
   defined = false;
-  CartesianFourVector constituent_in_candidate_rest;
+  CartesianFourVector constituent_in_four_candidate_rest;
   CartesianFourVector candidate_in_four_candidate_rest;
-  if (!boostToRestFrame(constituent, candidate, constituent_in_candidate_rest) ||
-      !boostToRestFrame(candidate, four_candidate, candidate_in_four_candidate_rest)) {
+  CartesianFourVector constituent_in_candidate_rest;
+  // Put both momenta in the common 4H rest frame before defining the second
+  // boost.  Otherwise non-collinear lab -> H and lab -> 4H boosts leave the
+  // two spatial vectors expressed in differently Wigner-rotated axes.
+  if (!boostToRestFrame(constituent, four_candidate,
+                        constituent_in_four_candidate_rest) ||
+      !boostToRestFrame(candidate, four_candidate,
+                        candidate_in_four_candidate_rest) ||
+      !boostToRestFrame(constituent_in_four_candidate_rest,
+                        candidate_in_four_candidate_rest,
+                        constituent_in_candidate_rest)) {
     return 0.0;
   }
 

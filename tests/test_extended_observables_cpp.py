@@ -48,6 +48,19 @@ class ExtendedObservablesCppTests(unittest.TestCase):
             schemas.EXTENDED_FEATURE_UNITS,
         )
 
+    def test_corrected_residual_slots_preserve_candidate_order(self) -> None:
+        schemas = _load_schema_module()
+        source = ANALYZER_SOURCE.read_text()
+        self.assertEqual(
+            schemas.EXTENDED_FEATURE_NAMES[10:14],
+            ("delta_m_h1", "delta_m_h2", "delta_m_h3", "delta_m_h4"),
+        )
+        self.assertIn("features[10 + h] = reconstruction.delta_m[h];", source)
+        fill_block = source.split("void fillExtendedFeatures", 2)[-1].split(
+            "const std::vector<std::string>& extendedFeatureNames", 1
+        )[0]
+        self.assertNotIn("sorted_delta_m", fill_block)
+
     def test_extended_observables_cpp_contract(self) -> None:
         compiler = shutil.which("g++") or shutil.which("c++")
         if compiler is None:

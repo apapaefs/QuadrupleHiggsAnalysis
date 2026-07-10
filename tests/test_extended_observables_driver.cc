@@ -62,6 +62,26 @@ ToyVector massless(double pt, double phi, double eta) {
   return ToyVector(px, py, pz, std::sqrt(px * px + py * py + pz * pz));
 }
 
+extended91::CartesianFourVector boostByVelocity(
+    const extended91::CartesianFourVector& momentum,
+    double beta_x,
+    double beta_y,
+    double beta_z) {
+  const double beta_squared =
+      beta_x * beta_x + beta_y * beta_y + beta_z * beta_z;
+  assert(beta_squared < 1.0);
+  const double gamma = 1.0 / std::sqrt(1.0 - beta_squared);
+  const double beta_dot_p =
+      beta_x * momentum.px + beta_y * momentum.py + beta_z * momentum.pz;
+  const double gamma2 = beta_squared > 0.0 ? (gamma - 1.0) / beta_squared : 0.0;
+  const double coefficient = gamma2 * beta_dot_p + gamma * momentum.energy;
+  return extended91::CartesianFourVector(
+      momentum.px + coefficient * beta_x,
+      momentum.py + coefficient * beta_y,
+      momentum.pz + coefficient * beta_z,
+      gamma * (momentum.energy + beta_dot_p));
+}
+
 }  // namespace
 
 int main() {
@@ -197,6 +217,28 @@ int main() {
   assert(close(extended91::absoluteHelicityCosine(
                    perpendicular_constituent, higgs, four_higgs, defined),
                0.0));
+  assert(defined);
+
+  // The helicity angle is a decay-frame observable and must be invariant
+  // under a common, non-collinear boost of the complete event.
+  const double common_beta_x = 0.31;
+  const double common_beta_y = -0.17;
+  const double common_beta_z = 0.08;
+  const extended91::CartesianFourVector boosted_higgs = boostByVelocity(
+      higgs, common_beta_x, common_beta_y, common_beta_z);
+  const extended91::CartesianFourVector boosted_four_higgs = boostByVelocity(
+      four_higgs, common_beta_x, common_beta_y, common_beta_z);
+  const extended91::CartesianFourVector boosted_parallel = boostByVelocity(
+      parallel_constituent, common_beta_x, common_beta_y, common_beta_z);
+  const extended91::CartesianFourVector boosted_perpendicular = boostByVelocity(
+      perpendicular_constituent, common_beta_x, common_beta_y, common_beta_z);
+  assert(close(extended91::absoluteHelicityCosine(
+                   boosted_parallel, boosted_higgs, boosted_four_higgs, defined),
+               1.0, 1.0e-9));
+  assert(defined);
+  assert(close(extended91::absoluteHelicityCosine(
+                   boosted_perpendicular, boosted_higgs, boosted_four_higgs, defined),
+               0.0, 1.0e-9));
   assert(defined);
 
   return 0;

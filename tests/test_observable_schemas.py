@@ -168,6 +168,9 @@ class ObservableSchemaTests(unittest.TestCase):
         self.assertEqual(legacy.stored_value_count, 29)
         self.assertEqual(extended.tree_name, "Data3")
         self.assertEqual(len(extended.feature_names), 91)
+        self.assertEqual(extended.feature_names[10:14], (
+            "delta_m_h1", "delta_m_h2", "delta_m_h3", "delta_m_h4"
+        ))
         self.assertEqual(extended.feature_names[28], "m_bb_h1")
         self.assertEqual(extended.feature_names[34], "n_pairings_chi8_lt60")
         self.assertEqual(extended.feature_names[90], "zness")

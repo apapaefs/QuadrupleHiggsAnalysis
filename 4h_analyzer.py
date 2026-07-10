@@ -1787,6 +1787,102 @@ def _run_one_cpp_analysis(
     return output_root
 
 
+def _extended_v2_output_is_current(output_root, raw_root=None, source_file=None):
+    """Validate a tagged output before allowing the study to reuse it."""
+
+    import json
+    import math
+
+    output_root = _Path(output_root)
+    if not output_root.exists():
+        return False
+    summary_file = _analysis_summary_file_for_var_root(output_root)
+    if not summary_file.exists():
+        return False
+    if summary_file.stat().st_mtime < output_root.stat().st_mtime:
+        return False
+
+    dependencies = []
+    if raw_root is not None:
+        dependencies.append(_Path(raw_root))
+    if source_file is not None:
+        source_file = _Path(source_file)
+        dependencies.append(source_file)
+        dependencies.append(source_file.parent / "Extended91Observables.h")
+    newest_output_time = min(output_root.stat().st_mtime, summary_file.stat().st_mtime)
+    if any(
+        dependency.exists() and dependency.stat().st_mtime > newest_output_time
+        for dependency in dependencies
+    ):
+        return False
+
+    try:
+        import ROOT
+        from observable_schemas import (
+            EXTENDED_FEATURE_NAMES,
+            EXTENDED_FEATURE_UNITS,
+            EXTENDED_SCHEMA_ID,
+            PAIRING_COUNT,
+        )
+
+        root_file = ROOT.TFile.Open(str(output_root), "READ")
+        if not root_file or root_file.IsZombie():
+            return False
+        try:
+            data2 = root_file.Get("Data2")
+            data3 = root_file.Get("Data3")
+            if not data2 or not data3 or data2.GetEntries() != data3.GetEntries():
+                return False
+            if any(
+                not data3.GetBranch(branch)
+                for branch in (
+                    "features",
+                    "weight",
+                    "event_index",
+                    "cut_mask",
+                    "passes_legacy_full_selection",
+                )
+            ):
+                return False
+            schema = root_file.Get("Data3_observable_schema")
+            count = root_file.Get("Data3_feature_count")
+            names = root_file.Get("Data3_feature_names_json")
+            units = root_file.Get("Data3_feature_units_json")
+            pairing_count = root_file.Get("Data3_pairing_count")
+            feature_leaf = data3.GetLeaf("features")
+            if not schema or str(schema.GetTitle()) != EXTENDED_SCHEMA_ID:
+                return False
+            if not count or int(count.GetVal()) != len(EXTENDED_FEATURE_NAMES):
+                return False
+            if not names or tuple(json.loads(str(names.GetTitle()))) != EXTENDED_FEATURE_NAMES:
+                return False
+            if not units or tuple(json.loads(str(units.GetTitle()))) != EXTENDED_FEATURE_UNITS:
+                return False
+            if not pairing_count or int(pairing_count.GetVal()) != PAIRING_COUNT:
+                return False
+            if not feature_leaf or int(feature_leaf.GetLenStatic()) != len(EXTENDED_FEATURE_NAMES):
+                return False
+        finally:
+            root_file.Close()
+
+        summary = json.loads(summary_file.read_text())
+        if summary.get("observable_schema") != EXTENDED_SCHEMA_ID:
+            return False
+        total_weight_in = float(summary["total_weight_in"])
+        feature_entries = int(summary["feature_tree_mc_events_out"])
+        feature_weight = float(summary["feature_tree_weight_out"])
+        feature_efficiency = float(summary["feature_tree_efficiency"])
+        return bool(
+            total_weight_in > 0.0
+            and math.isfinite(total_weight_in)
+            and feature_entries == int(data3.GetEntries())
+            and math.isfinite(feature_weight)
+            and math.isfinite(feature_efficiency)
+        )
+    except Exception:
+        return False
+
+
 def _ensure_analysis_var_roots(
     inputs,
     executable,
@@ -1807,17 +1903,26 @@ def _ensure_analysis_var_roots(
     raw_roots = _filter_auxiliary_roots(raw_roots, include_auxiliary)
 
     expected_var_roots = [_analysis_output_root(path, analysis_tag) for path in raw_roots]
-    missing_raw_roots = [
-        raw_root
-        for raw_root, var_root in zip(raw_roots, expected_var_roots)
-        if force or not var_root.exists()
-    ]
+    missing_raw_roots = []
+    for raw_root, var_root in zip(raw_roots, expected_var_roots):
+        regenerate = force or not var_root.exists()
+        if not regenerate and analysis_tag == EXTENDED_V2_TAG:
+            regenerate = not _extended_v2_output_is_current(
+                var_root,
+                raw_root=raw_root,
+                source_file=source_file,
+            )
+        if regenerate:
+            missing_raw_roots.append(raw_root)
 
     if missing_raw_roots and not run_missing:
         print(f"Warning: {len(missing_raw_roots)} raw ROOT files are missing variable outputs, but auto-analysis is disabled.")
     elif missing_raw_roots:
         executable = _ensure_analysis_executable(executable, source_file, rebuild=True)
-        print(f"Running C++ analysis for {len(missing_raw_roots)} missing variable ROOT file(s)")
+        print(
+            f"Running C++ analysis for {len(missing_raw_roots)} missing, stale, "
+            "or schema-invalid variable ROOT file(s)"
+        )
         jobs = max(1, int(jobs))
         if jobs == 1:
             for raw_root in missing_raw_roots:
@@ -1825,7 +1930,7 @@ def _ensure_analysis_var_roots(
                     raw_root,
                     executable,
                     max_events=max_events,
-                    force=force,
+                    force=True,
                     c_mistags=c_mistags,
                     light_mistags=light_mistags,
                     analysis_tag=analysis_tag,
@@ -1838,7 +1943,7 @@ def _ensure_analysis_var_roots(
                         raw_root,
                         executable,
                         max_events,
-                        force,
+                        True,
                         c_mistags,
                         light_mistags,
                         analysis_tag,

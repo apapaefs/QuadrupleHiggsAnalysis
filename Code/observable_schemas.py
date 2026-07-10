@@ -28,6 +28,10 @@ PAIRING_COUNT = 105
 
 MODEL_METADATA_ATTRIBUTE = "fourhiggs_model_metadata"
 MODEL_CONTRACT_VERSION = 1
+PARAMETERIZED_ML_FEATURES = (
+    ("c3_over_30", "dimensionless"),
+    ("d4_over_700", "dimensionless"),
+)
 
 
 LEGACY_FEATURE_NAMES = (
@@ -62,7 +66,17 @@ LEGACY_FEATURE_NAMES = (
 )
 
 
-EXTENDED_FEATURE_NAMES = LEGACY_FEATURE_NAMES + (
+EXTENDED_CORRECTED28_FEATURE_NAMES = (
+    *LEGACY_FEATURE_NAMES[:10],
+    "delta_m_h1",
+    "delta_m_h2",
+    "delta_m_h3",
+    "delta_m_h4",
+    *LEGACY_FEATURE_NAMES[14:],
+)
+
+
+EXTENDED_FEATURE_NAMES = EXTENDED_CORRECTED28_FEATURE_NAMES + (
     "m_bb_h1",
     "m_bb_h2",
     "m_bb_h3",
@@ -154,6 +168,8 @@ EXTENDED_FEATURE_UNITS = LEGACY_FEATURE_UNITS + (
 
 if len(LEGACY_FEATURE_NAMES) != 28:  # pragma: no cover - import-time invariant.
     raise AssertionError("legacy observable contract must contain 28 features")
+if len(EXTENDED_CORRECTED28_FEATURE_NAMES) != 28:  # pragma: no cover
+    raise AssertionError("corrected28 observable contract must contain 28 features")
 if len(EXTENDED_FEATURE_NAMES) != 91:  # pragma: no cover - import-time invariant.
     raise AssertionError("extended observable contract must contain 91 features")
 if len(LEGACY_FEATURE_UNITS) != len(LEGACY_FEATURE_NAMES):  # pragma: no cover
@@ -417,14 +433,61 @@ def feature_contract_sha256(contract: FeatureContract) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _normalise_ml_parameter_features(
+    features: Sequence[Sequence[str] | Mapping[str, str]] | None,
+) -> tuple[tuple[str, str], ...]:
+    if features is None:
+        return ()
+    normalised = []
+    for feature in features:
+        if isinstance(feature, Mapping):
+            name = str(feature.get("name", ""))
+            unit = str(feature.get("unit", ""))
+        else:
+            try:
+                name, unit = feature
+            except (TypeError, ValueError) as exc:
+                raise ModelContractError(
+                    "each ML parameter feature must contain a name and unit"
+                ) from exc
+            name = str(name)
+            unit = str(unit)
+        if not name or not unit:
+            raise ModelContractError("ML parameter feature names and units must be non-empty")
+        normalised.append((name, unit))
+    if len({name for name, _ in normalised}) != len(normalised):
+        raise ModelContractError("ML parameter feature names must be unique")
+    return tuple(normalised)
+
+
+def _model_feature_contract(
+    observable_set: str,
+    feature_profile: str | None,
+    ml_parameter_features: Sequence[Sequence[str] | Mapping[str, str]] | None,
+) -> FeatureContract:
+    tree_contract = get_feature_contract(observable_set, feature_profile)
+    parameters = _normalise_ml_parameter_features(ml_parameter_features)
+    return FeatureContract(
+        observable_schema=tree_contract.observable_schema,
+        feature_profile=tree_contract.feature_profile,
+        feature_indices=tree_contract.feature_indices,
+        feature_names=tree_contract.feature_names + tuple(name for name, _ in parameters),
+        feature_units=tree_contract.feature_units + tuple(unit for _, unit in parameters),
+    )
+
+
 def build_model_metadata(
     observable_set: str,
     feature_profile: str | None = None,
+    *,
+    ml_parameter_features: Sequence[Sequence[str] | Mapping[str, str]] | None = None,
     **details: Any,
 ) -> dict[str, Any]:
     """Build JSON-serializable metadata containing the immutable ML contract."""
 
-    contract = get_feature_contract(observable_set, feature_profile)
+    tree_contract = get_feature_contract(observable_set, feature_profile)
+    parameters = _normalise_ml_parameter_features(ml_parameter_features)
+    contract = _model_feature_contract(observable_set, feature_profile, parameters)
     reserved = {
         "model_contract_version",
         "observable_schema",
@@ -434,6 +497,9 @@ def build_model_metadata(
         "feature_names",
         "feature_units",
         "feature_contract_sha256",
+        "ml_parameter_features",
+        "tree_feature_count",
+        "tree_feature_contract_sha256",
     }
     overlap = reserved.intersection(details)
     if overlap:
@@ -451,6 +517,16 @@ def build_model_metadata(
         "feature_units": list(contract.feature_units),
         "feature_contract_sha256": feature_contract_sha256(contract),
     }
+    if parameters:
+        metadata.update(
+            {
+                "ml_parameter_features": [
+                    {"name": name, "unit": unit} for name, unit in parameters
+                ],
+                "tree_feature_count": tree_contract.feature_count,
+                "tree_feature_contract_sha256": feature_contract_sha256(tree_contract),
+            }
+        )
     metadata.update(details)
     # Fail at construction, rather than when XGBoost tries to serialize it.
     json.dumps(metadata, sort_keys=True, allow_nan=False)
@@ -469,6 +545,7 @@ def attach_model_metadata(
     *,
     observable_set: str | None = None,
     feature_profile: str | None = None,
+    ml_parameter_features: Sequence[Sequence[str] | Mapping[str, str]] | None = None,
     **details: Any,
 ) -> dict[str, Any]:
     """Persist a contract as an XGBoost model attribute and return a copy."""
@@ -476,9 +553,19 @@ def attach_model_metadata(
     if metadata is None:
         if observable_set is None:
             raise TypeError("observable_set is required when metadata is not supplied")
-        payload = build_model_metadata(observable_set, feature_profile, **details)
+        payload = build_model_metadata(
+            observable_set,
+            feature_profile,
+            ml_parameter_features=ml_parameter_features,
+            **details,
+        )
     else:
-        if observable_set is not None or feature_profile is not None or details:
+        if (
+            observable_set is not None
+            or feature_profile is not None
+            or ml_parameter_features is not None
+            or details
+        ):
             raise TypeError("supply either complete metadata or observable_set/details, not both")
         payload = dict(metadata)
         schema_id = payload.get("observable_schema", payload.get("observable_set"))
@@ -486,11 +573,13 @@ def attach_model_metadata(
             payload,
             str(schema_id),
             payload.get("feature_profile"),
+            ml_parameter_features=payload.get("ml_parameter_features"),
         )
 
-    contract = get_feature_contract(
+    contract = _model_feature_contract(
         str(payload.get("observable_schema", payload.get("observable_set"))),
         payload.get("feature_profile"),
+        payload.get("ml_parameter_features"),
     )
     _validate_model_object_features(model, contract)
     booster = _as_booster(model)
@@ -539,10 +628,23 @@ def validate_model_metadata(
     metadata: Mapping[str, Any],
     observable_set: str,
     feature_profile: str | None = None,
+    *,
+    ml_parameter_features: Sequence[Sequence[str] | Mapping[str, str]] | None = None,
 ) -> FeatureContract:
     """Validate a decoded model payload against an expected data contract."""
 
-    contract = get_feature_contract(observable_set, feature_profile)
+    tree_contract = get_feature_contract(observable_set, feature_profile)
+    expected_parameters = _normalise_ml_parameter_features(ml_parameter_features)
+    declared_parameters = _normalise_ml_parameter_features(
+        metadata.get("ml_parameter_features")
+    )
+    if declared_parameters != expected_parameters:
+        raise ModelContractError(
+            "model ML parameter features do not match the requested scoring contract"
+        )
+    contract = _model_feature_contract(
+        observable_set, feature_profile, expected_parameters
+    )
     try:
         contract_version = int(metadata.get("model_contract_version"))
     except (TypeError, ValueError) as exc:
@@ -576,15 +678,15 @@ def validate_model_metadata(
         raise ModelContractError(
             f"model feature count {actual_count} does not match {contract.feature_count}"
         )
-    try:
-        validate_feature_contract(
-            contract.observable_schema,
-            metadata.get("feature_names", ()),
-            contract.feature_profile,
-            feature_units=metadata.get("feature_units", ()),
-        )
-    except FeatureContractMismatch as exc:
-        raise ModelContractError(f"model {exc}") from exc
+    if tuple(metadata.get("feature_names", ())) != contract.feature_names:
+        raise ModelContractError("model feature names/order do not match the scoring contract")
+    if tuple(metadata.get("feature_units", ())) != contract.feature_units:
+        raise ModelContractError("model feature units do not match the scoring contract")
+    if expected_parameters:
+        if int(metadata.get("tree_feature_count", -1)) != tree_contract.feature_count:
+            raise ModelContractError("model tree feature count is missing or inconsistent")
+        if metadata.get("tree_feature_contract_sha256") != feature_contract_sha256(tree_contract):
+            raise ModelContractError("model tree feature-contract digest is missing or inconsistent")
     expected_digest = feature_contract_sha256(contract)
     if metadata.get("feature_contract_sha256") != expected_digest:
         raise ModelContractError("model feature-contract digest is missing or inconsistent")
@@ -642,14 +744,22 @@ def validate_model_contract(
     feature_profile: str | None = None,
     *,
     allow_metadata_free_legacy: bool = True,
+    ml_parameter_features: Sequence[Sequence[str] | Mapping[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Refuse semantic mismatches, with one explicit legacy compatibility path."""
 
     model = _load_booster(model_or_path) if isinstance(model_or_path, (str, Path)) else model_or_path
     metadata = read_model_metadata(model)
-    contract = get_feature_contract(observable_set, feature_profile)
+    contract = _model_feature_contract(
+        observable_set, feature_profile, ml_parameter_features
+    )
     if metadata is not None:
-        validate_model_metadata(metadata, contract.observable_schema, contract.feature_profile)
+        validate_model_metadata(
+            metadata,
+            contract.observable_schema,
+            contract.feature_profile,
+            ml_parameter_features=ml_parameter_features,
+        )
         _validate_model_object_features(model, contract)
         return dict(metadata)
 
@@ -682,6 +792,7 @@ def validate_model_contract(
 
 __all__ = [
     "EXTENDED_FEATURE_NAMES",
+    "EXTENDED_CORRECTED28_FEATURE_NAMES",
     "EXTENDED_FEATURE_UNITS",
     "EXTENDED_FILE_TAG",
     "EXTENDED_SCHEMA_ID",
@@ -695,6 +806,7 @@ __all__ = [
     "MODEL_CONTRACT_VERSION",
     "MODEL_METADATA_ATTRIBUTE",
     "ModelContractError",
+    "PARAMETERIZED_ML_FEATURES",
     "ObservableSchema",
     "ObservableSchemaError",
     "PAIRING_COUNT",

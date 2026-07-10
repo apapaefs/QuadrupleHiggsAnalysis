@@ -3,7 +3,9 @@ from __future__ import annotations
 import sys
 import csv
 import tempfile
+import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import numpy as np
@@ -14,7 +16,12 @@ if str(CODE) not in sys.path:
     sys.path.insert(0, str(CODE))
 
 import c3d4_xgboost_runner as runner  # noqa: E402
-from observable_schemas import EXTENDED_FEATURE_NAMES  # noqa: E402
+from observable_schemas import (  # noqa: E402
+    EXTENDED_FEATURE_NAMES,
+    PARAMETERIZED_ML_FEATURES,
+    ModelContractError,
+    validate_model_contract,
+)
 
 
 def sample(sample_id, kind, raw, physical, c3=None, d4=None):
@@ -90,6 +97,93 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
         # Physical process ratios are preserved within the background class.
         self.assertAlmostEqual(float(np.sum(background_weights[3:])), 10.0 / 11.0)
 
+    def test_parameterized_training_replicates_background_and_preserves_class_totals(self):
+        grid = [
+            sample(f"p{index}", "grid_signal", [1] * 5, [1] * 5, index, 10 * index)
+            for index in range(3)
+        ]
+        background = [sample("b0", "background", [1] * 5, [1, 2, 3, 4, 5])]
+
+        features, labels, weights = runner._training_arrays(
+            [],
+            grid,
+            background,
+            strategy="parameterized-crossfit-v1",
+            profile_indices=np.arange(28),
+            rotation=0,
+            n_folds=5,
+        )
+
+        self.assertEqual(features.shape[1], 30)
+        self.assertEqual(int(np.sum(labels == 1)), 9)
+        self.assertEqual(int(np.sum(labels == 0)), 9)
+        self.assertAlmostEqual(float(np.sum(weights[labels == 1])), 1.0)
+        self.assertAlmostEqual(float(np.sum(weights[labels == 0])), 1.0)
+        background_parameters = features[labels == 0, -2:]
+        for start in range(0, len(background_parameters), 3):
+            self.assertEqual(len(np.unique(background_parameters[start:start + 3], axis=0)), 3)
+
+    def test_parameterized_model_metadata_requires_the_appended_coordinates(self):
+        class FakeBooster:
+            def __init__(self):
+                self.feature_names = None
+                self.attributes = {}
+                self.count = 0
+
+            def num_features(self):
+                return self.count
+
+            def set_attr(self, **attributes):
+                self.attributes.update(attributes)
+
+            def attr(self, name):
+                return self.attributes.get(name)
+
+        class FakeClassifier:
+            def __init__(self, **parameters):
+                self.parameters = parameters
+                self.booster = FakeBooster()
+
+            def fit(self, features, labels, sample_weight=None, verbose=False):
+                self.n_features_in_ = features.shape[1]
+                self.booster.count = features.shape[1]
+                return self
+
+            def get_booster(self):
+                return self.booster
+
+        features = np.arange(8 * 30, dtype=float).reshape(8, 30)
+        labels = np.asarray([0, 1] * 4)
+        weights = np.ones(8)
+        with mock.patch.dict(
+            sys.modules,
+            {"xgboost": types.SimpleNamespace(XGBClassifier=FakeClassifier)},
+        ):
+            model, metadata, _ = runner._train_model(
+                features,
+                labels,
+                weights,
+                params={"n_estimators": 1, "max_depth": 1},
+                seed=12345,
+                observable_set="extended-91-v2",
+                profile="corrected28",
+                strategy="parameterized-crossfit-v1",
+                rotation=0,
+                source_commit="test",
+            )
+        self.assertEqual(metadata["feature_count"], 30)
+        self.assertEqual(tuple(metadata["feature_names"][-2:]), tuple(
+            name for name, _ in PARAMETERIZED_ML_FEATURES
+        ))
+        validate_model_contract(
+            model,
+            "extended-91-v2",
+            "corrected28",
+            ml_parameter_features=PARAMETERIZED_ML_FEATURES,
+        )
+        with self.assertRaises(ModelContractError):
+            validate_model_contract(model, "extended-91-v2", "corrected28")
+
     def test_crossfit_test_aggregation_uses_each_fold_without_rescaling(self):
         point = sample("p0", "grid_signal", [1] * 5, [1] * 5, 0, 0)
         rotations = []
@@ -124,11 +218,36 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
             runner.exact_cls_signal_upper_limit(2.0),
         )
 
-    def test_validation_scaling_closes_each_source_to_full_yield(self):
-        weights = np.asarray([1.0, 2.0, 3.0, 4.0, 5.0])
-        mask = np.asarray([False, True, False, False, False])
-        scale = runner._partition_scale(weights, mask)
-        self.assertAlmostEqual(float(np.sum(weights[mask] * scale)), float(np.sum(weights)))
+    def test_parameterized_validation_aggregation_uses_pointwise_background_scores(self):
+        point = sample("p0", "grid_signal", [1] * 5, [1] * 5, 0, 0)
+        rotations = [
+            {
+                "validation": {
+                    "parameterized": True,
+                    "points": {point.point_id: {"threshold": 0.5, "sigma95_fb": 1.0}},
+                }
+            }
+            for _ in range(5)
+        ]
+        arrays = {
+            "signal_scores": np.asarray([0.6]),
+            "signal_weights": np.asarray([0.2]),
+            "background_scores": np.asarray([0.6]),
+            "background_weights": np.asarray([0.4]),
+        }
+        with mock.patch.object(runner, "_validation_fold_arrays", return_value=arrays):
+            result, _ = runner._aggregate_validation_crossfit([point], rotations)
+        self.assertAlmostEqual(result[0]["validation_signal_yield_per_fb"], 1.0)
+        self.assertAlmostEqual(result[0]["validation_background_yield"], 2.0)
+        self.assertAlmostEqual(
+            result[0]["validation_cut_sigma95_fb"],
+            runner.exact_cls_signal_upper_limit(2.0),
+        )
+
+    def test_validation_scaling_is_fixed_before_test_fold_is_read(self):
+        self.assertEqual(runner._partition_scale(5), 5.0)
+        with self.assertRaises(ValueError):
+            runner._partition_scale(1)
 
     def test_optuna_fingerprint_binds_schema_and_inputs(self):
         common = {
@@ -141,6 +260,7 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
             "fold_digest": "folds",
             "normalization_inputs": {"luminosity_fb_inverse": 3000.0},
             "input_hashes": {"sample.root": "hash-a"},
+            "package_versions": {"xgboost": "3.0.2", "optuna": "4.9.0"},
         }
         extended = runner._run_fingerprint(observable_set="extended-91-v2", **common)
         legacy = runner._run_fingerprint(observable_set="legacy-28-v1", **common)
@@ -150,6 +270,11 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
         )
         self.assertNotEqual(extended, legacy)
         self.assertNotEqual(extended, changed_input)
+        changed_runtime = runner._run_fingerprint(
+            observable_set="extended-91-v2",
+            **{**common, "package_versions": {"xgboost": "3.1.0", "optuna": "4.9.0"}},
+        )
+        self.assertNotEqual(extended, changed_runtime)
 
     def test_csv_writer_keeps_nested_bin_edges(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -161,6 +286,96 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
             with output.open(newline="") as handle:
                 row = next(csv.DictReader(handle))
             self.assertEqual(row["fold_bin_edges"], "[[0.0,0.5,1.0]]")
+
+    def test_one_bin_control_is_reported_when_shape_selection_fails(self):
+        point = sample("p0", "grid_signal", [1] * 5, [1] * 5, 0, 0)
+        records = []
+        for rotation in range(5):
+            signal_row = {
+                "scores": np.asarray([0.5]),
+                "unit_xsec_weights": np.asarray([0.2]),
+            }
+            background_row = {
+                "scores": np.asarray([0.5]),
+                "physical_weights": np.asarray([0.4]),
+            }
+            records.append(
+                {
+                    "rotation": rotation,
+                    "validation": {"signal_rows": {}, "background_rows": {}},
+                    "test": {
+                        "signal_rows": {point.sample_id: signal_row},
+                        "background_rows": {"b": background_row},
+                    },
+                }
+            )
+        with mock.patch.object(
+            runner, "_candidate_maps_for_validation", return_value=([], [])
+        ), mock.patch.object(
+            runner,
+            "_select_shape_candidate",
+            return_value={"status": "failed", "error": "no valid shape"},
+        ), mock.patch.object(
+            runner,
+            "pyhf_one_bin_limit",
+            return_value={"status": "ok", "expected_median": 7.0},
+        ):
+            result = runner._shape_results([point], records)[0]
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["pyhf_one_bin_sigma95_fb"], 7.0)
+
+    def test_negative_signal_bin_uses_validation_defined_coarser_fallback(self):
+        point = sample("p0", "grid_signal", [1] * 5, [1] * 5, 0, 0)
+        records = []
+        for rotation in range(5):
+            records.append(
+                {
+                    "rotation": rotation,
+                    "validation": {"signal_rows": {}, "background_rows": {}},
+                    "test": {
+                        "signal_rows": {
+                            point.sample_id: {
+                                "scores": np.asarray([0.25, 0.75]),
+                                "unit_xsec_weights": np.asarray([-1.0, 2.0]),
+                            }
+                        },
+                        "background_rows": {
+                            "b": {
+                                "scores": np.asarray([0.25, 0.75]),
+                                "physical_weights": np.asarray([1.0, 1.0]),
+                            }
+                        },
+                    },
+                }
+            )
+        fine = {
+            "n_bins": 2,
+            "fold_edges": [[0.0, 0.5, 1.0] for _ in range(5)],
+        }
+        coarse = {
+            "n_bins": 1,
+            "fold_edges": [[0.0, 1.0] for _ in range(5)],
+        }
+        selection = {
+            "status": "ok",
+            "selected": fine,
+            "fallback_hierarchy": [fine, coarse],
+        }
+        successful_fit = {"status": "ok", "expected_median": 4.0}
+        with mock.patch.object(
+            runner, "_candidate_maps_for_validation", return_value=([], [])
+        ), mock.patch.object(
+            runner, "_select_shape_candidate", return_value=selection
+        ), mock.patch.object(
+            runner, "pyhf_one_bin_limit", return_value=successful_fit
+        ), mock.patch.object(
+            runner, "pyhf_combined_limit", return_value=successful_fit
+        ):
+            result = runner._shape_results([point], records)[0]
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["used_fallback"])
+        self.assertEqual(result["bin_count"], 1)
+        self.assertFalse(result["test_binning_attempts"][0]["positive_test_signal"])
 
 
 if __name__ == "__main__":

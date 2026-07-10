@@ -964,10 +964,8 @@ void fillExtendedFeatures(const ExtendedReconstruction& reconstruction,
   features[8] = std::accumulate(bjets.begin() + 1, bjets.end(), bjets[0]).m();
   features[9] = reconstruction.chi8;
 
-  std::array<double, kHiggsCount> sorted_delta_m = reconstruction.delta_m;
-  std::sort(sorted_delta_m.begin(), sorted_delta_m.end());
   for (int h = 0; h < kHiggsCount; ++h) {
-    features[10 + h] = sorted_delta_m[h];
+    features[10 + h] = reconstruction.delta_m[h];
     features[14 + h] = reconstruction.higgses[h].perp();
   }
 
@@ -1088,8 +1086,8 @@ void fillExtendedFeatures(const ExtendedReconstruction& reconstruction,
 const std::vector<std::string>& extendedFeatureNames() {
   static const std::vector<std::string> names = {
       "bjet1_pt", "bjet2_pt", "bjet3_pt", "bjet4_pt", "bjet5_pt", "bjet6_pt",
-      "bjet7_pt", "bjet8_pt", "m8b", "chi8", "delta_m_min", "delta_m_med1",
-      "delta_m_med2", "delta_m_max", "higgs1_pt", "higgs2_pt", "higgs3_pt",
+      "bjet7_pt", "bjet8_pt", "m8b", "chi8", "delta_m_h1", "delta_m_h2",
+      "delta_m_h3", "delta_m_h4", "higgs1_pt", "higgs2_pt", "higgs3_pt",
       "higgs4_pt", "dr_hh_12", "dr_hh_13", "dr_hh_14", "dr_hh_23", "dr_hh_24",
       "dr_hh_34", "dr_bb_h1", "dr_bb_h2", "dr_bb_h3", "dr_bb_h4", "m_bb_h1",
       "m_bb_h2", "m_bb_h3", "m_bb_h4", "chi8_second", "delta_chi8",

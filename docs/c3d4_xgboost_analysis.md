@@ -78,10 +78,10 @@ triple indices follow 123, 124, 134, 234.  Angles are wrapped into
 | 7 | `bjet8_pt` | GeV | Eighth selected-jet transverse momentum. |
 | 8 | `m8b` | GeV | Invariant mass of the eight selected jets. |
 | 9 | `chi8` | GeV | Best coherent staggered-target pairing distance. |
-| 10 | `delta_m_min` | GeV | Smallest ordered \(|m_{bb,a}-m_a^{\rm target}|\). |
-| 11 | `delta_m_med1` | GeV | Second ordered absolute target residual. |
-| 12 | `delta_m_med2` | GeV | Third ordered absolute target residual. |
-| 13 | `delta_m_max` | GeV | Largest ordered absolute target residual. |
+| 10 | `delta_m_h1` | GeV | \(|m_{bb,1}-120\ {\rm GeV}|\), aligned with candidate 1. |
+| 11 | `delta_m_h2` | GeV | \(|m_{bb,2}-115\ {\rm GeV}|\), aligned with candidate 2. |
+| 12 | `delta_m_h3` | GeV | \(|m_{bb,3}-110\ {\rm GeV}|\), aligned with candidate 3. |
+| 13 | `delta_m_h4` | GeV | \(|m_{bb,4}-105\ {\rm GeV}|\), aligned with candidate 4. |
 | 14 | `higgs1_pt` | GeV | Transverse momentum of candidate 1. |
 | 15 | `higgs2_pt` | GeV | Transverse momentum of candidate 2. |
 | 16 | `higgs3_pt` | GeV | Transverse momentum of candidate 3. |
@@ -164,8 +164,8 @@ The helicity variable is
 
 \[
 |\cos\theta^*_{bb,a}|=
-\left|\widehat{\mathbf p}_{b}^{\,(H_a\ {m rest})}\cdot
-\widehat{\mathbf p}_{H_a}^{\,(4H\ {m rest})}\right|.
+\left|\widehat{\mathbf p}_{b}^{\,(H_a\ \mathrm{rest})}\cdot
+\widehat{\mathbf p}_{H_a}^{\,(4H\ \mathrm{rest})}\right|.
 \]
 
 An undefined numerical axis is stored as zero and counted in the analysis
@@ -214,8 +214,9 @@ fold \((f+1)\bmod5\) is the validation set, and the remaining three folds are
 used for training.  Every event is therefore scored once by a model that saw
 it in neither training nor validation.  Test-fold weights are never rescaled;
 the union of the five test partitions is already the full physical yield.
-Validation partitions are source-by-source rescaled to the full source yield
-only while choosing thresholds and hyperparameters.
+Validation weights are multiplied by the predeclared factor of five, since
+each validation fold is a deterministic one-in-five subsample.  This estimate
+uses no test-fold event or weight while choosing thresholds or hyperparameters.
 
 The fixed current XGBoost configuration is first run for `corrected28`,
 `core52` and `full91` on identical folds.  One global profile is selected from
@@ -282,8 +283,8 @@ requirements provide an additional guard against poorly populated bins.
 Candidates within 1% prefer fewer bins.
 
 The fold-specific numerical edges are frozen and applied to the corresponding
-test fold.  If a signed test-background bin is non-positive, the next coarser
-validation-valid candidate is used.  Negative yields are never clipped.  Each
+test fold.  If a signed test signal or background bin is non-positive, the
+next coarser validation-valid candidate is used.  Negative yields are never clipped.  Each
 signal template is normalized to a production cross section of 1 fb, so the
 shared pyhf POI is directly \(\sigma\) in fb.
 
@@ -310,13 +311,14 @@ four of five rotations.  The gate and every component metric are written to
 `parameterized_classifier_gate.json`.  If it fails, parameterized training is
 not performed.
 
-If the gate passes, the intended contract appends \(c_3/30\) and \(d_4/700\)
-at ML time.  Signal receives its true coordinates; every background event is
+If the gate passes, the runner appends \(c_3/30\) and \(d_4/700\) at ML time
+and performs 30 sequential Optuna trials per fold.  Signal receives its true
+coordinates; every background event is
 replicated at three deterministic, distinct grid coordinates within its
 original fold, with its classifier weight divided by three.  Background test
-events are rescored at every evaluated point.  The implementation contains
-the deterministic coordinate and replica primitives, but a parameterized
-production model is only materialized after the data-driven gate passes.
+events are rescored at every evaluated point.  Parameterized models are
+materialized only after the data-driven gate passes; a failed gate stops the
+study after the pooled result.
 
 ## Commands and outputs
 
