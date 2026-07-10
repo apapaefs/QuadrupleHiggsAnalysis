@@ -54,7 +54,8 @@ from observable_schemas import (
 from read_root_varfiles import read_ROOT_varfile
 
 
-METHOD_VERSION = "resolved-8b-c3d4-xgboost-v2"
+METHOD_VERSION = "resolved-8b-c3d4-xgboost-v2.1"
+CLASSIFIER_WEIGHT_SCALE_VERSION = "equal-class-mean-effective-row-weight-1-v1"
 BASE_SEED = 12345
 DEFAULT_PROFILES = ("corrected28", "core52", "full91")
 FIXED_XGBOOST_PARAMS = {
@@ -109,6 +110,10 @@ class EventSample:
     @property
     def entries(self) -> int:
         return int(self.features.shape[0])
+
+
+class ZeroSplitModelError(RuntimeError):
+    """Raised when an XGBoost configuration cannot produce a useful split."""
 
 
 def _finite_float(value: Any, label: str) -> float:
@@ -236,14 +241,43 @@ def _fold_mask(sample: EventSample, rotation: int, split: str, n_folds: int) -> 
     return np.asarray(masks[split], dtype=bool)
 
 
-def _balanced_weights(signal_weights: np.ndarray, background_weights: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _balanced_weights(
+    signal_weights: np.ndarray,
+    background_weights: np.ndarray,
+    *,
+    effective_row_count: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Balance the classes while keeping the mean effective-row weight at one."""
+
     signal_weights = np.asarray(signal_weights, dtype=float)
     background_weights = np.asarray(background_weights, dtype=float)
+    if (
+        signal_weights.ndim != 1
+        or background_weights.ndim != 1
+        or np.any(~np.isfinite(signal_weights))
+        or np.any(~np.isfinite(background_weights))
+        or np.any(signal_weights < 0.0)
+        or np.any(background_weights < 0.0)
+    ):
+        raise ValueError(
+            "Classifier weights must be finite, nonnegative one-dimensional arrays"
+        )
     signal_total = float(np.sum(signal_weights))
     background_total = float(np.sum(background_weights))
     if signal_total <= 0.0 or background_total <= 0.0:
         raise ValueError("Both classifier classes require positive absolute training weight")
-    return signal_weights / signal_total, background_weights / background_total
+    if effective_row_count is None:
+        effective_row_count = int(
+            np.count_nonzero(signal_weights) + np.count_nonzero(background_weights)
+        )
+    effective_row_count = int(effective_row_count)
+    if effective_row_count <= 0:
+        raise ValueError("effective_row_count must be positive")
+    class_total = 0.5 * float(effective_row_count)
+    return (
+        signal_weights * (class_total / signal_total),
+        background_weights * (class_total / background_total),
+    )
 
 
 def _training_arrays(
@@ -284,6 +318,7 @@ def _training_arrays(
 
     background_features = []
     background_weights = []
+    background_effective_rows = 0
     grid_points = np.asarray(
         [(sample.c3, sample.d4) for sample in grid_samples], dtype=float
     )
@@ -292,6 +327,7 @@ def _training_arrays(
         # Absolute weights are required by XGBoost.  Their physical factors
         # retain the relative process mixture within the background class.
         weights = np.abs(sample.physical_weights[mask])
+        background_effective_rows += int(np.count_nonzero(weights))
         features = sample.features[mask][:, profile_indices]
         if strategy == "parameterized-crossfit-v1":
             replicas = make_background_parameter_replicas(
@@ -314,13 +350,69 @@ def _training_arrays(
     background_X = np.concatenate(background_features, axis=0)
     signal_w = np.concatenate(signal_weights)
     background_w = np.concatenate(background_weights)
-    signal_w, background_w = _balanced_weights(signal_w, background_w)
+    effective_row_count = int(np.count_nonzero(signal_w) + background_effective_rows)
+    signal_w, background_w = _balanced_weights(
+        signal_w,
+        background_w,
+        effective_row_count=effective_row_count,
+    )
     X = np.concatenate([signal_X, background_X], axis=0)
     y = np.concatenate(
         [np.ones(signal_X.shape[0], dtype=np.int8), np.zeros(background_X.shape[0], dtype=np.int8)]
     )
     weights = np.concatenate([signal_w, background_w])
     return X, y, weights
+
+
+def _classifier_weight_diagnostics(
+    y: np.ndarray,
+    weights: np.ndarray,
+    min_child_weight: float,
+) -> dict[str, Any]:
+    labels = np.asarray(y)
+    classifier_weights = np.asarray(weights, dtype=float)
+    if (
+        labels.ndim != 1
+        or classifier_weights.ndim != 1
+        or len(labels) != len(classifier_weights)
+    ):
+        raise ValueError("Classifier labels and weights must be matching one-dimensional arrays")
+    if np.any(~np.isfinite(classifier_weights)) or np.any(classifier_weights < 0.0):
+        raise ValueError("Classifier weights must be finite and nonnegative")
+    signal_total = float(np.sum(classifier_weights[labels == 1]))
+    background_total = float(np.sum(classifier_weights[labels == 0]))
+    if signal_total <= 0.0 or background_total <= 0.0:
+        raise ValueError("Both classifier classes require positive training weight")
+    if not math.isclose(signal_total, background_total, rel_tol=1.0e-10, abs_tol=1.0e-12):
+        raise ValueError("Signal and background classifier totals are not balanced")
+    total = signal_total + background_total
+    maximum_root_hessian = 0.25 * total
+    minimum_split_hessian = 2.0 * float(min_child_weight)
+    diagnostics = {
+        "classifier_weight_scale_version": CLASSIFIER_WEIGHT_SCALE_VERSION,
+        "classifier_effective_row_count": int(round(total)),
+        "classifier_equal_class_total": signal_total,
+        "classifier_signal_weight_total": signal_total,
+        "classifier_background_weight_total": background_total,
+        "classifier_total_weight": total,
+        "maximum_initial_root_hessian": maximum_root_hessian,
+        "minimum_hessian_for_binary_split": minimum_split_hessian,
+    }
+    if maximum_root_hessian < minimum_split_hessian:
+        raise ZeroSplitModelError(
+            "The classifier weight scale makes every binary split impossible: "
+            f"maximum initial root Hessian {maximum_root_hessian:g} is below "
+            f"2*min_child_weight={minimum_split_hessian:g}"
+        )
+    return diagnostics
+
+
+def _xgboost_split_count(booster: Any) -> int | None:
+    if not hasattr(booster, "get_dump"):
+        return None
+    return int(
+        sum(tree.count('"split"') for tree in booster.get_dump(dump_format="json"))
+    )
 
 
 def _train_model(
@@ -336,12 +428,18 @@ def _train_model(
     rotation: int,
     source_commit: str,
 ):
-    import xgboost as xgb
-
     model_params = dict(FIXED_XGBOOST_PARAMS)
     model_params.update(dict(params))
     model_params["random_state"] = int(seed)
     model_params["n_jobs"] = 1
+    weight_diagnostics = _classifier_weight_diagnostics(
+        y,
+        weights,
+        model_params["min_child_weight"],
+    )
+
+    import xgboost as xgb
+
     model = xgb.XGBClassifier(**model_params)
     model.fit(X, y, sample_weight=weights, verbose=False)
     contract = get_feature_contract(observable_set, profile)
@@ -353,7 +451,25 @@ def _train_model(
     model_feature_names = list(contract.feature_names)
     if ml_parameters:
         model_feature_names.extend(name for name, _ in ml_parameters)
-    model.get_booster().feature_names = model_feature_names
+    booster = model.get_booster()
+    booster.feature_names = model_feature_names
+    split_count = _xgboost_split_count(booster)
+    if split_count == 0:
+        raise ZeroSplitModelError(
+            "XGBoost trained only constant leaves and produced zero split nodes"
+        )
+    score_diagnostics: dict[str, Any] = {}
+    if hasattr(model, "predict_proba"):
+        training_scores = np.asarray(model.predict_proba(X)[:, 1], dtype=float)
+        score_diagnostics = {
+            "training_score_min": float(np.min(training_scores)),
+            "training_score_max": float(np.max(training_scores)),
+            "training_score_std": float(np.std(training_scores)),
+        }
+        if float(np.ptp(training_scores)) <= 1.0e-12:
+            raise ZeroSplitModelError(
+                "XGBoost training scores are numerically constant despite fitted split nodes"
+            )
     metadata = attach_model_metadata(
         model,
         observable_set=observable_set,
@@ -365,6 +481,9 @@ def _train_model(
         parameters=model_params,
         seed=int(seed),
         source_commit=source_commit,
+        xgboost_split_nodes=split_count,
+        **weight_diagnostics,
+        **score_diagnostics,
     )
     validate_model_contract(
         model,
@@ -627,6 +746,18 @@ def _suggest_xgboost_params(trial: Any) -> dict[str, Any]:
     }
 
 
+def _remaining_optuna_attempts(states: Sequence[str], target_trials: int) -> int:
+    """Return executions needed without replacing pruned or stale-running trials."""
+
+    names = [str(state) for state in states]
+    finished = sum(state in {"COMPLETE", "PRUNED", "FAIL"} for state in names)
+    running = sum(state == "RUNNING" for state in names)
+    waiting = sum(state == "WAITING" for state in names)
+    allocated = finished + running + waiting
+    new_slots = max(0, int(target_trials) - allocated)
+    return waiting + new_slots
+
+
 def _tune_rotation(
     sm_samples: Sequence[EventSample],
     grid_samples: Sequence[EventSample],
@@ -678,32 +809,61 @@ def _tune_rotation(
 
     def objective(trial: Any) -> float:
         params = _suggest_xgboost_params(trial)
-        _, validation, _, _ = _fit_rotation(
-            sm_samples,
-            grid_samples,
-            background_samples,
-            strategy=strategy,
-            observable_set=observable_set,
-            profile=profile,
-            rotation=rotation,
-            n_folds=n_folds,
-            params=params,
-            seed=seed,
-            source_commit=source_commit,
+        try:
+            _, validation, model_metadata, _ = _fit_rotation(
+                sm_samples,
+                grid_samples,
+                background_samples,
+                strategy=strategy,
+                observable_set=observable_set,
+                profile=profile,
+                rotation=rotation,
+                n_folds=n_folds,
+                params=params,
+                seed=seed,
+                source_commit=source_commit,
+            )
+        except ZeroSplitModelError as exc:
+            trial.set_user_attr("zero_split_reason", str(exc))
+            raise optuna.TrialPruned(str(exc)) from exc
+        trial.set_user_attr(
+            "xgboost_split_nodes", model_metadata.get("xgboost_split_nodes")
+        )
+        trial.set_user_attr(
+            "training_score_std", model_metadata.get("training_score_std")
         )
         trial.set_user_attr("median_sigma95_fb", float(np.median([
             point["sigma95_fb"] for point in validation["points"].values()
         ])))
         return float(validation["objective"])
 
-    completed = sum(
-        trial.state == optuna.trial.TrialState.COMPLETE for trial in study.trials
+    attempts_to_execute = _remaining_optuna_attempts(
+        [trial.state.name for trial in study.trials],
+        int(trials),
     )
-    remaining = max(0, int(trials) - completed)
-    if remaining:
-        study.optimize(objective, n_trials=remaining, n_jobs=1, gc_after_trial=True)
-    if not study.best_trial:
-        raise RuntimeError(f"Optuna produced no valid trial for fold {rotation}")
+    if attempts_to_execute:
+        study.optimize(
+            objective,
+            n_trials=attempts_to_execute,
+            n_jobs=1,
+            gc_after_trial=True,
+        )
+    completed_trials = [
+        trial
+        for trial in study.trials
+        if trial.state == optuna.trial.TrialState.COMPLETE
+    ]
+    if not completed_trials:
+        pruned_reasons = sorted({
+            str(trial.user_attrs.get("zero_split_reason"))
+            for trial in study.trials
+            if trial.state == optuna.trial.TrialState.PRUNED
+            and trial.user_attrs.get("zero_split_reason")
+        })
+        raise RuntimeError(
+            f"Optuna produced no completed trial for fold {rotation}; "
+            f"zero-split reasons: {pruned_reasons or ['none recorded']}"
+        )
     history = []
     for trial in study.trials:
         history.append(
@@ -1089,6 +1249,7 @@ def _run_fingerprint(
 ) -> str:
     payload = {
         "method_version": METHOD_VERSION,
+        "classifier_weight_scale_version": CLASSIFIER_WEIGHT_SCALE_VERSION,
         "observable_set": observable_set,
         "profile": profile,
         "strategy": strategy,
@@ -1853,6 +2014,11 @@ def run_c3d4_study(
     runtime_versions = _package_versions()
     manifest = {
         "method_version": METHOD_VERSION,
+        "classifier_weight_scale_version": CLASSIFIER_WEIGHT_SCALE_VERSION,
+        "classifier_weight_normalization": (
+            "equal signal/background totals; combined total equals the number of "
+            "nonzero-weight signal plus original background training rows"
+        ),
         "status": "running",
         "source_commit": source_commit,
         "observable_set": observable_set,
@@ -2377,4 +2543,10 @@ def run_c3d4_study(
     return summary
 
 
-__all__ = ["METHOD_VERSION", "EventSample", "run_c3d4_study"]
+__all__ = [
+    "CLASSIFIER_WEIGHT_SCALE_VERSION",
+    "METHOD_VERSION",
+    "EventSample",
+    "ZeroSplitModelError",
+    "run_c3d4_study",
+]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import csv
+import subprocess
 import tempfile
 import types
 import unittest
@@ -89,13 +90,15 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
 
         signal_weights = weights[labels == 1]
         background_weights = weights[labels == 0]
-        self.assertAlmostEqual(float(np.sum(signal_weights)), 1.0)
-        self.assertAlmostEqual(float(np.sum(background_weights)), 1.0)
+        # Six nonzero signal and six original background rows give a common
+        # class total of (6 + 6) / 2 = 6 and mean effective-row weight one.
+        self.assertAlmostEqual(float(np.sum(signal_weights)), 6.0)
+        self.assertAlmostEqual(float(np.sum(background_weights)), 6.0)
         # Three training folds give three rows from each point, in sample order.
-        self.assertAlmostEqual(float(np.sum(signal_weights[:3])), 0.5)
-        self.assertAlmostEqual(float(np.sum(signal_weights[3:])), 0.5)
+        self.assertAlmostEqual(float(np.sum(signal_weights[:3])), 3.0)
+        self.assertAlmostEqual(float(np.sum(signal_weights[3:])), 3.0)
         # Physical process ratios are preserved within the background class.
-        self.assertAlmostEqual(float(np.sum(background_weights[3:])), 10.0 / 11.0)
+        self.assertAlmostEqual(float(np.sum(background_weights[3:])), 60.0 / 11.0)
 
     def test_parameterized_training_replicates_background_and_preserves_class_totals(self):
         grid = [
@@ -117,8 +120,11 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
         self.assertEqual(features.shape[1], 30)
         self.assertEqual(int(np.sum(labels == 1)), 9)
         self.assertEqual(int(np.sum(labels == 0)), 9)
-        self.assertAlmostEqual(float(np.sum(weights[labels == 1])), 1.0)
-        self.assertAlmostEqual(float(np.sum(weights[labels == 0])), 1.0)
+        # Nine signal rows plus three original background rows give class
+        # totals of six.  Replication does not inflate the normalization.
+        self.assertAlmostEqual(float(np.sum(weights[labels == 1])), 6.0)
+        self.assertAlmostEqual(float(np.sum(weights[labels == 0])), 6.0)
+        self.assertAlmostEqual(float(np.sum(weights)), 12.0)
         background_parameters = features[labels == 0, -2:]
         for start in range(0, len(background_parameters), 3):
             self.assertEqual(len(np.unique(background_parameters[start:start + 3], axis=0)), 3)
@@ -183,6 +189,70 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
         )
         with self.assertRaises(ModelContractError):
             validate_model_contract(model, "extended-91-v2", "corrected28")
+        self.assertEqual(
+            metadata["classifier_weight_scale_version"],
+            runner.CLASSIFIER_WEIGHT_SCALE_VERSION,
+        )
+        self.assertEqual(metadata["classifier_signal_weight_total"], 4.0)
+        self.assertEqual(metadata["classifier_background_weight_total"], 4.0)
+        self.assertEqual(metadata["classifier_effective_row_count"], 8)
+
+    def test_prefit_guard_rejects_the_old_unit_class_totals(self):
+        labels = np.asarray([1, 1, 0, 0])
+        old_unit_class_weights = np.asarray([0.5, 0.5, 0.5, 0.5])
+        with self.assertRaisesRegex(
+            runner.ZeroSplitModelError, "every binary split impossible"
+        ):
+            runner._classifier_weight_diagnostics(
+                labels,
+                old_unit_class_weights,
+                min_child_weight=1.0,
+            )
+
+    def test_real_xgboost_training_produces_nonconstant_split_model(self):
+        script = f"""
+import sys
+sys.path.insert(0, {str(CODE)!r})
+try:
+    import xgboost
+except ImportError:
+    raise SystemExit(77)
+import numpy as np
+import c3d4_xgboost_runner as runner
+rng = np.random.default_rng(12345)
+background = rng.normal(0.0, 0.2, size=(100, 28))
+signal = rng.normal(0.0, 0.2, size=(100, 28))
+signal[:, 0] += 3.0
+X = np.concatenate([signal, background])
+y = np.concatenate([np.ones(100, dtype=np.int8), np.zeros(100, dtype=np.int8)])
+signal_w, background_w = runner._balanced_weights(np.ones(100), np.ones(100))
+weights = np.concatenate([signal_w, background_w])
+model, metadata, _ = runner._train_model(
+    X, y, weights,
+    params={{"n_estimators": 10, "max_depth": 2, "learning_rate": 0.1}},
+    seed=12345,
+    observable_set="extended-91-v2",
+    profile="corrected28",
+    strategy="sm-crossfit-v2",
+    rotation=0,
+    source_commit="test",
+)
+assert metadata["xgboost_split_nodes"] > 0
+assert metadata["training_score_std"] > 0.0
+assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            text=True,
+            capture_output=True,
+        )
+        if completed.returncode == 77:
+            raise unittest.SkipTest("xgboost is not installed in this Python environment")
+        self.assertEqual(
+            completed.returncode,
+            0,
+            msg=f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
+        )
 
     def test_crossfit_test_aggregation_uses_each_fold_without_rescaling(self):
         point = sample("p0", "grid_signal", [1] * 5, [1] * 5, 0, 0)
@@ -275,6 +345,29 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
             **{**common, "package_versions": {"xgboost": "3.1.0", "optuna": "4.9.0"}},
         )
         self.assertNotEqual(extended, changed_runtime)
+        with mock.patch.object(
+            runner, "CLASSIFIER_WEIGHT_SCALE_VERSION", "different-weight-scale"
+        ):
+            changed_weight_scale = runner._run_fingerprint(
+                observable_set="extended-91-v2", **common
+            )
+        self.assertNotEqual(extended, changed_weight_scale)
+
+    def test_optuna_attempt_budget_counts_pruned_and_running_trials(self):
+        self.assertEqual(runner._remaining_optuna_attempts(["WAITING"], 40), 40)
+        self.assertEqual(runner._remaining_optuna_attempts(["COMPLETE"] * 10, 40), 30)
+        self.assertEqual(
+            runner._remaining_optuna_attempts(
+                ["COMPLETE"] * 9 + ["RUNNING"], 40
+            ),
+            30,
+        )
+        self.assertEqual(
+            runner._remaining_optuna_attempts(
+                ["COMPLETE"] * 35 + ["PRUNED"] * 5, 40
+            ),
+            0,
+        )
 
     def test_csv_writer_keeps_nested_bin_edges(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -201,9 +201,24 @@ w^{\rm train}_{i,p}=\frac{|w_{i,p}|}{\sum_{j\in p}|w_{j,p}|}\frac{1}{57}.
 
 Thus, every c3/d4 point has equal total importance.  Background training uses
 \(|w^{\rm phys}|\), which preserves the physical process mixture, and the two
-classifier classes are finally normalized to equal totals.  Physical signal
-cross sections are used only when producing yields, limits and exclusion
-ratios.
+classifier classes are finally normalized to equal totals.  Their common
+absolute scale is chosen so that the combined classifier weight equals the
+number of nonzero-weight signal rows plus original (pre-replication)
+background rows in the training partition.  The mean effective-row weight is
+therefore one, making XGBoost's `min_child_weight` and regularization ranges
+meaningful.  Parameterized background replicas divide an original event's
+weight without increasing this normalization count.  Physical signal cross
+sections are used only when producing yields, limits and exclusion ratios.
+
+Before fitting, the implementation rejects a configuration if
+
+\[
+\frac14\sum_iw_i^{\rm train}<2\,{\tt min\_child\_weight},
+\]
+
+because even the initial root node then lacks enough Hessian weight to form
+two valid children.  Final and fixed-profile models must contain at least one
+split and nonconstant training scores; zero-split Optuna trials are pruned.
 
 ## Cross-fitting, profile selection and tuning
 

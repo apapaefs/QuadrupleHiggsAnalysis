@@ -36,7 +36,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 import numpy as np
 
 
-METHOD_VERSION = "c3d4-xgboost-study-v2"
+METHOD_VERSION = "c3d4-xgboost-study-v2.1"
 DEFAULT_SEED = 12345
 DEFAULT_N_FOLDS = 5
 DEFAULT_THRESHOLDS = np.linspace(0.0, 1.0, 1001)
