@@ -29,6 +29,27 @@ DEFAULT_SIGNAL_K_FACTOR = 2.0
 DEFAULT_BACKGROUND_K_FACTOR = 2.0
 DEFAULT_BACKGROUND_CSV = _REPO_DIR / "Backgrounds" / "processes.csv"
 DEFAULT_BACKGROUND_HERWIG_TEMPLATE = _REPO_DIR / "Backgrounds" / "HW-AlpGen8Q-LHEWriter-Reweighted.in"
+EXTENDED_V2_TAG = "extended-v2"
+
+
+def _canonical_sample_name(filename):
+    """Return the production sample name, removing variable-tree and schema tags."""
+
+    sample_name = _Path(filename).name.split("_var.smear", 1)[0]
+    tagged_suffix = f"-{EXTENDED_V2_TAG}"
+    if sample_name.endswith(tagged_suffix):
+        sample_name = sample_name[: -len(tagged_suffix)]
+    return sample_name
+
+
+def _var_root_matches_analysis_tag(path, analysis_tag=None):
+    """Keep tagged and untagged observable files in disjoint discovery sets."""
+
+    name = _Path(path).name
+    tagged_marker = f"-{EXTENDED_V2_TAG}_var.smear"
+    if analysis_tag is None:
+        return tagged_marker not in name
+    return f"-{analysis_tag}_var.smear" in name
 
 
 def _parse_herwig_total_xsec(out_file):
@@ -48,7 +69,7 @@ def _parse_herwig_total_xsec(out_file):
 
 def _metadata_for_root_file(root_file):
     root_file = _Path(root_file)
-    sample_name = root_file.name.split("_var.smear", 1)[0]
+    sample_name = _canonical_sample_name(root_file.name)
     out_file = root_file.parent.parent / f"{sample_name}.out"
     if not out_file.exists():
         matches = sorted(root_file.parent.parent.rglob(f"{sample_name}.out"))
@@ -58,8 +79,9 @@ def _metadata_for_root_file(root_file):
     return xsec_fb, generated, out_file
 
 
-def _discover_var_root_files(sample_dir, include_auxiliary=False):
+def _discover_var_root_files(sample_dir, include_auxiliary=False, analysis_tag=None):
     files = sorted((_REPO_DIR / sample_dir / "events").glob("*_var.smear*.root"))
+    files = [path for path in files if _var_root_matches_analysis_tag(path, analysis_tag)]
     if include_auxiliary:
         return files
     excluded = ("debug", "smoke")
@@ -291,6 +313,9 @@ def _background_metadata_from_sample(sample):
         "local_lhe": sample["local_lhe"],
         "raw_xsec_pb": sample["xsec_pb"],
         "raw_xsec_fb": sample["xsec_fb"],
+        "cross_section_unc_pb": sample.get("cross_section_unc_pb"),
+        "relative_uncertainty_percent": sample.get("relative_uncertainty_percent"),
+        "xsec_source": sample.get("xsec_source"),
         "b_quarks": sample["b_quarks"],
         "c_quarks": sample["c_quarks"],
         "light_jets": sample["light_jets"],
@@ -327,6 +352,19 @@ def _read_background_processes(csv_file=DEFAULT_BACKGROUND_CSV):
                 raise SystemExit(f"Invalid events/cross_section_pb value for {process_id} in {csv_file}") from exc
 
             flavor_counts = _infer_background_flavor_counts(row, csv_file)
+            try:
+                xsec_unc_pb = (
+                    None
+                    if not str(row.get("cross_section_unc_pb", "")).strip()
+                    else float(row["cross_section_unc_pb"])
+                )
+                relative_uncertainty_percent = (
+                    None
+                    if not str(row.get("relative_uncertainty_percent", "")).strip()
+                    else float(row["relative_uncertainty_percent"])
+                )
+            except ValueError as exc:
+                raise SystemExit(f"Invalid cross-section uncertainty for {process_id} in {csv_file}") from exc
             run_name = f"HW-{process_id}"
             local_lhe_path = _REPO_DIR / "Backgrounds" / local_lhe
             output_root = _REPO_DIR / "Backgrounds" / "events" / f"{run_name}.root"
@@ -341,6 +379,9 @@ def _read_background_processes(csv_file=DEFAULT_BACKGROUND_CSV):
                     "events": events,
                     "xsec_pb": xsec_pb,
                     "xsec_fb": xsec_pb * 1000.0,
+                    "cross_section_unc_pb": xsec_unc_pb,
+                    "relative_uncertainty_percent": relative_uncertainty_percent,
+                    "xsec_source": row.get("xsec_source", "").strip(),
                     "run_name": run_name,
                     "raw_root": output_root,
                     "var_root": output_var_root,
@@ -739,14 +780,21 @@ def _prepare_background_herwig_inputs(
     return manifest_file
 
 
-def _discover_score_roots(paths):
+def _discover_score_roots(paths, analysis_tag=None):
     roots = []
     for path in paths:
         path = _Path(path)
         if path.is_file():
-            roots.append(path)
+            if _var_root_matches_analysis_tag(path, analysis_tag):
+                roots.append(path)
         elif path.is_dir():
-            roots.extend(sorted(path.rglob("*_var.smear*.root")))
+            roots.extend(
+                sorted(
+                    root
+                    for root in path.rglob("*_var.smear*.root")
+                    if _var_root_matches_analysis_tag(root, analysis_tag)
+                )
+            )
         else:
             print(f"Warning: score input does not exist: {path}")
     return roots
@@ -770,19 +818,22 @@ def _is_var_smear_root(path):
     return path.suffix == ".root" and "_var.smear" in path.name
 
 
-def _analysis_output_root(raw_root):
+def _analysis_output_root(raw_root, analysis_tag=None):
     raw_root = _Path(raw_root)
-    return raw_root.with_name(raw_root.name.replace(".root", "_var.smearCMS.root"))
+    suffix = "" if analysis_tag is None else f"-{analysis_tag}"
+    return raw_root.with_name(raw_root.name.replace(".root", f"{suffix}_var.smearCMS.root"))
 
 
-def _analysis_log_file(raw_root):
+def _analysis_log_file(raw_root, analysis_tag=None):
     raw_root = _Path(raw_root)
-    return raw_root.with_name(raw_root.name.replace(".root", ".analysis.log"))
+    suffix = "" if analysis_tag is None else f"-{analysis_tag}"
+    return raw_root.with_name(raw_root.name.replace(".root", f"{suffix}.analysis.log"))
 
 
-def _analysis_summary_file(raw_root):
+def _analysis_summary_file(raw_root, analysis_tag=None):
     raw_root = _Path(raw_root)
-    return raw_root.with_name(raw_root.name.replace(".root", ".analysis_summary.json"))
+    suffix = "" if analysis_tag is None else f"-{analysis_tag}"
+    return raw_root.with_name(raw_root.name.replace(".root", f"{suffix}.analysis_summary.json"))
 
 
 def _analysis_log_file_for_var_root(var_root):
@@ -863,6 +914,12 @@ def _read_analysis_summary_for_var_root(var_root):
             summary["preselection_weight_out"] = _parse_last_number(stripped)
         elif stripped.startswith("preselection efficiency"):
             summary["preselection_efficiency"] = _parse_last_number(stripped)
+        elif stripped.startswith(("feature tree MC events out", "feature-tree MC events")):
+            summary["feature_tree_mc_events_out"] = _parse_last_number(stripped)
+        elif stripped.startswith(("feature tree weight out", "feature-tree weight out")):
+            summary["feature_tree_weight_out"] = _parse_last_number(stripped)
+        elif stripped.startswith(("feature tree efficiency", "feature-tree efficiency")):
+            summary["feature_tree_efficiency"] = _parse_last_number(stripped)
         elif stripped.startswith("8bs with pT") and "preselection_weight_out" not in summary:
             summary["preselection_weight_out"] = _parse_last_number(stripped)
         elif stripped.startswith("total weight out"):
@@ -881,20 +938,27 @@ def _read_analysis_summary_for_var_root(var_root):
     return summary
 
 
-def _discover_analysis_inputs(paths):
+def _discover_analysis_inputs(paths, analysis_tag=None):
     var_roots = []
     raw_roots = []
     for path in paths:
         path = _Path(path)
         if path.is_file():
             if _is_var_smear_root(path):
-                var_roots.append(path)
+                if _var_root_matches_analysis_tag(path, analysis_tag):
+                    var_roots.append(path)
             elif path.suffix == ".root":
                 raw_roots.append(path)
             else:
                 print(f"Warning: analysis input is not a ROOT file: {path}")
         elif path.is_dir():
-            var_roots.extend(sorted(path.rglob("*_var.smear*.root")))
+            var_roots.extend(
+                sorted(
+                    root
+                    for root in path.rglob("*_var.smear*.root")
+                    if _var_root_matches_analysis_tag(root, analysis_tag)
+                )
+            )
             raw_roots.extend(sorted(root for root in path.rglob("*.root") if not _is_var_smear_root(root)))
         else:
             print(f"Warning: analysis input does not exist: {path}")
@@ -975,13 +1039,13 @@ def _infer_scored_signal_metadata(
     return signal_xsecs, signal_generated, normalisation_weights
 
 
-def _ensure_background_csv_var_roots(samples, args):
+def _ensure_background_csv_var_roots(samples, args, analysis_tag=None):
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     var_roots = []
     missing_jobs = []
     for sample in samples:
-        var_root = sample["var_root"]
+        var_root = _analysis_output_root(sample["raw_root"], analysis_tag)
         raw_root = sample["raw_root"]
         if var_root.exists() and not args.force_analysis:
             var_roots.append(var_root)
@@ -1006,6 +1070,7 @@ def _ensure_background_csv_var_roots(samples, args):
                 force=args.force_analysis,
                 c_mistags=sample["c_quarks"],
                 light_mistags=sample["light_jets"],
+                analysis_tag=analysis_tag,
             )
 
         if jobs == 1:
@@ -1018,27 +1083,36 @@ def _ensure_background_csv_var_roots(samples, args):
                     future.result()
 
     for sample in samples:
-        if sample["var_root"].exists():
-            var_roots.append(sample["var_root"])
+        var_root = _analysis_output_root(sample["raw_root"], analysis_tag)
+        if var_root.exists():
+            var_roots.append(var_root)
 
     return _unique_paths(_filter_auxiliary_roots(var_roots, args.include_auxiliary_samples))
 
 
-def _background_inputs_from_csv(args, ensure_analysis=False):
+def _background_inputs_from_csv(args, ensure_analysis=False, analysis_tag=None):
     samples = _read_background_processes(args.background_csv)
     if ensure_analysis:
-        background_files = _ensure_background_csv_var_roots(samples, args)
+        background_files = _ensure_background_csv_var_roots(samples, args, analysis_tag=analysis_tag)
     else:
         background_files = [
-            sample["var_root"]
+            _analysis_output_root(sample["raw_root"], analysis_tag)
             for sample in samples
-            if sample["var_root"].exists()
+            if _analysis_output_root(sample["raw_root"], analysis_tag).exists()
         ]
-        missing = [sample for sample in samples if not sample["var_root"].exists()]
+        missing = [
+            sample
+            for sample in samples
+            if not _analysis_output_root(sample["raw_root"], analysis_tag).exists()
+        ]
         for sample in missing:
-            print(f"Warning: missing background variable ROOT for {sample['process_id']}: {sample['var_root']}")
+            missing_root = _analysis_output_root(sample["raw_root"], analysis_tag)
+            print(f"Warning: missing background variable ROOT for {sample['process_id']}: {missing_root}")
 
-    by_var_root = {str(sample["var_root"]): sample for sample in samples}
+    by_var_root = {
+        str(_analysis_output_root(sample["raw_root"], analysis_tag)): sample
+        for sample in samples
+    }
     selected_samples = [by_var_root[str(path)] for path in background_files if str(path) in by_var_root]
     background_xsecs = [sample["xsec_fb"] for sample in selected_samples]
     background_generated = [sample["events"] for sample in selected_samples]
@@ -1053,7 +1127,7 @@ def _metadata_for_background_files(background_files, csv_file=DEFAULT_BACKGROUND
     if csv_file.exists():
         try:
             samples = {
-                sample["var_root"].name: sample
+                sample["run_name"]: sample
                 for sample in _read_background_processes(csv_file)
             }
         except (SystemExit, ValueError):
@@ -1061,7 +1135,7 @@ def _metadata_for_background_files(background_files, csv_file=DEFAULT_BACKGROUND
 
     metadata = []
     for path in background_files:
-        sample = samples.get(_Path(path).name)
+        sample = samples.get(_canonical_sample_name(path))
         if sample is not None:
             metadata.append(_background_metadata_from_sample(sample))
         else:
@@ -1270,7 +1344,7 @@ def _signal_metadata_for_files(signal_files):
         path = _Path(path)
         metadata.append(
             {
-                "process_id": path.name.split("_var.smear", 1)[0],
+                "process_id": _canonical_sample_name(path),
                 "description": "SM gg -> hhhh, h -> b bbar",
                 "local_lhe": path.name,
             }
@@ -1539,6 +1613,7 @@ def _summarize_background_analysis(args):
         summary = _read_analysis_summary_for_var_root(sample["var_root"])
         effective_xsec_fb = sample["xsec_fb"] * float(rate_factor)
         preselection_efficiency = summary.get("preselection_efficiency")
+        feature_tree_efficiency = summary.get("feature_tree_efficiency")
         analysis_efficiency = summary.get("analysis_efficiency")
         preselection_xsec_fb = (
             effective_xsec_fb * float(preselection_efficiency)
@@ -1548,6 +1623,11 @@ def _summarize_background_analysis(args):
         output_xsec_fb = (
             effective_xsec_fb * float(analysis_efficiency)
             if analysis_efficiency is not None
+            else None
+        )
+        feature_tree_xsec_fb = (
+            effective_xsec_fb * float(feature_tree_efficiency)
+            if feature_tree_efficiency is not None
             else None
         )
 
@@ -1571,6 +1651,10 @@ def _summarize_background_analysis(args):
                 "preselection_weight_out": summary.get("preselection_weight_out"),
                 "preselection_efficiency": preselection_efficiency,
                 "preselection_xsec_fb": preselection_xsec_fb,
+                "feature_tree_mc_events_out": summary.get("feature_tree_mc_events_out"),
+                "feature_tree_weight_out": summary.get("feature_tree_weight_out"),
+                "feature_tree_efficiency": feature_tree_efficiency,
+                "feature_tree_xsec_fb": feature_tree_xsec_fb,
                 "analysis_mc_events_out": summary.get("analysis_mc_events_out"),
                 "analysis_weight_out": summary.get("analysis_weight_out"),
                 "analysis_efficiency": analysis_efficiency,
@@ -1602,6 +1686,10 @@ def _summarize_background_analysis(args):
         "preselection_weight_out",
         "preselection_efficiency",
         "preselection_xsec_fb",
+        "feature_tree_mc_events_out",
+        "feature_tree_weight_out",
+        "feature_tree_efficiency",
+        "feature_tree_xsec_fb",
         "analysis_mc_events_out",
         "analysis_weight_out",
         "analysis_efficiency",
@@ -1644,7 +1732,14 @@ def _ensure_analysis_executable(executable, source_file, rebuild=True):
     source_file = _Path(source_file) if source_file is not None else None
     needs_build = not executable.exists()
     if source_file is not None and source_file.exists() and executable.exists():
-        needs_build = source_file.stat().st_mtime > executable.stat().st_mtime
+        dependencies = [source_file]
+        extended_header = source_file.parent / "Extended91Observables.h"
+        if extended_header.exists():
+            dependencies.append(extended_header)
+        needs_build = any(
+            dependency.stat().st_mtime > executable.stat().st_mtime
+            for dependency in dependencies
+        )
 
     if rebuild and needs_build and source_file is not None and (source_file.parent / "Makefile").exists():
         print("Building analysis executable:", executable)
@@ -1655,16 +1750,26 @@ def _ensure_analysis_executable(executable, source_file, rebuild=True):
     return executable
 
 
-def _run_one_cpp_analysis(raw_root, executable, max_events=None, force=False, c_mistags=0, light_mistags=0):
+def _run_one_cpp_analysis(
+    raw_root,
+    executable,
+    max_events=None,
+    force=False,
+    c_mistags=0,
+    light_mistags=0,
+    analysis_tag=None,
+):
     import subprocess
 
     raw_root = _Path(raw_root)
-    output_root = _analysis_output_root(raw_root)
-    log_file = _analysis_log_file(raw_root)
+    output_root = _analysis_output_root(raw_root, analysis_tag)
+    log_file = _analysis_log_file(raw_root, analysis_tag)
     if output_root.exists() and not force:
         return output_root
 
     command = [str(executable), str(raw_root)]
+    if analysis_tag is not None:
+        command.extend(["-t", str(analysis_tag)])
     if max_events is not None:
         command.extend(["-n", str(max_events)])
     if c_mistags:
@@ -1693,14 +1798,15 @@ def _ensure_analysis_var_roots(
     run_missing=True,
     c_mistags=0,
     light_mistags=0,
+    analysis_tag=None,
 ):
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    existing_var_roots, raw_roots = _discover_analysis_inputs(inputs)
+    existing_var_roots, raw_roots = _discover_analysis_inputs(inputs, analysis_tag=analysis_tag)
     existing_var_roots = _filter_auxiliary_roots(existing_var_roots, include_auxiliary)
     raw_roots = _filter_auxiliary_roots(raw_roots, include_auxiliary)
 
-    expected_var_roots = [_analysis_output_root(path) for path in raw_roots]
+    expected_var_roots = [_analysis_output_root(path, analysis_tag) for path in raw_roots]
     missing_raw_roots = [
         raw_root
         for raw_root, var_root in zip(raw_roots, expected_var_roots)
@@ -1722,11 +1828,21 @@ def _ensure_analysis_var_roots(
                     force=force,
                     c_mistags=c_mistags,
                     light_mistags=light_mistags,
+                    analysis_tag=analysis_tag,
                 )
         else:
             with ThreadPoolExecutor(max_workers=jobs) as executor:
                 futures = [
-                    executor.submit(_run_one_cpp_analysis, raw_root, executable, max_events, force, c_mistags, light_mistags)
+                    executor.submit(
+                        _run_one_cpp_analysis,
+                        raw_root,
+                        executable,
+                        max_events,
+                        force,
+                        c_mistags,
+                        light_mistags,
+                        analysis_tag,
+                    )
                     for raw_root in missing_raw_roots
                 ]
                 for future in as_completed(futures):
@@ -1737,6 +1853,201 @@ def _ensure_analysis_var_roots(
         if var_root.exists():
             final_var_roots.append(var_root)
     return _unique_paths(_filter_auxiliary_roots(final_var_roots, include_auxiliary))
+
+
+def _study_specs(
+    files,
+    xsecs,
+    generated_events,
+    normalisation_weights,
+    rate_factors,
+    metadata=None,
+):
+    if not isinstance(rate_factors, list):
+        rate_factors = [rate_factors for _ in files]
+    metadata = metadata or [{} for _ in files]
+    return [
+        {
+            "path": path,
+            "xsec_fb": xsec,
+            "generated_events": generated,
+            "normalisation_weight": normalisation,
+            "rate_factor": rate_factor,
+            "metadata": sample_metadata,
+        }
+        for path, xsec, generated, normalisation, rate_factor, sample_metadata in zip(
+            files,
+            xsecs,
+            generated_events,
+            normalisation_weights,
+            rate_factors,
+            metadata,
+        )
+    ]
+
+
+def _run_c3d4_xgboost_study_cli(args):
+    from c3d4_xgboost_runner import run_c3d4_study
+
+    analysis_tag = EXTENDED_V2_TAG if args.observable_set == "extended-91-v2" else None
+    if args.study_outdir.resolve() == args.c3d4_scan_outdir.resolve():
+        raise SystemExit("--study-outdir must be separate from the legacy --c3d4-scan-outdir")
+
+    sm_inputs = args.signal or [_REPO_DIR / "Signals" / "events"]
+    sm_files = _ensure_analysis_var_roots(
+        sm_inputs,
+        executable=args.analysis_exe,
+        source_file=args.analysis_source,
+        include_auxiliary=args.include_auxiliary_samples,
+        jobs=args.analysis_jobs,
+        max_events=args.analysis_max_events,
+        force=args.force_analysis,
+        run_missing=not args.no_run_missing_analysis,
+        analysis_tag=analysis_tag,
+    )
+    exact_sm = [path for path in sm_files if _canonical_sample_name(path) == "HW-gg_hhhh_SM"]
+    if exact_sm:
+        sm_files = exact_sm
+    if len(sm_files) != 1:
+        raise SystemExit(
+            "The v2 study requires exactly one dedicated production SM sample; "
+            f"found {len(sm_files)}: {sm_files}"
+        )
+    sm_xsecs, sm_generated, sm_normalisation = _infer_scored_signal_metadata(
+        sm_files,
+        args.signal_xsec_fb,
+        None,
+        args.c3d4_default_generated_events,
+        "dedicated SM signal",
+        "--signal-xsec-fb",
+    )
+
+    grid_inputs = []
+    if args.c3d4_signal_root:
+        grid_inputs.extend(args.c3d4_signal_root)
+    if args.c3d4_signal_dir:
+        grid_inputs.extend(args.c3d4_signal_dir)
+    if not grid_inputs:
+        grid_inputs.append(_REPO_DIR / "HerwigSignalPoints" / "c3d4_10k" / "events")
+    grid_files = _ensure_analysis_var_roots(
+        grid_inputs,
+        executable=args.analysis_exe,
+        source_file=args.analysis_source,
+        include_auxiliary=args.include_auxiliary_samples,
+        jobs=args.analysis_jobs,
+        max_events=args.analysis_max_events,
+        force=args.force_analysis,
+        run_missing=not args.no_run_missing_analysis,
+        analysis_tag=analysis_tag,
+    )
+    grid_xsecs, grid_generated, grid_normalisation = _infer_scored_signal_metadata(
+        grid_files,
+        args.c3d4_signal_xsec_fb,
+        args.c3d4_signal_generated_events,
+        args.c3d4_default_generated_events,
+        "c3/d4 signal",
+        "--c3d4-signal-xsec-fb",
+    )
+
+    if args.background:
+        background_files = _ensure_analysis_var_roots(
+            args.background,
+            executable=args.analysis_exe,
+            source_file=args.analysis_source,
+            include_auxiliary=args.include_auxiliary_samples,
+            jobs=args.analysis_jobs,
+            max_events=args.analysis_max_events,
+            force=args.force_analysis,
+            run_missing=not args.no_run_missing_analysis,
+            c_mistags=args.analysis_c_mistags,
+            light_mistags=args.analysis_light_mistags,
+            analysis_tag=analysis_tag,
+        )
+        background_metadata = _metadata_for_background_files(background_files, args.background_csv)
+        background_xsecs = _expand_cli_values(
+            args.background_xsec_fb, background_files, "background cross-section"
+        )
+        if background_xsecs is None:
+            background_xsecs = []
+            background_generated = []
+            for path in background_files:
+                xsec, generated, out_file = _metadata_for_root_file(path)
+                if xsec is None:
+                    raise SystemExit(
+                        f"Could not infer background cross section from {out_file}; "
+                        "pass --background-xsec-fb once per file"
+                    )
+                background_xsecs.append(xsec)
+                background_generated.append(generated)
+        else:
+            background_generated = [
+                _metadata_for_root_file(path)[1] for path in background_files
+            ]
+        background_normalisation = [
+            _normalisation_weight_for_var_root(path) for path in background_files
+        ]
+    else:
+        (
+            background_files,
+            background_xsecs,
+            background_generated,
+            background_normalisation,
+            background_metadata,
+        ) = _background_inputs_from_csv(
+            args,
+            ensure_analysis=True,
+            analysis_tag=analysis_tag,
+        )
+
+    signal_rate_factor = _signal_final_rate_factor_for_cli(args)
+    background_rate_factors = _background_rate_factors_for_cli(background_metadata, args)
+    sm_specs = _study_specs(
+        sm_files,
+        sm_xsecs,
+        sm_generated,
+        sm_normalisation,
+        signal_rate_factor,
+        _signal_metadata_for_files(sm_files),
+    )
+    grid_specs = _study_specs(
+        grid_files,
+        grid_xsecs,
+        grid_generated,
+        grid_normalisation,
+        signal_rate_factor,
+    )
+    background_specs = _study_specs(
+        background_files,
+        background_xsecs,
+        background_generated,
+        background_normalisation,
+        background_rate_factors,
+        background_metadata,
+    )
+    print("Resolved-8b c3/d4 XGBoost v2 inputs")
+    print("  observable set:", args.observable_set)
+    print("  dedicated SM samples:", len(sm_specs))
+    print("  c3/d4 samples:", len(grid_specs))
+    print("  background samples:", len(background_specs))
+    print("  output:", args.study_outdir)
+    summary = run_c3d4_study(
+        sm_signal_specs=sm_specs,
+        grid_signal_specs=grid_specs,
+        background_specs=background_specs,
+        output_dir=args.study_outdir,
+        observable_set=args.observable_set,
+        feature_profile=args.feature_profile,
+        training_strategy=args.training_strategy,
+        cv_folds=args.cv_folds,
+        optuna_trials=args.optuna_trials,
+        luminosity=args.luminosity,
+        seed=args.seed,
+        max_events=args.max_events,
+        legacy_scan_csv=args.c3d4_scan_outdir / "c3d4_limit_scan.csv",
+        repo_dir=_REPO_DIR,
+    )
+    print("v2 study complete; selected profile =", summary["selected_feature_profile"])
+    return 0
 
 
 def _run_local_xgboost_cli():
@@ -1932,6 +2243,37 @@ def _run_local_xgboost_cli():
         help="Train the SM signal-vs-background XGBoost model, score c3/d4 signal points, and plot the Poisson 95%% CL region.",
     )
     parser.add_argument(
+        "--run-c3d4-xgboost-study",
+        action="store_true",
+        help="Run the versioned five-fold c3/d4 XGBoost and CLs study without modifying legacy outputs.",
+    )
+    parser.add_argument(
+        "--observable-set",
+        choices=("legacy-28-v1", "extended-91-v2"),
+        default="extended-91-v2",
+        help="Immutable observable schema used by the v2 study.",
+    )
+    parser.add_argument(
+        "--feature-profile",
+        choices=("corrected28", "core52", "full91"),
+        default=None,
+        help="Force one v2 feature profile. If omitted, select globally from all three on validation folds.",
+    )
+    parser.add_argument(
+        "--training-strategy",
+        choices=("sm-crossfit-v2", "pooled-crossfit-v2", "parameterized-crossfit-v1"),
+        default="pooled-crossfit-v2",
+        help="Primary v2 classifier strategy; the SM cross-fit baseline is also evaluated for pooled studies.",
+    )
+    parser.add_argument("--cv-folds", type=int, default=5, help="Number of deterministic rotating cross-fit folds.")
+    parser.add_argument("--optuna-trials", type=int, default=40, help="Sequential Optuna trials per fold.")
+    parser.add_argument(
+        "--study-outdir",
+        type=_Path,
+        default=_REPO_DIR / "xgboost_c3d4_study_v2",
+        help="New output directory for the versioned c3/d4 study.",
+    )
+    parser.add_argument(
         "--c3d4-signal-root",
         action="append",
         type=_Path,
@@ -2124,6 +2466,9 @@ def _run_local_xgboost_cli():
     if args.summarize_background_analysis:
         _summarize_background_analysis(args)
         return 0
+
+    if args.run_c3d4_xgboost_study:
+        return _run_c3d4_xgboost_study_cli(args)
 
     if args.run_c3d4_limit_scan:
         (
