@@ -810,6 +810,17 @@ def _parse_analysis_total_weight_in(log_file):
 
 
 def _normalisation_weight_for_var_root(var_root):
+    import json
+
+    summary_file = _analysis_summary_file_for_var_root(var_root)
+    if summary_file.exists():
+        try:
+            with open(summary_file) as handle:
+                total_weight_in = json.load(handle).get("total_weight_in")
+            if total_weight_in is not None:
+                return float(total_weight_in)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            pass
     return _parse_analysis_total_weight_in(_analysis_log_file_for_var_root(var_root))
 
 
@@ -913,22 +924,39 @@ def _metadata_for_scored_signal_root(root_file, default_generated_events=None):
         return xsec_fb, generated or default_generated_events, out_file
 
     xsec_fb, generated = _metadata_for_score_root(root_file, default_generated_events)
-    return xsec_fb, generated, None
+    return xsec_fb, generated, None if xsec_fb is not None else out_file
 
 
-def _infer_scored_signal_metadata(files, xsec_values, generated_values, default_generated_events, label):
+def _infer_scored_signal_metadata(
+    files,
+    xsec_values,
+    generated_values,
+    default_generated_events,
+    label,
+    xsec_option,
+):
     normalisation_weights = [_normalisation_weight_for_var_root(path) for path in files]
     if xsec_values is None or generated_values is None:
         inferred_xsecs = []
         inferred_generated = []
+        missing_xsec_sources = []
         for path in files:
             xsec_fb, generated_events, source_file = _metadata_for_scored_signal_root(path, default_generated_events)
-            if xsec_fb is None:
-                source_text = f" from {source_file}" if source_file is not None else ""
-                print(f"Warning: could not infer {label} cross section{source_text}; using 1 fb for {path}")
-                xsec_fb = 1.0
-            inferred_xsecs.append(xsec_fb)
-            inferred_generated.append(generated_events)
+            if xsec_values is None:
+                if xsec_fb is None:
+                    missing_xsec_sources.append(source_file or path)
+                else:
+                    inferred_xsecs.append(xsec_fb)
+            if generated_values is None:
+                inferred_generated.append(generated_events)
+
+        if missing_xsec_sources:
+            missing_text = "\n  ".join(str(path) for path in missing_xsec_sources)
+            raise SystemExit(
+                f"Could not infer {label} cross section from its Herwig .out or MG5 banner metadata. "
+                f"Missing metadata source(s):\n  {missing_text}\n"
+                f"Copy the matching Herwig .out file(s), or pass {xsec_option} once per signal file."
+            )
 
         signal_xsecs = (
             inferred_xsecs
@@ -2234,10 +2262,18 @@ def _run_local_xgboost_cli():
             background_scores["backgrounds"],
             args.luminosity,
         )
-        background_events = background_scores["metadata"]["expected_selected_events_total"]
+        full_sample_background_events = background_scores["metadata"]["expected_selected_events_total"]
+        background_events = float(best_threshold.get("background_events", 0.0))
+        print(
+            "Background yield used for the limit from held-out evaluation =",
+            background_events,
+            "(full training+test rescore diagnostic =",
+            full_sample_background_events,
+            ")",
+        )
         if background_events <= 0.0:
-            background_events = metrics["expected_preselected_background_events"] * best_threshold["background_efficiency"]
-            print("Warning: full-sample background score is zero; using training-metric background estimate.")
+            background_events = full_sample_background_events
+            print("Warning: held-out background estimate is zero; using the full-sample diagnostic estimate.")
 
         scan_inputs = []
         if args.c3d4_signal_root:
@@ -2269,6 +2305,7 @@ def _run_local_xgboost_cli():
             args.c3d4_signal_generated_events,
             args.c3d4_default_generated_events,
             "c3/d4 signal",
+            "--c3d4-signal-xsec-fb",
         )
         print("c3/d4 signal files:")
         for path, xsec, generated, normalisation_weight in zip(
@@ -2326,6 +2363,7 @@ def _run_local_xgboost_cli():
                 args.hhhbb_signal_generated_events,
                 args.hhhbb_default_generated_events,
                 "hhhbb signal",
+                "--hhhbb-signal-xsec-fb",
             )
             hhhbb_rate_factor = _hhhbb_signal_rate_factor_for_cli(args)
             rate_metadata["hhhbb_signal_hbb_power"] = 3
@@ -2386,6 +2424,7 @@ def _run_local_xgboost_cli():
                 args.hhbbbb_signal_generated_events,
                 args.hhbbbb_default_generated_events,
                 "hhbbbb signal",
+                "--hhbbbb-signal-xsec-fb",
             )
             hhbbbb_rate_factor = _hhbbbb_signal_rate_factor_for_cli(args)
             rate_metadata["hhbbbb_signal_hbb_power"] = 2
@@ -2490,16 +2529,21 @@ def _run_local_xgboost_cli():
             args.score_signal_generated_events,
             args.score_default_generated_events,
             "scored signal",
+            "--score-signal-xsec-fb",
         )
 
-        print(f"Signal K-factor = {args.signal_k_factor:g}")
+        signal_rate_factor = _signal_final_rate_factor_for_cli(args)
+        print(
+            f"Signal rate factor = {signal_rate_factor:g} "
+            f"(K_signal * BR_hbb^{args.signal_hbb_power} * btag^{args.signal_btag_power})"
+        )
         score_signal_files(
             signal_files=score_files,
             model_file=args.model_file,
             output_dir=args.score_outdir,
             threshold=threshold,
             signal_xsecs_fb=signal_xsecs,
-            signal_rate_factors=float(args.signal_k_factor),
+            signal_rate_factors=signal_rate_factor,
             signal_generated_events=signal_generated,
             signal_normalisation_weights=signal_normalisation_weights,
             luminosity=args.luminosity,

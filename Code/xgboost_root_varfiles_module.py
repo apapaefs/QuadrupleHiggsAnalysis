@@ -233,30 +233,113 @@ def _expand_metadata(metadata, files):
     return metadata
 
 
-def _balanced_training_weights(labels, raw_weights):
+def _balanced_training_weights(labels, physical_weights):
+    """Return non-negative physical weights with equal total weight per class.
+
+    XGBoost requires non-negative sample weights, so signed MC weights enter the
+    classifier loss through their absolute physical magnitude. The common
+    class total keeps the signal/background prior balanced while preserving
+    the physical process and event-weight ratios within each class.
+    """
+
     labels = np.asarray(labels)
-    raw_weights = np.asarray(raw_weights, dtype=float)
-    base = np.abs(raw_weights)
-    base[base == 0.0] = 1.0
+    physical_weights = np.asarray(physical_weights, dtype=float)
+    if labels.shape != physical_weights.shape:
+        raise ValueError("labels and physical_weights must have matching shapes")
+    if not np.all(np.isfinite(physical_weights)):
+        raise ValueError("training physical weights must be finite")
+
+    base = np.abs(physical_weights)
+    classes = np.unique(labels)
+    if classes.size == 0:
+        return np.asarray([], dtype=float)
+    common_class_total = float(labels.size) / float(classes.size)
 
     balanced = np.zeros_like(base, dtype=float)
-    for label in np.unique(labels):
+    for label in classes:
         mask = labels == label
         class_sum = np.sum(base[mask])
-        if class_sum > 0.0:
-            balanced[mask] = base[mask] * np.sum(mask) / class_sum
-        else:
-            balanced[mask] = 1.0
+        if class_sum <= 0.0:
+            raise ValueError(f"class {label!r} has no non-zero physical training weight")
+        balanced[mask] = base[mask] * common_class_total / class_sum
     return balanced
 
 
 def _normalisation_denominator(generated, raw_weights, normalisation_weight=None):
-    if normalisation_weight is not None and normalisation_weight > 0:
-        return float(normalisation_weight), "input_weight_sum"
-    if generated is not None and generated > 0:
-        return float(generated), "generated_events"
-    fallback = float(np.sum(np.abs(raw_weights))) if np.sum(np.abs(raw_weights)) > 0 else float(len(raw_weights))
-    return fallback, "loaded_weight_sum"
+    raw_weights = np.asarray(raw_weights, dtype=float)
+    if not np.all(np.isfinite(raw_weights)):
+        raise ValueError("normalisation received non-finite event weights")
+
+    if normalisation_weight is not None:
+        normalisation_weight = float(normalisation_weight)
+        if not math.isfinite(normalisation_weight) or normalisation_weight <= 0.0:
+            raise ValueError("normalisation_weight must be finite and positive")
+        return normalisation_weight, "input_weight_sum"
+
+    generated = None if generated is None else float(generated)
+    if generated is None or not math.isfinite(generated) or generated <= 0.0:
+        raise ValueError(
+            "Missing total input-weight metadata: provide the analysis total_weight_in "
+            "or a generated-event count for a demonstrably unit-weight sample"
+        )
+
+    if raw_weights.size and not np.allclose(raw_weights, 1.0, rtol=0.0, atol=1.0e-12):
+        raise ValueError(
+            "Missing total input-weight metadata for a non-unit-weight sample; "
+            "the selected loaded weight sum is not a valid normalisation denominator"
+        )
+    return generated, "generated_events"
+
+
+def _rescale_source_physical_weights(
+    full_physical_weights,
+    full_sources,
+    split_physical_weights,
+    split_sources,
+):
+    """Normalize every source in a data split to its full preselection yield."""
+
+    full_physical_weights = np.asarray(full_physical_weights, dtype=float)
+    split_physical_weights = np.asarray(split_physical_weights, dtype=float)
+    full_sources = np.asarray(full_sources).astype(str)
+    split_sources = np.asarray(split_sources).astype(str)
+
+    if full_physical_weights.shape != full_sources.shape:
+        raise ValueError("full physical weights and sources must have matching shapes")
+    if split_physical_weights.shape != split_sources.shape:
+        raise ValueError("split physical weights and sources must have matching shapes")
+    if not np.all(np.isfinite(full_physical_weights)) or not np.all(np.isfinite(split_physical_weights)):
+        raise ValueError("split physical-weight rescaling received non-finite weights")
+
+    scaled = split_physical_weights.copy()
+    scale_factors = {}
+    for source in sorted(set(full_sources.tolist())):
+        full_mask = full_sources == source
+        split_mask = split_sources == source
+        full_yield = float(np.sum(full_physical_weights[full_mask]))
+        split_yield = float(np.sum(split_physical_weights[split_mask]))
+        if not np.any(split_mask):
+            raise ValueError(f"data split contains no events from source {source}")
+        if split_yield == 0.0:
+            if full_yield != 0.0:
+                raise ValueError(f"split physical yield is zero for non-zero source {source}")
+            scale = 1.0
+        else:
+            scale = full_yield / split_yield
+        if not math.isfinite(scale) or scale <= 0.0:
+            raise ValueError(f"invalid split physical-weight scale {scale!r} for source {source}")
+
+        scaled[split_mask] *= scale
+        scale_factors[source] = {
+            "full_entries": int(np.sum(full_mask)),
+            "split_entries": int(np.sum(split_mask)),
+            "full_preselected_events": full_yield,
+            "split_preselected_events_before_rescaling": split_yield,
+            "scale_factor": float(scale),
+            "split_preselected_events_after_rescaling": float(np.sum(scaled[split_mask])),
+        }
+
+    return scaled, scale_factors
 
 
 def _load_signal_background_group(
@@ -1056,7 +1139,6 @@ def run_signal_background_analysis(
     raw_weights = np.asarray(s_raw + b_raw, dtype=float)
     physical_weights = np.asarray(s_phys + b_phys, dtype=float)
     sources = np.asarray(s_sources + b_sources)
-    training_weights = _balanced_training_weights(y, raw_weights)
 
     if len(np.unique(y)) != 2:
         raise ValueError("The training sample must contain both signal and background events")
@@ -1066,13 +1148,25 @@ def run_signal_background_analysis(
         y,
         raw_weights,
         physical_weights,
-        training_weights,
         sources,
         test_size=test_size,
         random_state=seed,
         stratify=y,
     )
-    X_train, X_test, y_train, y_test, raw_train, raw_test, phys_train, phys_test, train_w, test_w, src_train, src_test = split
+    X_train, X_test, y_train, y_test, raw_train, raw_test, phys_train_raw, phys_test_raw, src_train, src_test = split
+    phys_train, training_source_scale_factors = _rescale_source_physical_weights(
+        physical_weights,
+        sources,
+        phys_train_raw,
+        src_train,
+    )
+    train_w = _balanced_training_weights(y_train, phys_train)
+    phys_test, heldout_source_scale_factors = _rescale_source_physical_weights(
+        physical_weights,
+        sources,
+        phys_test_raw,
+        src_test,
+    )
 
     params = {
         "objective": "binary:logistic",
@@ -1143,6 +1237,8 @@ def run_signal_background_analysis(
         "accuracy_threshold_0p5": float(accuracy),
         "auc_unweighted": float(auc_unweighted),
         "auc_weighted": float(auc_weighted),
+        "training_source_scale_factors": training_source_scale_factors,
+        "heldout_source_scale_factors": heldout_source_scale_factors,
         "best_threshold": best,
         "confusion_matrix_at_best_threshold": confmatrix.tolist(),
         "expected_preselected_signal_events": float(np.sum(physical_weights[y == 1])),
@@ -1324,8 +1420,12 @@ def score_signal_files(
                 "expected_preselected_events": preselected_events,
                 "expected_selected_events": selected_events,
                 "expected_selected_error": 0.0,
-                "raw_sigma_eff_fb": float(float(xsec_fb) * weighted_efficiency),
-                "effective_sigma_eff_fb": float(effective_xsec_fb * weighted_efficiency),
+                "raw_sigma_eff_fb": float(float(xsec_fb) * final_efficiency),
+                "effective_sigma_eff_fb": float(
+                    selected_events / float(luminosity)
+                    if float(luminosity) != 0.0
+                    else effective_xsec_fb * final_efficiency
+                ),
                 "analysis_efficiency": float(analysis_efficiency),
                 "xgboost_efficiency": float(weighted_efficiency),
                 "final_efficiency": float(final_efficiency),
@@ -1760,8 +1860,12 @@ def score_background_files(
                 "expected_preselected_events": preselected_events,
                 "expected_selected_events": selected_events,
                 "expected_selected_error": 0.0,
-                "raw_sigma_eff_fb": float(float(xsec_fb) * weighted_efficiency),
-                "effective_sigma_eff_fb": float(effective_xsec_fb * weighted_efficiency),
+                "raw_sigma_eff_fb": float(float(xsec_fb) * final_efficiency),
+                "effective_sigma_eff_fb": float(
+                    selected_events / float(luminosity)
+                    if float(luminosity) != 0.0
+                    else effective_xsec_fb * final_efficiency
+                ),
                 "analysis_efficiency": float(analysis_efficiency),
                 "xgboost_efficiency": float(weighted_efficiency),
                 "final_efficiency": float(final_efficiency),
