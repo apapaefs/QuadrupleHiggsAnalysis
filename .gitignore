@@ -11,10 +11,19 @@
 *.analysis.log
 *_var.smear*.root
 
+# Reproducibility archives intentionally retain generator card .dat files.
+!MadGraphCards/**/*.dat
+
 # Build and Python cache artifacts
 *.o
 __pycache__/
 Code/FourHiggs8bAnalysis_smear_CMS
+
+# Machine-local generator installations and generated validation campaigns
+/MG5_aMC_v3_5_15/
+/LTS_MG5aMC_v3.5.15.tgz
+/HerwigForcedSplitting/
+/tmp/
 
 # Local OS/editor artifacts
 .DS_Store

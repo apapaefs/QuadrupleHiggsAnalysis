@@ -392,14 +392,14 @@ def observable_axis_label(name):
     name = str(name)
     validation_labels = {
         "b_pt_all": r"$p_T(b)$ [GeV]",
-        "b1_pt": r"$p_T(b_1)$ [GeV]",
-        "b2_pt": r"$p_T(b_2)$ [GeV]",
-        "b3_pt": r"$p_T(b_3)$ [GeV]",
-        "b4_pt": r"$p_T(b_4)$ [GeV]",
-        "b5_pt": r"$p_T(b_5)$ [GeV]",
-        "b6_pt": r"$p_T(b_6)$ [GeV]",
-        "b7_pt": r"$p_T(b_7)$ [GeV]",
-        "b8_pt": r"$p_T(b_8)$ [GeV]",
+        "b1_pt": r"$p_{T,b1}$ [GeV]",
+        "b2_pt": r"$p_{T,b2}$ [GeV]",
+        "b3_pt": r"$p_{T,b3}$ [GeV]",
+        "b4_pt": r"$p_{T,b4}$ [GeV]",
+        "b5_pt": r"$p_{T,b5}$ [GeV]",
+        "b6_pt": r"$p_{T,b6}$ [GeV]",
+        "b7_pt": r"$p_{T,b7}$ [GeV]",
+        "b8_pt": r"$p_{T,b8}$ [GeV]",
         "dr_bb_all": r"$\Delta R(b,b)$",
         "dr_associated_bb": r"$\Delta R(b,b)_{\mathrm{assoc}}$",
         "dr_associated_min_bb": r"$\min\,\Delta R(b,b)_{\mathrm{assoc}}$",
@@ -421,7 +421,7 @@ def observable_axis_label(name):
         "dr_higgs_bb_hpt_150_300": r"$\Delta R(b,b)_{\mathrm{same}\ h},\ 150<p_T(h)<300~\mathrm{GeV}$",
         "dr_higgs_bb_hpt_ge300": r"$\Delta R(b,b)_{\mathrm{same}\ h},\ p_T(h)>300~\mathrm{GeV}$",
         "cos_theta_star_higgs_b": r"$\cos\theta^*(h\rightarrow b\bar{b})$",
-        "m_8b": r"$m(8b)$ [GeV]",
+        "m_8b": r"$m_{8b}$ [GeV]",
         "ht_associated_b": r"$H_T(b_{\mathrm{assoc}})$ [GeV]",
         "ht_b": r"$H_T(b)$ [GeV]",
     }
@@ -429,7 +429,7 @@ def observable_axis_label(name):
         return validation_labels[name]
     if name.startswith("bjet") and name.endswith("_pt"):
         index = name[len("bjet") : -len("_pt")]
-        return rf"$p_T(b_{index})$ [GeV]"
+        return rf"$p_{{T,b{index}}}$ [GeV]"
     if name == "m8b":
         return r"$m_{8b}$ [GeV]"
     if name == "chi8":
@@ -857,6 +857,10 @@ def write_observable_shape_plot(
     max_bins=60,
     entries_per_bin=10.0,
     title=None,
+    axis_label_fontsize=None,
+    tick_label_fontsize=None,
+    title_fontsize=None,
+    legend_fontsize=8,
 ):
     """Write a normalized observable-shape plot in the sample-report style."""
 
@@ -929,13 +933,15 @@ def write_observable_shape_plot(
         )
         plotted = True
 
-    ax.set_xlabel(observable_axis_label(observable_name))
-    ax.set_ylabel(r"$\mathrm{Normalized\ events}/\mathrm{bin}$")
+    ax.set_xlabel(observable_axis_label(observable_name), fontsize=axis_label_fontsize)
+    ax.set_ylabel(r"$\mathrm{Normalized\ events}/\mathrm{bin}$", fontsize=axis_label_fontsize)
+    if tick_label_fontsize is not None:
+        ax.tick_params(axis="both", which="major", labelsize=tick_label_fontsize)
     if title:
-        ax.set_title(title)
+        ax.set_title(title, fontsize=title_fontsize)
     ax.grid(True, which="major", linewidth=0.4, alpha=0.35)
     if plotted:
-        ax.legend(frameon=False, fontsize=8)
+        ax.legend(frameon=False, fontsize=legend_fontsize)
     else:
         ax.text(0.5, 0.5, "No finite entries", transform=ax.transAxes, ha="center", va="center")
     fig.tight_layout()
