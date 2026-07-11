@@ -13,6 +13,13 @@ and c3/d4 limit plotting.
 - `Code/xgboost_root_varfiles_module.py`: XGBoost training, scoring, and limit
   plotting helpers.
 
+## Forced-Splitting Production on Tiresias
+
+The current full-loop `gg -> hhhg`, forced `g -> b bbar`, and direct HEFT
+`gg -> hh b bbar b bbar` production uses the 117-point signal-plus-bridge
+grid.  Exact start, monitoring, recovery, and restart commands are documented
+in [ForcedSplitting/README.md](ForcedSplitting/README.md#tiresias-117-point-production-start-monitor-and-restart).
+
 ## Background Metadata
 
 `Backgrounds/processes.csv` is the source of truth for the local background LHE

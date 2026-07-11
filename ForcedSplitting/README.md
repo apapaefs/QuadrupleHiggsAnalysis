@@ -152,11 +152,230 @@ generated runs are named like `Events/run_gg_hhhg_4_<c3>_<d4>/`,
 For processes that depend only on `c3`, add `--c3-only`; the deck then writes
 one point per unique `c3` value using `d4 = 0.0` in the run name and param card.
 
+## Tiresias 117-Point Production: Start, Monitor, and Restart
+
+This section records the production setup for
+
+- full-loop `g g -> h h h g`, followed by one forced final-state
+  `g -> b bbar` splitting and forced `h -> b bbar` decays;
+- direct HEFT `g g -> h h b bbar b bbar`, followed by forced
+  `h -> b bbar` decays.
+
+The reference file
+`MadGraphCards/c3d4_signal_57_plus_bridge_60/reference_grid_manifest.csv`
+contains the original 57 signal points and the 60-point regular bridge grid,
+for 117 distinct `(c3,d4)` points.  The direct HEFT process has no `d4`
+dependence, so its grid is the 29-value unique-`c3` projection with `d4=0`.
+Generating a separate HEFT file for every `d4` value would only duplicate the
+same matrix element.
+
+### Common setup and preflight
+
+Run from `tiresias.servebeer.com` unless stated otherwise:
+
+```bash
+export BASE="$HOME/Projects/QuadrupleHiggsAnalysis"
+export MG5="$BASE/MG5_aMC_v3_5_16"
+export REF="$BASE/MadGraphCards/c3d4_signal_57_plus_bridge_60/reference_grid_manifest.csv"
+
+cd "$BASE"
+git fetch origin
+git merge --ff-only origin/main
+
+test -d "$BASE/HerwigForcedSplitting"
+test -f "$REF"
+test -x "$MG5/gg_hhhg/bin/madevent"
+test -x "$MG5/gg_hhbbbb_heft/bin/madevent"
+df -h "$HOME"
+```
+
+Do not clean the repository to make `git status` empty: the untracked MG5
+trees, LHE files, ROOT files, and campaign directories are intentional local
+production data.  Only a tracked-file conflict should block the fast-forward.
+
+The full-loop process was generated while
+`herwig/stable-full-py3-rivet4` was loaded.  Its MadLoop executable links
+Ninja and COLLIER from MG5 plus Golem from that Herwig installation.  The
+module must therefore be loaded inside every detached shell that launches the
+full-loop grid; loading it only in an earlier, unrelated shell is insufficient.
+
+### Determine whether a job stopped or completed
+
+List the detached sessions:
+
+```bash
+screen -ls
+```
+
+The standard names are:
+
+- `hhhg_full_loop_117`: full-loop `hhh+g` MG5 grid;
+- `hhbbbb_heft_29`: direct HEFT MG5 grid;
+- `hhhbb_after_mg`: optional wait-and-run Herwig helper;
+- `hhbbbb_heft_after_mg`: optional wait-and-run Herwig helper.
+
+Attach to a live screen with `screen -r NAME` and detach without stopping it
+using `Ctrl-A D`.  A missing screen does not by itself mean failure: the job
+may have completed normally.  Always inspect the grid and its log:
+
+```bash
+cd "$BASE"
+
+python3 -m ForcedSplitting.hhhbb_campaign monitor-mg5 \
+  --mg5-dir "$MG5/gg_hhhg" \
+  --reference-grid-manifest "$REF" \
+  --tail 30
+
+python3 -m ForcedSplitting.hhbbbb_heft_campaign monitor-mg5 \
+  --mg5-dir "$MG5/gg_hhbbbb_heft" \
+  --reference-grid-manifest "$REF" \
+  --tail 30
+```
+
+Successful hard-process completion is `117/117` LHEs for `gg_hhhg` and
+`29/29` for direct HEFT, with zero incomplete and pending run directories.
+
+### Restart the full-loop `hhh+g` grid
+
+The launcher is resumable: it skips every run directory containing
+`unweighted_events.lhe` or `unweighted_events.lhe.gz` and schedules only the
+missing points.
+
+```bash
+screen -dmS hhhg_full_loop_117 bash -lc '
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load herwig/stable-full-py3-rivet4
+cd "$BASE"
+exec python3 -m ForcedSplitting.hhhbb_campaign prepare-mg5 \
+  --mg5-root "$MG5" \
+  --process-dir "$MG5/gg_hhhg" \
+  --reference-grid-manifest "$REF" \
+  --signal-run-card "$MG5/gg_hhhg/Cards/run_card.dat" \
+  --events 10000 \
+  --cores 160
+'
+```
+
+If MadLoop fails before the survey, first verify its linked libraries and
+standalone check in the same module environment:
+
+```bash
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load herwig/stable-full-py3-rivet4
+export LD_LIBRARY_PATH="$MG5/HEPTools/lib:$MG5/HEPTools/collier:$MG5/HEPTools/ninja/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+CHECK="$MG5/gg_hhhg/SubProcesses/PV0_0_1_gg_hhhg/check"
+ldd "$CHECK" | grep 'not found' && exit 1 || true
+(cd "$(dirname "$CHECK")" && ./check)
+```
+
+### Restart the direct HEFT grid
+
+```bash
+screen -dmS hhbbbb_heft_29 bash -lc '
+cd "$BASE"
+exec python3 -m ForcedSplitting.hhbbbb_heft_campaign prepare-mg5 \
+  --mg5-root "$MG5" \
+  --process-dir "$MG5/gg_hhbbbb_heft" \
+  --reference-grid-manifest "$REF" \
+  --signal-run-card "$MG5/gg_hhhg/Cards/run_card.dat" \
+  --events 10000 \
+  --cores 32
+'
+```
+
+### Incomplete MG5 run directories
+
+Do not pass `--overwrite` and do not remove completed LHE directories.  If the
+monitor explicitly reports an incomplete point, preserve only that run
+directory under a timestamped name before restarting the corresponding grid:
+
+```bash
+RUN="$MG5/gg_hhhg/Events/run_gg_hhhg_4_C3_D4"
+mv "$RUN" "${RUN}.incomplete-$(date +%Y%m%d-%H%M%S)"
+```
+
+For the HEFT grid, use the analogous path below
+`$MG5/gg_hhbbbb_heft/Events/`.  The next `prepare-mg5` invocation will skip
+all validated LHEs and recreate only the missing point.
+
+### Start or restart Herwig after MG5 completes
+
+Do this only after the monitors report `117/117` and `29/29`.  The full-loop
+sample uses the forced-splitting acceptance sidecar and runs 32 independent
+chunks per coupling point:
+
+```bash
+screen -dmS hhhbb_herwig bash -lc '
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load herwig/stable-full-py3-rivet4
+cd "$BASE"
+exec python3 -m ForcedSplitting.hhhbb_campaign run \
+  --mg5-dir "$MG5/gg_hhhg" \
+  --reference-grid-manifest "$REF" \
+  --workdir "$BASE/HerwigForcedSplitting/gg_hhhg_c3d4_10k_hhhbb" \
+  --events 10000 \
+  --jobs 32 \
+  --probe-trials 90000 \
+  --allow-zero-probe-successes
+'
+```
+
+The direct HEFT sample has no forced-splitting Stage 1:
+
+```bash
+screen -dmS hhbbbb_heft_herwig bash -lc '
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load herwig/stable-full-py3-rivet4
+cd "$BASE"
+exec python3 -m ForcedSplitting.hhbbbb_heft_campaign run \
+  --mg5-dir "$MG5/gg_hhbbbb_heft" \
+  --reference-grid-manifest "$REF" \
+  --workdir "$BASE/HerwigForcedSplitting/gg_hhbbbb_heft_c3_10k" \
+  --events 10000
+'
+```
+
+The campaign runners currently protect existing files rather than resuming
+inside a partially written Herwig work directory.  If Herwig itself stops,
+first inspect the campaign:
+
+```bash
+python3 -m ForcedSplitting.hhhbb_campaign check \
+  --workdir "$BASE/HerwigForcedSplitting/gg_hhhg_c3d4_10k_hhhbb"
+
+python3 -m ForcedSplitting.hhbbbb_heft_campaign check \
+  --workdir "$BASE/HerwigForcedSplitting/gg_hhbbbb_heft_c3_10k"
+```
+
+Do not blindly add `--overwrite`: that reruns completed points.  The safest
+full restart preserves the stopped work directory and starts with a fresh one:
+
+```bash
+WORK="$BASE/HerwigForcedSplitting/gg_hhhg_c3d4_10k_hhhbb"
+mv "$WORK" "${WORK}.stopped-$(date +%Y%m%d-%H%M%S)"
+```
+
+For a large partially completed campaign, retain the existing work directory
+and construct a remaining-points manifest plus a new work directory instead
+of discarding good outputs.
+
+### Logs
+
+```bash
+tail -f "$MG5/gg_hhhg/ForcedSplittingDecks/mg5_grid.log"
+tail -f "$MG5/gg_hhbbbb_heft/ForcedSplittingDecks/mg5_grid.log"
+tail -f "$BASE/HerwigForcedSplitting/hhhbb_after_mg.log"
+tail -f "$BASE/HerwigForcedSplitting/hhbbbb_heft_after_mg.log"
+```
+
 ## hhhbb c3/d4 Production Campaign
 
 Use `hhhbb_campaign` for the production approximation
-`gg -> hhhg, g -> b bbar`.  It uses the same 57-point reference grid as the
-`hhhh` signal, splits each MG5 LHE into independent chunks, applies
+`gg -> hhhg, g -> b bbar`.  It accepts a production reference manifest; the
+original campaign used the 57-point `hhhh` grid, while the current Tiresias
+campaign uses the 117-point signal-plus-bridge manifest documented above.  It
+splits each MG5 LHE into independent chunks, applies
 `ProbeTrials` sidecar weights per chunk, merges the weighted split LHE files
 once with `XSECUP = mean(XWGTUP)`, and then runs one Stage-2 HwSim card per
 point with forced `h0 -> b,bbar`.
@@ -331,7 +550,9 @@ If the full loop `hh+4b` process is too expensive, use
 `hhbbbb_heft_campaign` for the direct HEFT estimate from an existing MG5
 process directory named `gg_hhbbbb_heft`.  This is also a `c3`-only process:
 the launcher schedules one hard sample for each unique `c3` value in the
-reference grid and fixes `d4 = 0.0` in the run name and param card.
+reference grid and fixes `d4 = 0.0` in the run name and param card.  The
+legacy 57-point grid has 21 unique `c3` values; the current 117-point
+signal-plus-bridge grid has 29.
 
 The MG5 deck uses the same 14 TeV setup as the signal grid and adds direct-b
 generation cuts:
