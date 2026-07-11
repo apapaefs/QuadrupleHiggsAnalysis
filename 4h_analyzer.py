@@ -2,6 +2,8 @@
 
 from pathlib import Path as _Path
 import hashlib as _hashlib
+import math as _math
+import os as _os
 import re as _re
 import sys as _sys
 
@@ -30,6 +32,40 @@ DEFAULT_BACKGROUND_K_FACTOR = 2.0
 DEFAULT_BACKGROUND_CSV = _REPO_DIR / "Backgrounds" / "processes.csv"
 DEFAULT_BACKGROUND_HERWIG_TEMPLATE = _REPO_DIR / "Backgrounds" / "HW-AlpGen8Q-LHEWriter-Reweighted.in"
 EXTENDED_V2_TAG = "extended-v2"
+_SHAPE_THREAD_ENVIRONMENT = (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "BLIS_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "GOTO_NUM_THREADS",
+)
+
+
+def _configure_parallel_shape_threads(shape_jobs):
+    """Cap numerical-library threads before importing the v2 runner."""
+
+    if int(shape_jobs) <= 1:
+        return {name: _os.environ.get(name) for name in _SHAPE_THREAD_ENVIRONMENT}
+    for name in _SHAPE_THREAD_ENVIRONMENT:
+        _os.environ[name] = "1"
+    return {name: _os.environ[name] for name in _SHAPE_THREAD_ENVIRONMENT}
+
+
+def _configure_v2_mode_defaults(args):
+    """Fill mode-dependent CLI defaults without affecting legacy workflows."""
+
+    if args.study_outdir is None:
+        suffix = "" if args.study_mode == "full" else f"_{args.study_mode}"
+        args.study_outdir = _REPO_DIR / f"xgboost_c3d4_study_v2{suffix}"
+    if args.training_strategy is None:
+        args.training_strategy = (
+            "sm-crossfit-v2"
+            if args.study_mode in {"smoke", "fast-sm"}
+            else "pooled-crossfit-v2"
+        )
+    return args
 
 
 def _canonical_sample_name(filename):
@@ -1039,27 +1075,60 @@ def _infer_scored_signal_metadata(
     return signal_xsecs, signal_generated, normalisation_weights
 
 
-def _ensure_background_csv_var_roots(samples, args, analysis_tag=None):
+def _ensure_background_csv_var_roots(
+    samples, args, analysis_tag=None, progress_callback=None
+):
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    var_roots = []
+    accepted_var_roots = set()
     missing_jobs = []
     for sample in samples:
         var_root = _analysis_output_root(sample["raw_root"], analysis_tag)
         raw_root = sample["raw_root"]
         if var_root.exists() and not args.force_analysis:
-            var_roots.append(var_root)
-            continue
+            current = analysis_tag != EXTENDED_V2_TAG or _extended_v2_output_is_current(
+                var_root,
+                raw_root=raw_root,
+                source_file=args.analysis_source,
+                expected_c_mistags=sample["c_quarks"],
+                expected_light_mistags=sample["light_jets"],
+            )
+            if current:
+                accepted_var_roots.add(str(var_root.resolve()))
+                continue
         if raw_root.exists():
             missing_jobs.append(sample)
             continue
+        if var_root.exists() and analysis_tag != EXTENDED_V2_TAG:
+            print(
+                f"Warning: cannot force-regenerate {var_root} because the raw ROOT "
+                f"is unavailable; retaining the existing legacy output"
+            )
+            accepted_var_roots.add(str(var_root.resolve()))
+            continue
+        if var_root.exists() and analysis_tag == EXTENDED_V2_TAG:
+            raise SystemExit(
+                "Tagged v2 background output is stale, incomplete, schema-invalid, or "
+                "uses the wrong mistag composition, and its raw ROOT is unavailable: "
+                f"{var_root}"
+            )
         print(f"Warning: missing background ROOT for {sample['process_id']}: {raw_root}")
 
     if missing_jobs and args.no_run_missing_analysis:
-        print(f"Warning: {len(missing_jobs)} CSV background raw ROOT file(s) need analysis, but auto-analysis is disabled.")
+        if analysis_tag == EXTENDED_V2_TAG:
+            paths = "\n  ".join(str(sample["raw_root"]) for sample in missing_jobs)
+            raise SystemExit(
+                f"{len(missing_jobs)} tagged v2 CSV background output(s) require "
+                "regeneration, but --no-run-missing-analysis is active:\n  " + paths
+            )
+        print(
+            f"Warning: {len(missing_jobs)} CSV background raw ROOT file(s) need "
+            "analysis, but auto-analysis is disabled."
+        )
     elif missing_jobs:
         executable = _ensure_analysis_executable(args.analysis_exe, args.analysis_source, rebuild=True)
         print(f"Running C++ analysis for {len(missing_jobs)} CSV background ROOT file(s)")
+        print(f"  background analysis progress 0/{len(missing_jobs)}", flush=True)
         jobs = max(1, int(args.analysis_jobs))
 
         def run_sample(sample):
@@ -1067,33 +1136,88 @@ def _ensure_background_csv_var_roots(samples, args, analysis_tag=None):
                 sample["raw_root"],
                 executable,
                 max_events=args.analysis_max_events,
-                force=args.force_analysis,
+                force=True,
                 c_mistags=sample["c_quarks"],
                 light_mistags=sample["light_jets"],
                 analysis_tag=analysis_tag,
             )
 
         if jobs == 1:
-            for sample in missing_jobs:
+            for index, sample in enumerate(missing_jobs, start=1):
                 run_sample(sample)
+                print(
+                    f"  background analysis progress {index}/{len(missing_jobs)}: "
+                    f"{sample['process_id']}",
+                    flush=True,
+                )
+                if progress_callback is not None:
+                    progress_callback(
+                        index,
+                        len(missing_jobs),
+                        sample["process_id"],
+                    )
         else:
             with ThreadPoolExecutor(max_workers=jobs) as executor:
-                futures = [executor.submit(run_sample, sample) for sample in missing_jobs]
-                for future in as_completed(futures):
+                futures = {
+                    executor.submit(run_sample, sample): sample for sample in missing_jobs
+                }
+                for index, future in enumerate(as_completed(futures), start=1):
                     future.result()
+                    sample = futures[future]
+                    print(
+                        f"  background analysis progress {index}/{len(missing_jobs)}: "
+                        f"{sample['process_id']}",
+                        flush=True,
+                    )
+                    if progress_callback is not None:
+                        progress_callback(
+                            index,
+                            len(missing_jobs),
+                            sample["process_id"],
+                        )
 
-    for sample in samples:
+    for sample in missing_jobs:
         var_root = _analysis_output_root(sample["raw_root"], analysis_tag)
-        if var_root.exists():
-            var_roots.append(var_root)
+        if not var_root.exists():
+            continue
+        if analysis_tag == EXTENDED_V2_TAG and not _extended_v2_output_is_current(
+            var_root,
+            raw_root=sample["raw_root"],
+            source_file=args.analysis_source,
+            expected_c_mistags=sample["c_quarks"],
+            expected_light_mistags=sample["light_jets"],
+        ):
+            raise RuntimeError(
+                "Regenerated tagged v2 background output failed completeness/schema/"
+                f"composition validation: {var_root}"
+            )
+        accepted_var_roots.add(str(var_root.resolve()))
 
-    return _unique_paths(_filter_auxiliary_roots(var_roots, args.include_auxiliary_samples))
+    ordered_var_roots = [
+        _analysis_output_root(sample["raw_root"], analysis_tag)
+        for sample in samples
+        if str(
+            _analysis_output_root(sample["raw_root"], analysis_tag).resolve()
+        ) in accepted_var_roots
+    ]
+    return _unique_paths(
+        _filter_auxiliary_roots(
+            ordered_var_roots, args.include_auxiliary_samples
+        )
+    )
 
 
-def _background_inputs_from_csv(args, ensure_analysis=False, analysis_tag=None):
+def _background_inputs_from_csv(
+    args, ensure_analysis=False, analysis_tag=None, progress_callback=None
+):
     samples = _read_background_processes(args.background_csv)
     if ensure_analysis:
-        background_files = _ensure_background_csv_var_roots(samples, args, analysis_tag=analysis_tag)
+        background_files = _ensure_background_csv_var_roots(
+            samples,
+            args,
+            analysis_tag=analysis_tag,
+            progress_callback=progress_callback,
+        )
     else:
         background_files = [
             _analysis_output_root(sample["raw_root"], analysis_tag)
@@ -1787,7 +1911,121 @@ def _run_one_cpp_analysis(
     return output_root
 
 
-def _extended_v2_output_is_current(output_root, raw_root=None, source_file=None):
+def _extended_v2_completion_evidence(
+    output_root,
+    summary,
+    *,
+    raw_root=None,
+    expected_generated_events=None,
+    root_module=None,
+):
+    """Return auditable evidence that the C++ feature tree saw the full source."""
+
+    import math
+
+    try:
+        observed_float = float(summary["mc_events_in"])
+    except (KeyError, TypeError, ValueError):
+        return {
+            "verified": False,
+            "method": "missing-mc-events-in",
+            "observed_events": None,
+            "expected_events": None,
+        }
+    if not math.isfinite(observed_float) or observed_float < 0.0:
+        return {
+            "verified": False,
+            "method": "invalid-mc-events-in",
+            "observed_events": observed_float,
+            "expected_events": None,
+        }
+    observed = int(round(observed_float))
+    if not math.isclose(observed_float, observed, rel_tol=0.0, abs_tol=1.0e-9):
+        return {
+            "verified": False,
+            "method": "nonintegral-mc-events-in",
+            "observed_events": observed_float,
+            "expected_events": None,
+        }
+
+    candidate_raw = None
+    if raw_root is not None:
+        candidate_raw = _Path(raw_root)
+    elif summary.get("input_file"):
+        candidate_raw = _Path(str(summary["input_file"]))
+        if not candidate_raw.is_absolute():
+            candidate_raw = (_REPO_DIR / candidate_raw).resolve()
+
+    expected = None
+    method = None
+    evidence_source = None
+    if candidate_raw is not None and candidate_raw.exists():
+        module = root_module
+        if module is None:
+            import ROOT as module
+        raw_file = module.TFile.Open(str(candidate_raw), "READ")
+        if not raw_file or raw_file.IsZombie():
+            return {
+                "verified": False,
+                "method": "raw-root-open-failed",
+                "observed_events": observed,
+                "expected_events": None,
+                "source": str(candidate_raw),
+            }
+        try:
+            raw_tree = raw_file.Get("Data")
+            if not raw_tree:
+                return {
+                    "verified": False,
+                    "method": "raw-root-data-tree-missing",
+                    "observed_events": observed,
+                    "expected_events": None,
+                    "source": str(candidate_raw),
+                }
+            expected = int(raw_tree.GetEntries())
+        finally:
+            raw_file.Close()
+        method = "raw-root-data-entries"
+        evidence_source = str(candidate_raw)
+    else:
+        if expected_generated_events is None:
+            _, expected_generated_events, metadata_source = _metadata_for_root_file(
+                output_root
+            )
+        else:
+            metadata_source = None
+        if expected_generated_events is not None:
+            expected = int(expected_generated_events)
+            method = "generated-event-metadata"
+            evidence_source = (
+                None if metadata_source is None else str(metadata_source)
+            )
+
+    if expected is None:
+        return {
+            "verified": False,
+            "method": "no-completion-reference",
+            "observed_events": observed,
+            "expected_events": None,
+            "source": None,
+        }
+    return {
+        "verified": observed == expected,
+        "method": method,
+        "observed_events": observed,
+        "expected_events": expected,
+        "source": evidence_source,
+    }
+
+
+def _extended_v2_output_is_current(
+    output_root,
+    raw_root=None,
+    source_file=None,
+    *,
+    expected_c_mistags=None,
+    expected_light_mistags=None,
+):
     """Validate a tagged output before allowing the study to reuse it."""
 
     import json
@@ -1833,6 +2071,7 @@ def _extended_v2_output_is_current(output_root, raw_root=None, source_file=None)
             data3 = root_file.Get("Data3")
             if not data2 or not data3 or data2.GetEntries() != data3.GetEntries():
                 return False
+            data3_entries = int(data3.GetEntries())
             if any(
                 not data3.GetBranch(branch)
                 for branch in (
@@ -1868,16 +2107,36 @@ def _extended_v2_output_is_current(output_root, raw_root=None, source_file=None)
         summary = json.loads(summary_file.read_text())
         if summary.get("observable_schema") != EXTENDED_SCHEMA_ID:
             return False
+        if expected_c_mistags is not None and int(summary.get("c_mistags", -1)) != int(
+            expected_c_mistags
+        ):
+            return False
+        if expected_light_mistags is not None and int(
+            summary.get("light_mistags", -1)
+        ) != int(expected_light_mistags):
+            return False
+        if expected_c_mistags is not None or expected_light_mistags is not None:
+            c_mistags = int(expected_c_mistags or 0)
+            light_mistags = int(expected_light_mistags or 0)
+            if int(summary.get("required_true_bjets", -1)) != 8 - c_mistags - light_mistags:
+                return False
         total_weight_in = float(summary["total_weight_in"])
         feature_entries = int(summary["feature_tree_mc_events_out"])
         feature_weight = float(summary["feature_tree_weight_out"])
         feature_efficiency = float(summary["feature_tree_efficiency"])
+        completion = _extended_v2_completion_evidence(
+            output_root,
+            summary,
+            raw_root=raw_root,
+            root_module=ROOT,
+        )
         return bool(
             total_weight_in > 0.0
             and math.isfinite(total_weight_in)
-            and feature_entries == int(data3.GetEntries())
+            and feature_entries == data3_entries
             and math.isfinite(feature_weight)
             and math.isfinite(feature_efficiency)
+            and completion["verified"]
         )
     except Exception:
         return False
@@ -1895,14 +2154,25 @@ def _ensure_analysis_var_roots(
     c_mistags=0,
     light_mistags=0,
     analysis_tag=None,
+    progress_callback=None,
 ):
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     existing_var_roots, raw_roots = _discover_analysis_inputs(inputs, analysis_tag=analysis_tag)
     existing_var_roots = _filter_auxiliary_roots(existing_var_roots, include_auxiliary)
     raw_roots = _filter_auxiliary_roots(raw_roots, include_auxiliary)
+    print(
+        f"Discovered {len(existing_var_roots)} current variable ROOT file(s) and "
+        f"{len(raw_roots)} raw ROOT file(s) for analysis",
+        flush=True,
+    )
 
     expected_var_roots = [_analysis_output_root(path, analysis_tag) for path in raw_roots]
+    raw_by_output = {
+        str(var_root.resolve()): raw_root
+        for raw_root, var_root in zip(raw_roots, expected_var_roots)
+    }
+    accepted_var_roots = set()
     missing_raw_roots = []
     for raw_root, var_root in zip(raw_roots, expected_var_roots):
         regenerate = force or not var_root.exists()
@@ -1911,21 +2181,67 @@ def _ensure_analysis_var_roots(
                 var_root,
                 raw_root=raw_root,
                 source_file=source_file,
+                expected_c_mistags=c_mistags,
+                expected_light_mistags=light_mistags,
             )
         if regenerate:
             missing_raw_roots.append(raw_root)
+        else:
+            accepted_var_roots.add(str(var_root.resolve()))
+
+    invalid_standalone = []
+    for var_root in existing_var_roots:
+        if str(var_root.resolve()) in raw_by_output:
+            continue
+        if analysis_tag != EXTENDED_V2_TAG:
+            accepted_var_roots.add(str(var_root.resolve()))
+            continue
+        if force:
+            invalid_standalone.append(var_root)
+            continue
+        if analysis_tag == EXTENDED_V2_TAG and not _extended_v2_output_is_current(
+            var_root,
+            source_file=source_file,
+            expected_c_mistags=c_mistags,
+            expected_light_mistags=light_mistags,
+        ):
+            invalid_standalone.append(var_root)
+            continue
+        accepted_var_roots.add(str(var_root.resolve()))
+
+    if invalid_standalone:
+        paths = "\n  ".join(str(path) for path in invalid_standalone)
+        raise SystemExit(
+            "Tagged v2 variable ROOT file(s) are stale, incomplete, or schema-invalid, "
+            "and no matching raw ROOT input was supplied for regeneration:\n  " + paths
+        )
 
     if missing_raw_roots and not run_missing:
-        print(f"Warning: {len(missing_raw_roots)} raw ROOT files are missing variable outputs, but auto-analysis is disabled.")
+        if analysis_tag == EXTENDED_V2_TAG:
+            paths = "\n  ".join(str(path) for path in missing_raw_roots)
+            raise SystemExit(
+                f"{len(missing_raw_roots)} tagged v2 variable ROOT file(s) require "
+                "regeneration, but --no-run-missing-analysis is active:\n  " + paths
+            )
+        print(
+            f"Warning: {len(missing_raw_roots)} raw ROOT files are missing variable "
+            "outputs, but auto-analysis is disabled."
+        )
+        accepted_var_roots.update(
+            str(_analysis_output_root(raw_root, analysis_tag).resolve())
+            for raw_root in missing_raw_roots
+            if _analysis_output_root(raw_root, analysis_tag).exists()
+        )
     elif missing_raw_roots:
         executable = _ensure_analysis_executable(executable, source_file, rebuild=True)
         print(
             f"Running C++ analysis for {len(missing_raw_roots)} missing, stale, "
             "or schema-invalid variable ROOT file(s)"
         )
+        print(f"  analysis progress 0/{len(missing_raw_roots)}", flush=True)
         jobs = max(1, int(jobs))
         if jobs == 1:
-            for raw_root in missing_raw_roots:
+            for index, raw_root in enumerate(missing_raw_roots, start=1):
                 _run_one_cpp_analysis(
                     raw_root,
                     executable,
@@ -1935,9 +2251,15 @@ def _ensure_analysis_var_roots(
                     light_mistags=light_mistags,
                     analysis_tag=analysis_tag,
                 )
+                print(
+                    f"  analysis progress {index}/{len(missing_raw_roots)}: {raw_root.name}",
+                    flush=True,
+                )
+                if progress_callback is not None:
+                    progress_callback(index, len(missing_raw_roots), raw_root.name)
         else:
             with ThreadPoolExecutor(max_workers=jobs) as executor:
-                futures = [
+                futures = {
                     executor.submit(
                         _run_one_cpp_analysis,
                         raw_root,
@@ -1947,16 +2269,41 @@ def _ensure_analysis_var_roots(
                         c_mistags,
                         light_mistags,
                         analysis_tag,
-                    )
+                    ): raw_root
                     for raw_root in missing_raw_roots
-                ]
-                for future in as_completed(futures):
+                }
+                for index, future in enumerate(as_completed(futures), start=1):
                     future.result()
+                    raw_root = futures[future]
+                    print(
+                        f"  analysis progress {index}/{len(missing_raw_roots)}: {raw_root.name}",
+                        flush=True,
+                    )
+                    if progress_callback is not None:
+                        progress_callback(index, len(missing_raw_roots), raw_root.name)
 
-    final_var_roots = list(existing_var_roots)
-    for var_root in expected_var_roots:
-        if var_root.exists():
-            final_var_roots.append(var_root)
+    for raw_root in missing_raw_roots:
+        var_root = _analysis_output_root(raw_root, analysis_tag)
+        if not var_root.exists():
+            continue
+        if analysis_tag == EXTENDED_V2_TAG and not _extended_v2_output_is_current(
+            var_root,
+            raw_root=raw_root,
+            source_file=source_file,
+            expected_c_mistags=c_mistags,
+            expected_light_mistags=light_mistags,
+        ):
+            raise RuntimeError(
+                f"Regenerated tagged v2 output failed completeness/schema validation: {var_root}"
+            )
+        accepted_var_roots.add(str(var_root.resolve()))
+
+    ordered_candidates = [*existing_var_roots, *expected_var_roots]
+    final_var_roots = [
+        path
+        for path in ordered_candidates
+        if str(path.resolve()) in accepted_var_roots
+    ]
     return _unique_paths(_filter_auxiliary_roots(final_var_roots, include_auxiliary))
 
 
@@ -1967,36 +2314,136 @@ def _study_specs(
     normalisation_weights,
     rate_factors,
     metadata=None,
+    require_complete_feature_sources=False,
 ):
     if not isinstance(rate_factors, list):
         rate_factors = [rate_factors for _ in files]
     metadata = metadata or [{} for _ in files]
-    return [
-        {
+    specs = []
+    for path, xsec, generated, normalisation, rate_factor, sample_metadata in zip(
+        files,
+        xsecs,
+        generated_events,
+        normalisation_weights,
+        rate_factors,
+        metadata,
+    ):
+        sample_metadata = dict(sample_metadata or {})
+        if require_complete_feature_sources:
+            summary = _read_analysis_summary_for_var_root(path)
+            evidence = _extended_v2_completion_evidence(
+                path,
+                summary,
+                expected_generated_events=generated,
+            )
+            sample_metadata["feature_source_completion"] = evidence
+            if not evidence["verified"]:
+                raise SystemExit(
+                    "Could not verify that the tagged v2 feature tree uses the complete "
+                    f"event source for {path}: {evidence}"
+                )
+        specs.append({
             "path": path,
             "xsec_fb": xsec,
             "generated_events": generated,
             "normalisation_weight": normalisation,
             "rate_factor": rate_factor,
             "metadata": sample_metadata,
-        }
-        for path, xsec, generated, normalisation, rate_factor, sample_metadata in zip(
-            files,
-            xsecs,
-            generated_events,
-            normalisation_weights,
-            rate_factors,
-            metadata,
+        })
+    return specs
+
+
+def _run_c3d4_xgboost_study_cli_impl(args):
+    if int(args.shape_jobs) < 1:
+        raise SystemExit("--shape-jobs must be at least one")
+    if not _math.isfinite(float(args.progress_interval)) or not float(
+        args.progress_interval
+    ) > 0.0:
+        raise SystemExit("--progress-interval must be finite and positive")
+    if args.analysis_max_events is not None:
+        raise SystemExit(
+            "The v2 study does not allow --analysis-max-events because it can create "
+            "truncated files under the shared tagged ROOT names. For a smoke test, use "
+            "--study-mode smoke with --max-events or --smoke-max-events."
         )
-    ]
+    reuse_sm_optuna_from = getattr(args, "reuse_sm_optuna_from", None)
+    if reuse_sm_optuna_from is not None:
+        if args.study_mode != "fast-sm":
+            raise SystemExit("--reuse-sm-optuna-from requires --study-mode fast-sm")
+        manifest = reuse_sm_optuna_from / "method_manifest.json"
+        if not manifest.is_file():
+            raise SystemExit(
+                "--reuse-sm-optuna-from does not contain method_manifest.json: "
+                f"{reuse_sm_optuna_from}"
+            )
+    if int(args.shape_jobs) > 1:
+        import multiprocessing as _multiprocessing
 
+        if _os.name != "posix" or "fork" not in _multiprocessing.get_all_start_methods():
+            raise SystemExit(
+                "--shape-jobs greater than one requires a POSIX host with the 'fork' "
+                "multiprocessing method"
+            )
+    thread_environment = _configure_parallel_shape_threads(args.shape_jobs)
+    if int(args.shape_jobs) > 1:
+        print(
+            "Capping numerical-library threads to one per pyhf worker:",
+            ", ".join(f"{key}={value}" for key, value in thread_environment.items()),
+            flush=True,
+        )
+    from c3d4_xgboost_runner import (
+        StudyProgress,
+        _resolve_study_mode,
+        _validate_study_output_mode,
+        run_c3d4_study,
+    )
 
-def _run_c3d4_xgboost_study_cli(args):
-    from c3d4_xgboost_runner import run_c3d4_study
+    try:
+        mode_policy = _resolve_study_mode(
+            study_mode=args.study_mode,
+            observable_set=args.observable_set,
+            feature_profile=args.feature_profile,
+            training_strategy=args.training_strategy,
+            optuna_trials=args.optuna_trials,
+            max_events=args.max_events,
+            smoke_max_events=args.smoke_max_events,
+            run_shape=None,
+            hash_inputs=True,
+        )
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
 
     analysis_tag = EXTENDED_V2_TAG if args.observable_set == "extended-91-v2" else None
     if args.study_outdir.resolve() == args.c3d4_scan_outdir.resolve():
         raise SystemExit("--study-outdir must be separate from the legacy --c3d4-scan-outdir")
+    try:
+        _validate_study_output_mode(args.study_outdir, mode_policy.name)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    input_progress = StudyProgress(
+        args.study_outdir, interval_seconds=float(args.progress_interval)
+    )
+    input_progress.emit(
+        "input-discovery",
+        "Starting v2 input discovery and tagged ROOT validation",
+        observable_set=args.observable_set,
+        study_mode=mode_policy.name,
+        result_level=mode_policy.result_level,
+        analysis_tag=analysis_tag,
+    )
+
+    def root_progress(sample_kind):
+        def report(index, total, sample_id):
+            input_progress.emit(
+                "root-regeneration",
+                "Completed tagged ROOT analysis",
+                sample_kind=sample_kind,
+                sample_id=sample_id,
+                completed=index,
+                total=total,
+            )
+
+        return report
 
     sm_inputs = args.signal or [_REPO_DIR / "Signals" / "events"]
     sm_files = _ensure_analysis_var_roots(
@@ -2009,6 +2456,13 @@ def _run_c3d4_xgboost_study_cli(args):
         force=args.force_analysis,
         run_missing=not args.no_run_missing_analysis,
         analysis_tag=analysis_tag,
+        progress_callback=root_progress("SM signal"),
+    )
+    input_progress.emit(
+        "input-discovery",
+        "Discovered dedicated SM variable ROOT inputs",
+        sample_kind="SM signal",
+        discovered=len(sm_files),
     )
     exact_sm = [path for path in sm_files if _canonical_sample_name(path) == "HW-gg_hhhh_SM"]
     if exact_sm:
@@ -2044,6 +2498,13 @@ def _run_c3d4_xgboost_study_cli(args):
         force=args.force_analysis,
         run_missing=not args.no_run_missing_analysis,
         analysis_tag=analysis_tag,
+        progress_callback=root_progress("c3/d4 signal"),
+    )
+    input_progress.emit(
+        "input-discovery",
+        "Discovered c3/d4 variable ROOT inputs",
+        sample_kind="c3/d4 signal",
+        discovered=len(grid_files),
     )
     grid_xsecs, grid_generated, grid_normalisation = _infer_scored_signal_metadata(
         grid_files,
@@ -2067,6 +2528,7 @@ def _run_c3d4_xgboost_study_cli(args):
             c_mistags=args.analysis_c_mistags,
             light_mistags=args.analysis_light_mistags,
             analysis_tag=analysis_tag,
+            progress_callback=root_progress("background"),
         )
         background_metadata = _metadata_for_background_files(background_files, args.background_csv)
         background_xsecs = _expand_cli_values(
@@ -2102,7 +2564,14 @@ def _run_c3d4_xgboost_study_cli(args):
             args,
             ensure_analysis=True,
             analysis_tag=analysis_tag,
+            progress_callback=root_progress("background"),
         )
+    input_progress.emit(
+        "input-discovery",
+        "Discovered background variable ROOT inputs",
+        sample_kind="background",
+        discovered=len(background_files),
+    )
 
     signal_rate_factor = _signal_final_rate_factor_for_cli(args)
     background_rate_factors = _background_rate_factors_for_cli(background_metadata, args)
@@ -2113,6 +2582,7 @@ def _run_c3d4_xgboost_study_cli(args):
         sm_normalisation,
         signal_rate_factor,
         _signal_metadata_for_files(sm_files),
+        require_complete_feature_sources=args.observable_set == "extended-91-v2",
     )
     grid_specs = _study_specs(
         grid_files,
@@ -2120,6 +2590,7 @@ def _run_c3d4_xgboost_study_cli(args):
         grid_generated,
         grid_normalisation,
         signal_rate_factor,
+        require_complete_feature_sources=args.observable_set == "extended-91-v2",
     )
     background_specs = _study_specs(
         background_files,
@@ -2128,13 +2599,30 @@ def _run_c3d4_xgboost_study_cli(args):
         background_normalisation,
         background_rate_factors,
         background_metadata,
+        require_complete_feature_sources=args.observable_set == "extended-91-v2",
     )
     print("Resolved-8b c3/d4 XGBoost v2 inputs")
     print("  observable set:", args.observable_set)
+    print("  study mode:", mode_policy.name)
+    print("  result level:", mode_policy.result_level)
+    print("  feature profile:", mode_policy.feature_profile or "validation-selected")
+    print("  Optuna trials per fold:", mode_policy.optuna_trials)
+    print("  reused SM Optuna study:", args.reuse_sm_optuna_from)
+    print("  Python event cap per source:", mode_policy.max_events)
+    print("  pyhf score shapes:", mode_policy.run_shape)
     print("  dedicated SM samples:", len(sm_specs))
     print("  c3/d4 samples:", len(grid_specs))
     print("  background samples:", len(background_specs))
     print("  output:", args.study_outdir)
+    print("  shape workers:", args.shape_jobs)
+    print("  progress interval [s]:", args.progress_interval)
+    input_progress.emit(
+        "input-discovery",
+        "Completed v2 input discovery and normalization lookup",
+        dedicated_sm_samples=len(sm_specs),
+        c3d4_samples=len(grid_specs),
+        background_samples=len(background_specs),
+    )
     summary = run_c3d4_study(
         sm_signal_specs=sm_specs,
         grid_signal_specs=grid_specs,
@@ -2150,23 +2638,46 @@ def _run_c3d4_xgboost_study_cli(args):
         max_events=args.max_events,
         legacy_scan_csv=args.c3d4_scan_outdir / "c3d4_limit_scan.csv",
         repo_dir=_REPO_DIR,
+        shape_jobs=args.shape_jobs,
+        progress_interval=args.progress_interval,
+        study_mode=args.study_mode,
+        smoke_max_events=args.smoke_max_events,
+        reuse_sm_optuna_from=args.reuse_sm_optuna_from,
+        contour_c3_range=(args.c3d4_plot_c3_min, args.c3d4_plot_c3_max),
+        contour_d4_range=(args.c3d4_plot_d4_min, args.c3d4_plot_d4_max),
+        contour_grid_bins=args.c3d4_plot_nbins,
+        contour_interpolation=args.c3d4_contour_interpolation,
+        xsec_source_dir=args.c3d4_xsec_source_dir,
+        xsec_overlay=not args.no_c3d4_xsec_overlay,
     )
     print("v2 study complete; selected profile =", summary["selected_feature_profile"])
     return 0
 
 
+def _run_c3d4_xgboost_study_cli(args):
+    """Run the v2 CLI while keeping preprocessing failures visible to monitors."""
+
+    try:
+        return _run_c3d4_xgboost_study_cli_impl(args)
+    except BaseException as error:
+        try:
+            if args.study_outdir.resolve() != args.c3d4_scan_outdir.resolve():
+                from c3d4_xgboost_runner import _record_study_failure
+
+                _record_study_failure(
+                    _Path(args.study_outdir),
+                    "interrupted" if isinstance(error, KeyboardInterrupt) else "failed",
+                    error,
+                    study_mode=getattr(args, "study_mode", "full"),
+                )
+        except Exception:
+            pass
+        raise
+
+
 def _run_local_xgboost_cli():
     import argparse
     import json
-
-    from xgboost_root_varfiles_module import (
-        combine_signal_component_rows,
-        run_signal_background_analysis,
-        score_background_files,
-        score_signal_files,
-        write_sample_report,
-        write_c3d4_limit_scan,
-    )
 
     parser = argparse.ArgumentParser(
         description="Train a 4H XGBoost signal-vs-background classifier from local ROOT variable files."
@@ -2353,6 +2864,25 @@ def _run_local_xgboost_cli():
         help="Run the versioned five-fold c3/d4 XGBoost and CLs study without modifying legacy outputs.",
     )
     parser.add_argument(
+        "--replot-c3d4-study-contours",
+        action="store_true",
+        help=(
+            "Generate the legacy-style cut/shape exclusion contour family from existing "
+            "v2 JSON tables without retraining or rerunning pyhf."
+        ),
+    )
+    parser.add_argument(
+        "--study-mode",
+        choices=("smoke", "preview", "fast-sm", "full"),
+        default="full",
+        help=(
+            "v2 execution level: smoke uses truncated feature-tree reads and is non-physics; "
+            "preview uses all events with fixed parameters and cut-only limits; fast-sm uses "
+            "all events, SM-only fixed-parameter cross-fitting and pyhf score shapes; full "
+            "runs the complete tuning and pooled/parameterized workflow."
+        ),
+    )
+    parser.add_argument(
         "--observable-set",
         choices=("legacy-28-v1", "extended-91-v2"),
         default="extended-91-v2",
@@ -2362,21 +2892,63 @@ def _run_local_xgboost_cli():
         "--feature-profile",
         choices=("corrected28", "core52", "full91"),
         default=None,
-        help="Force one v2 feature profile. If omitted, select globally from all three on validation folds.",
+        help=(
+            "Force one v2 feature profile. If omitted, full mode selects globally from "
+            "all three on validation folds, fast-sm uses full91, preview uses core52, "
+            "and smoke uses corrected28."
+        ),
     )
     parser.add_argument(
         "--training-strategy",
         choices=("sm-crossfit-v2", "pooled-crossfit-v2", "parameterized-crossfit-v1"),
-        default="pooled-crossfit-v2",
-        help="Primary v2 classifier strategy; the SM cross-fit baseline is also evaluated for pooled studies.",
+        default=None,
+        help=(
+            "Primary v2 classifier strategy. Defaults to SM for smoke/fast-sm modes and "
+            "pooled for preview/full; the SM baseline is also evaluated for pooled studies."
+        ),
     )
     parser.add_argument("--cv-folds", type=int, default=5, help="Number of deterministic rotating cross-fit folds.")
-    parser.add_argument("--optuna-trials", type=int, default=40, help="Sequential Optuna trials per fold.")
+    parser.add_argument(
+        "--optuna-trials",
+        type=int,
+        default=None,
+        help="Sequential Optuna trials per fold. Defaults to 40 in full mode and 0 otherwise.",
+    )
+    parser.add_argument(
+        "--reuse-sm-optuna-from",
+        type=_Path,
+        default=None,
+        help=(
+            "Completed v2 study directory whose five fold-specific SM Optuna best "
+            "trials are reused as frozen XGBoost parameters in fast-sm mode."
+        ),
+    )
+    parser.add_argument(
+        "--smoke-max-events",
+        type=int,
+        default=2000,
+        help="Maximum Data3 entries read per source in smoke mode when --max-events is omitted.",
+    )
+    parser.add_argument(
+        "--shape-jobs",
+        type=int,
+        default=1,
+        help="Independent pyhf score-shape worker processes; default 1 preserves serial resource use.",
+    )
+    parser.add_argument(
+        "--progress-interval",
+        type=float,
+        default=30.0,
+        help="Seconds between v2 progress heartbeats while pyhf workers are running.",
+    )
     parser.add_argument(
         "--study-outdir",
         type=_Path,
-        default=_REPO_DIR / "xgboost_c3d4_study_v2",
-        help="New output directory for the versioned c3/d4 study.",
+        default=None,
+        help=(
+            "Output directory for the versioned study. Mode-specific defaults keep smoke and "
+            "preview products separate from xgboost_c3d4_study_v2."
+        ),
     )
     parser.add_argument(
         "--c3d4-signal-root",
@@ -2492,9 +3064,19 @@ def _run_local_xgboost_cli():
     parser.add_argument("--c3d4-fit-k4-max", type=float, default=701.0, help="Maximum k4=1+d4 used to scale the Chebyshev fit.")
     parser.add_argument("--c3d4-plot-c3-min", type=float, default=-20.0, help="Minimum c3 shown in the fitted limit plot.")
     parser.add_argument("--c3d4-plot-c3-max", type=float, default=20.0, help="Maximum c3 shown in the fitted limit plot.")
-    parser.add_argument("--c3d4-plot-d4-min", type=float, default=-300.0, help="Minimum d4 shown in the fitted limit plot.")
-    parser.add_argument("--c3d4-plot-d4-max", type=float, default=300.0, help="Maximum d4 shown in the fitted limit plot.")
+    parser.add_argument("--c3d4-plot-d4-min", type=float, default=-500.0, help="Minimum d4 shown in the fitted limit plot.")
+    parser.add_argument("--c3d4-plot-d4-max", type=float, default=500.0, help="Maximum d4 shown in the fitted limit plot.")
     parser.add_argument("--c3d4-plot-nbins", type=int, default=301, help="Number of bins per axis for fitted c3/d4 plots.")
+    parser.add_argument(
+        "--c3d4-contour-interpolation",
+        choices=("linear", "clough-tocher"),
+        default="linear",
+        help=(
+            "Interpolation of log10(sigma/sigma95) for v2 paper-style exclusion "
+            "contours. Linear is the assumption-minimal default; clough-tocher "
+            "uses a smooth piecewise-cubic surface inside the sampled convex hull."
+        ),
+    )
     parser.add_argument(
         "--c3d4-xsec-source-dir",
         type=_Path,
@@ -2537,6 +3119,8 @@ def _run_local_xgboost_cli():
 
     args = parser.parse_args()
 
+    _configure_v2_mode_defaults(args)
+
     if args.prepare_mg5_dir is not None:
         _write_mg5_c3d4_manifest(args.prepare_mg5_dir, args.mg5_manifest)
         return 0
@@ -2572,8 +3156,89 @@ def _run_local_xgboost_cli():
         _summarize_background_analysis(args)
         return 0
 
+    if args.replot_c3d4_study_contours:
+        conflicts = []
+        if args.run_c3d4_xgboost_study:
+            conflicts.append("--run-c3d4-xgboost-study")
+        if args.run_c3d4_limit_scan:
+            conflicts.append("--run-c3d4-limit-scan")
+        if conflicts:
+            raise SystemExit(
+                "--replot-c3d4-study-contours is mutually exclusive with "
+                + " and ".join(conflicts)
+            )
+        from c3d4_xgboost_runner import replot_c3d4_study_contours
+
+        cli_tokens = _sys.argv[1:]
+
+        def option_was_given(name):
+            return any(
+                token == name or token.startswith(name + "=")
+                for token in cli_tokens
+            )
+
+        c3_range_given = option_was_given("--c3d4-plot-c3-min") or option_was_given(
+            "--c3d4-plot-c3-max"
+        )
+        d4_range_given = option_was_given("--c3d4-plot-d4-min") or option_was_given(
+            "--c3d4-plot-d4-max"
+        )
+        try:
+            summary = replot_c3d4_study_contours(
+                args.study_outdir,
+                luminosity=(
+                    args.luminosity if option_was_given("--luminosity") else None
+                ),
+                contour_c3_range=(
+                    (args.c3d4_plot_c3_min, args.c3d4_plot_c3_max)
+                    if c3_range_given
+                    else None
+                ),
+                contour_d4_range=(
+                    (args.c3d4_plot_d4_min, args.c3d4_plot_d4_max)
+                    if d4_range_given
+                    else None
+                ),
+                contour_grid_bins=(
+                    args.c3d4_plot_nbins
+                    if option_was_given("--c3d4-plot-nbins")
+                    else None
+                ),
+                contour_interpolation=(
+                    args.c3d4_contour_interpolation
+                    if option_was_given("--c3d4-contour-interpolation")
+                    else None
+                ),
+                xsec_source_dir=(
+                    args.c3d4_xsec_source_dir
+                    if option_was_given("--c3d4-xsec-source-dir")
+                    else None
+                ),
+                xsec_overlay=(False if args.no_c3d4_xsec_overlay else None),
+            )
+        except (ValueError, RuntimeError) as error:
+            raise SystemExit(f"Cannot replot c3/d4 contours: {error}") from None
+        print(
+            f"Legacy-style v2 contour replot status: {summary['status']}; strategies:",
+            ", ".join(summary["strategies"]),
+        )
+        print("Contour manifest:", args.study_outdir / "contour_replot_manifest.json")
+        return 0
+
     if args.run_c3d4_xgboost_study:
         return _run_c3d4_xgboost_study_cli(args)
+
+    # Keep the legacy XGBoost stack out of the v2 startup path.  In
+    # particular, this lets --shape-jobs configure BLAS/OpenMP before NumPy,
+    # SciPy, pyhf or XGBoost is imported for the parallel study.
+    from xgboost_root_varfiles_module import (
+        combine_signal_component_rows,
+        run_signal_background_analysis,
+        score_background_files,
+        score_signal_files,
+        write_sample_report,
+        write_c3d4_limit_scan,
+    )
 
     if args.run_c3d4_limit_scan:
         (

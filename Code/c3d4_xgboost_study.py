@@ -281,7 +281,7 @@ def pooled_classifier_training_weights(
     labels: Sequence[int],
     physical_weights: Sequence[float],
     signal_point_ids: Sequence[Any],
-    expected_points: int | Sequence[Any] | None = 57,
+    expected_points: int | Sequence[Any] | None = None,
     signal_label: int = 1,
 ) -> np.ndarray:
     """Build the complete pooled-training weights used by XGBoost.
@@ -428,7 +428,7 @@ def exact_cls_signal_upper_limit(
 
     With ``observed_events=None`` this is the expected limit for the integer
     median background-only observation, matching the retained legacy method.
-    Results are cached by exact background yield so the 57 signal points can
+    Results are cached by exact background yield so all signal points can
     reuse the common background scan in every model/fold evaluation.
     """
 

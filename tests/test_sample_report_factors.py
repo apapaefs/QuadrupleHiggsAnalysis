@@ -27,6 +27,7 @@ from sample_report import (  # noqa: E402
     stacked_input_cross_section_histogram,
     stacked_sample_order,
     terminal_cutflow_table,
+    terminal_sm_background_cutflow_table,
     terminal_xgboost_mc_table,
     write_stacked_input_cross_section_plot,
 )
@@ -273,6 +274,33 @@ class SampleReportFactorTests(unittest.TestCase):
         self.assertIn("SM gg->hhhh->8b", table)
         self.assertIn("gg->6b+c cbar", table)
         self.assertNotIn("$", table)
+
+    def test_terminal_sm_background_cutflow_table_uses_legacy_rate_columns(self):
+        table = terminal_sm_background_cutflow_table(
+            [
+                {
+                    "process_id": "gg_to_6b_2c",
+                    "description": r"$gg\to 6b+c\bar{c}$",
+                    "input_xsec_fb": 2.0,
+                    "input_events": 6000.0,
+                    "xgboost_xsec_fb": 0.01,
+                    "xgboost_events": 30.0,
+                    "xgboost_events_error": 3.0,
+                    "entries": 50000,
+                    "selected_entries": 31,
+                }
+            ],
+            luminosity=3000.0,
+            thresholds=[0.7, 0.8],
+        )
+
+        self.assertIn("SM XGBoost background cutflow / rates", table)
+        self.assertIn("sigma_input [fb]", table)
+        self.assertIn("N_input", table)
+        self.assertIn("sigma_XGB [fb]", table)
+        self.assertIn("30 +/- 3", table)
+        self.assertIn("31 / 50000", table)
+        self.assertIn("0.7, 0.8", table)
 
     def test_terminal_xgboost_mc_table_orders_by_expected_selected_events(self):
         rows = [

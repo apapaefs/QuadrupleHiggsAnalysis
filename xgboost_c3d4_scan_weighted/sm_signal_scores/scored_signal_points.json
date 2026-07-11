@@ -20,11 +20,28 @@
       "expected_preselected_events": 0.0023144751140263594,
       "expected_selected_events": 0.00029924526726805454,
       "expected_selected_error": 2.6449794715402776e-05,
-      "raw_sigma_eff_fb": 1.60695595959596e-05,
-      "effective_sigma_eff_fb": 1.0075598224513619e-06,
+      "raw_sigma_eff_fb": 1.5908864000000003e-06,
+      "effective_sigma_eff_fb": 9.974842242268484e-08,
       "weighted_efficiency": 0.1292929292929293,
       "raw_weight_efficiency": 0.1292929292929293,
-      "mean_score": 0.6693386847614263
+      "mean_score": 0.6693386847614263,
+      "raw_xsec_fb": 0.000124288,
+      "analysis_efficiency": 0.099,
+      "xgboost_efficiency": 0.1292929292929293,
+      "final_efficiency": 0.0128
     }
-  ]
+  ],
+  "legacy_efficiency_repair": {
+    "version": "analysis-efficiency-backfill-v1",
+    "repaired_at_utc": "2026-07-11T01:55:22.514996+00:00",
+    "formulae": {
+      "analysis_efficiency": "expected_preselected_events/(luminosity*effective_xsec_fb)",
+      "xgboost_efficiency": "expected_selected_events/expected_preselected_events",
+      "final_efficiency": "expected_selected_events/(luminosity*effective_xsec_fb)",
+      "raw_sigma_eff_fb": "xsec_fb*final_efficiency",
+      "effective_sigma_eff_fb": "expected_selected_events/luminosity"
+    },
+    "fit_recomputed": false,
+    "plots_regenerated": false
+  }
 }

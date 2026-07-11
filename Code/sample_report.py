@@ -1287,6 +1287,46 @@ def terminal_xgboost_mc_table(rows, title="Per-sample XGBoost MC event counts", 
     return "\n".join(lines)
 
 
+def terminal_sm_background_cutflow_table(rows, luminosity, thresholds):
+    """Render the SM cross-fit background rates in the historical table style."""
+
+    rows = sort_rows_by_importance(rows, keep_signal_first=False)
+    headers = [
+        "Background",
+        "sigma_input [fb]",
+        "N_input",
+        "sigma_XGB [fb]",
+        "N_XGB (MC stat.)",
+        "MC selected / input",
+    ]
+    table_rows = [
+        [
+            _score_row_label(row),
+            terminal_number(row["input_xsec_fb"]),
+            terminal_number(row["input_events"]),
+            terminal_number(row["xgboost_xsec_fb"]),
+            event_interval_text(row, "xgboost_events"),
+            f"{int(row.get('selected_entries', 0))} / {int(row.get('entries', 0))}",
+        ]
+        for row in rows
+    ]
+    if not table_rows:
+        table_rows = [["(no backgrounds)", "--", "--", "--", "--", "0 / 0"]]
+
+    threshold_values = [float(value) for value in thresholds]
+    threshold_text = ", ".join(f"{value:g}" for value in threshold_values)
+    lines = [
+        f"SM XGBoost background cutflow / rates (L = {float(luminosity):g} fb^-1)",
+        f"Validation-optimized SM threshold by held-out fold: {threshold_text}",
+        "Input is the feature-tree yield before XGBoost; input/XGBoost rates include "
+        "cross sections, K/BR factors, and tag/mistag factors.",
+        "XGBoost yields use each disjoint held-out test fold exactly once; N_XGB errors "
+        "are weighted-MC statistical uncertainties.",
+        _terminal_table(headers, table_rows, right_aligned=set(range(1, len(headers)))),
+    ]
+    return "\n".join(lines)
+
+
 def sample_latex_label(metadata, is_signal=False):
     metadata = metadata or {}
     if is_signal:

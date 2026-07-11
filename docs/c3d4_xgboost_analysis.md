@@ -196,10 +196,11 @@ yields, \(\sum w^2\) errors and limits.
 XGBoost requires non-negative weights.  The pooled signal training weight is
 
 \[
-w^{\rm train}_{i,p}=\frac{|w_{i,p}|}{\sum_{j\in p}|w_{j,p}|}\frac{1}{57}.
+w^{\rm train}_{i,p}=\frac{|w_{i,p}|}{\sum_{j\in p}|w_{j,p}|}\frac{1}{N_{\rm points}}.
 \]
 
-Thus, every c3/d4 point has equal total importance.  Background training uses
+Thus, every one of the (N_{\rm points}) sampled c3/d4 points has equal total
+importance.  Background training uses
 \(|w^{\rm phys}|\), which preserves the physical process mixture, and the two
 classifier classes are finally normalized to equal totals.  Their common
 absolute scale is chosen so that the combined classifier weight equals the
@@ -260,8 +261,9 @@ J=0.75\,\operatorname{median}_p(\ln\sigma_{95,p})+
 \]
 
 `sm-crossfit-v2` uses only the dedicated SM signal for classifier training;
-`pooled-crossfit-v2` uses the 57 grid samples and excludes the separate SM
-file.
+`pooled-crossfit-v2` uses all unique grid samples and excludes the separate SM
+file.  The original production grid contains 57 points, while denser campaigns
+may contain any larger number of unique coordinates.
 
 ## Exact cut-and-count limit
 
@@ -316,6 +318,59 @@ The background envelope is not a fitted nuisance.  Process cross-section
 uncertainties from `Backgrounds/processes.csv` are retained in the manifest as
 diagnostics but are not profiled in the v2 likelihood.
 
+### Parallel evaluation, checkpoints and progress
+
+After the five classifiers, held-out scores and validation-selected candidate
+binnings have been fixed, the pyhf calculation for one coupling point is
+independent of every other point.  The runner can therefore evaluate points in
+separate POSIX processes with `--shape-jobs N`.  This changes only the order and
+wall-clock time of the fits: the score arrays, signed event weights, bin edges,
+workspace construction and statistical prescription are identical to the
+serial calculation.  The default remains one worker.
+
+Each completed point is written atomically below
+
+```text
+<study-outdir>/<strategy>/shape_checkpoints/<fingerprint>/point-<id>.json
+```
+
+The fingerprint binds the source and method versions, schema and profile,
+strategy, fold assignment, normalization and input hashes, pyhf version and
+the five saved model hashes.  A repeated command reuses only complete matching
+checkpoints.  Missing, malformed, incompatible, interrupted, worker-error or
+numerically failed pyhf points are evaluated again.  Invalid validation
+binning, invalid signed signal templates and non-positive signed test bins are
+retained as terminal analysis outcomes rather than repeatedly retried.  The
+normal `shape_results.csv` and `shape_results.json` files are written only after
+every point has reached a terminal state.  Earlier canonical tables and maps
+are first moved below `<strategy>/previous_outputs/`, so an interrupted rerun
+cannot look like a newly completed result.  An interruption leaves restartable
+checkpoints; `shape_results.partial.*` is also written when all submitted tasks
+return but retryable failures remain.  The publication state is recorded in
+`<strategy>/shape_results_status.json`.
+
+A command-line or preprocessing failure that occurs before a new attempt owns
+the manifest never relabels an earlier completed campaign.  Such failures are
+recorded separately below `<study-outdir>/failed_attempts/`.
+
+Progress is printed with immediate flushing throughout input discovery and
+tagged ROOT regeneration, input loading, hashing, profile comparison, Optuna
+tuning, fold training/scoring, aggregation, shape evaluation and plot
+production.  The latest state is also atomically recorded in
+`<study-outdir>/study_progress.json`.  During the shape stage it contains the
+completed, resumed, active and queued point counts, the latest point and fit
+status, elapsed time and an estimated remaining time.  For example, from a
+second shell one can monitor it with
+
+```bash
+watch -n 10 'jq . xgboost_c3d4_study_v2/study_progress.json'
+```
+
+Checkpointing resumes the pointwise shape calculation once a repeated full
+command reaches that stage.  It does not currently skip the preceding profile
+comparison and model fitting, although completed Optuna studies continue to
+resume from their persistent SQLite databases.
+
 ## Parameterized-classifier gate
 
 A parameterized \(f(x,c_3,d_4)\) classifier is considered only if the pooled
@@ -337,6 +392,211 @@ study after the pooled result.
 
 ## Commands and outputs
 
+### Smoke, preview, fast-SM and full modes
+
+The v2 driver provides four explicitly labelled execution levels:
+
+| Mode | Events | Classifier setup | Statistical output | Intended use |
+|---|---|---|---|---|
+| `smoke` | At most 2000 feature-tree entries per source by default | `corrected28`, fixed parameters and the SM cross-fit by default | exact single-bin cut limit only | code and file-flow checks; **not a physics result** |
+| `preview` | all events and all supplied unique coupling points | `core52`, fixed parameters and pooled plus SM cross-fits by default | exact single-bin cut limit only | rapid, physically normalized but preliminary exclusion map |
+| `fast-sm` | all events and all supplied unique coupling points | `full91`, fixed parameters and the SM cross-fit only | exact cut and pyhf score-shape limits | fast, physically valid SM-trained result without Optuna or pooled training |
+| `full` | all events and all supplied unique coupling points | validation profile comparison, Optuna tuning and the parameterized gate | exact cut and pyhf score-shape limits | complete optimized workflow |
+
+Preview, fast-SM and full modes reject `--max-events`.  The v2 workflow also rejects
+`--analysis-max-events` in every mode: truncating the C++ analysis could place
+a partial sample under the shared `*-extended-v2_var.smearCMS.root` filename
+and silently contaminate a later production run.  Smoke mode truncates only
+the Python read of an existing feature tree.  Its tables carry
+`physics_result_valid=false` and its plots are watermarked
+`NON-PHYSICS SMOKE TEST`.
+
+Before any mode reuses a tagged file, the driver checks the immutable Data3
+schema, the analysis-summary metadata, the requested background mistag
+composition, and that `mc_events_in` equals the number of entries in the raw
+ROOT `Data` tree (or an independently recorded generated-event count when the
+raw file is unavailable).  A failed check forces regeneration from the raw
+ROOT file.  With `--no-run-missing-analysis`, the command stops rather than
+silently using the invalid file.  The completion evidence is stored for every
+sample in `method_manifest.json`; `uses_complete_event_samples=true` is only
+reported when the source check succeeds and no Python event cap is active.
+
+A smoke test can be launched with
+
+```bash
+python 4h_analyzer.py \
+  --run-c3d4-xgboost-study \
+  --study-mode smoke
+```
+
+The default output is `xgboost_c3d4_study_v2_smoke/`.  Use
+`--smoke-max-events N` or `--max-events N` to change the Python-side cap.
+
+A physics-faithful quick preview is
+
+```bash
+python 4h_analyzer.py \
+  --run-c3d4-xgboost-study \
+  --study-mode preview \
+  --feature-profile core52 \
+  --training-strategy pooled-crossfit-v2
+```
+
+The default output is `xgboost_c3d4_study_v2_preview/`.  No Optuna or pyhf
+shape calculation is run.  The preliminary exclusion map is written to
+
+```text
+<study-outdir>/<strategy>/cut_preview/maps/
+  <strategy>_preview_cut_exclusion_contour.pdf
+```
+
+The same cut-preview map is published during a full run immediately after a
+strategy completes its five cross-fit rotations and before that strategy
+enters the expensive pyhf shape stage.  Its status is recorded atomically in
+`<strategy>/cut_preview/status.json`, so the map can be inspected while the
+full job continues.  Preview products are watermarked and are not the results
+to quote in the paper.
+
+Additional unique coupling points are supplied by repeating
+`--c3d4-signal-dir`; they must not be merged with the original points:
+
+```bash
+python 4h_analyzer.py \
+  --run-c3d4-xgboost-study \
+  --study-mode preview \
+  --training-strategy sm-crossfit-v2 \
+  --c3d4-signal-dir HerwigSignalPoints/c3d4_10k/events \
+  --c3d4-signal-dir HerwigSignalPoints/c3d4_additional/events \
+  --study-outdir xgboost_c3d4_study_v2_dense_preview
+```
+
+At least three unique points are required.  Duplicate coordinates are
+rejected, and the manifest records the complete dynamic point count.  For
+pooled training each of the (N_{\rm points}) coordinates retains equal total
+classifier weight.
+
+The fixed-parameter SM-only shape study is
+
+```bash
+python 4h_analyzer.py \
+  --run-c3d4-xgboost-study \
+  --study-mode fast-sm \
+  --reuse-sm-optuna-from xgboost_c3d4_study_v2 \
+  --shape-jobs 8 \
+  --c3d4-contour-interpolation clough-tocher
+```
+
+It uses the complete event samples, `full91`, five-fold SM training, the exact
+cut limit and the same pyhf score-shape likelihood as full mode.  It skips the
+feature-profile comparison, every Optuna study, pooled training and the
+parameterized-classifier gate.  Its default output is
+`xgboost_c3d4_study_v2_fast-sm/`.
+
+With `--reuse-sm-optuna-from`, the runner reads the completed source manifest
+and the five files
+`sm-crossfit-v2/optuna/fold_<f>_history.json`.  It requires the same observable
+schema, selected feature profile, fold count and base seed, then freezes the
+source best trial separately for each rotation.  The five SM models are
+retrained on the current event samples; old models, validation thresholds,
+score bins and pyhf results are not reused.  The source study, manifest and
+history hashes, best trials, objective values and parameters are recorded in
+the new manifest and model metadata.  This preserves cross-fitting while
+avoiding a new Optuna scan.
+
+### Legacy-style exclusion contours
+
+Each preview and final strategy now also writes the three paper-style contour
+variants used by `xgboost_c3d4_scan/`, separately for the exact single-bin cut
+limit and, when available, the pyhf score-shape limit:
+
+```text
+<prefix>_cut_c3d4_hhhh_xsec_with_95cl.{png,pdf}
+<prefix>_cut_c3d4_hhhh_xsec_with_95cl_atl_phys_pub_2025_003.{png,pdf}
+<prefix>_cut_c3d4_hhhh_xsec_with_95cl_atl_phys_pub_2025_003_no_ratio_contours.{png,pdf}
+```
+
+The analogous shape files replace `_cut_` by `_shape_`.  They retain the
+legacy viridis cross-section-ratio background, crimson central contour and
+background-normalization band, perturbative-unitarity boundary, SM marker,
+and optional ATL-PHYS-PUB-2025-003 curve.  Smoke and preview contours keep the
+same non-final watermark as their other maps.  The default paper-style
+viewport is $c_3\in[-20,20]$ and $d_4\in[-500,500]$.
+
+The v2 exclusion boundary is evaluated from the point-dependent quantity
+
+\[
+R(c_3,d_4)=\frac{\sigma_{hhhh}(c_3,d_4)}
+                  {\sigma_{95}(c_3,d_4)}
+\]
+
+and the 95% CL contour is (R=1).  By default, the logarithm of this ratio is
+interpolated piecewise linearly on the sampled c3/d4 triangulation.  Passing
+`--c3d4-contour-interpolation clough-tocher` instead uses SciPy's smooth
+piecewise-cubic Clough--Tocher interpolator, with coordinate rescaling and no
+extrapolation outside the sampled convex hull.  This deliberately does
+not reuse the legacy common-(S_{95}) fitted event surface: in v2, the selected
+threshold and background yield, and hence (S_{95}), can differ at every
+coupling point.  The (B\times[0.25,4]) band is built from the corresponding
+pointwise alternative limits.
+
+For a final, unwatermarked contour, the complete coupling-point set recorded
+in `method_manifest.json` must have finite cut or shape limits (and both
+background-envelope reruns).  A missing or failed point is not bridged by the
+triangulation: that contour is marked incomplete and skipped.  This prevents a
+small surviving subset of points from being mistaken for a paper-ready result.
+Exactly one result row is required for every manifest point, and its
+production cross section must agree with the corresponding manifest input.
+This check specifically prevents stale tables containing the historical
+1-fb fallback from being replotted.  New result status files also record a
+SHA-256 digest of their JSON table; a later hash mismatch is rejected.
+
+Contours can be added to a completed or partially completed study without
+retraining XGBoost or rerunning pyhf:
+
+```bash
+python 4h_analyzer.py \
+  --replot-c3d4-study-contours \
+  --study-outdir xgboost_c3d4_study_v2
+```
+
+Use the preview or smoke output directory explicitly when replotting those
+modes.  By default the replot command inherits the luminosity, viewport,
+resolution, cross-section source and overlay choice saved by the original
+study.  The viewport, resolution and interpolation can be changed explicitly with the
+existing `--c3d4-plot-*` options.  A requested luminosity or cross-section
+source that disagrees with the manifest is rejected, so an old numerical
+result cannot silently acquire a new label or heat map.
+
+For example, an existing result can be compared with the smooth interpolation
+without rerunning XGBoost or pyhf:
+
+```bash
+python 4h_analyzer.py \
+  --replot-c3d4-study-contours \
+  --study-outdir xgboost_c3d4_study_v2_fast-sm \
+  --c3d4-contour-interpolation clough-tocher \
+  --c3d4-plot-nbins 801
+```
+
+The interpolation method is recorded in each contour manifest.  Linear
+interpolation remains the assumption-minimal reference; Clough--Tocher is a
+smooth presentation and robustness comparison rather than additional physics
+information.
+
+`--no-c3d4-xsec-overlay` still writes the white-background contour with the
+SM, unitarity and ATLAS overlays.  The colored variants require the same MG5
+Chebyshev cross-section surface as the legacy analysis; if that source is
+unavailable they are reported as skipped rather than silently replaced by a
+different interpolation.  Every set is described in
+`legacy_contour_manifest.json`, and the replot-only command writes the
+top-level `contour_replot_manifest.json`.  Its status is `complete`, `partial`
+or `failed`, with malformed/missing tables and skipped products listed under
+`issues`.  `study_paper_ready` retains the state of the numerical campaign,
+whereas the replot manifest's own `paper_ready` flag is true only when the
+contour replot is also complete.
+
+### Commands
+
 The retained legacy command is, for example,
 
 ```bash
@@ -350,24 +610,34 @@ XGBoost, pyhf 0.7.6 and Optuna 4.9.0:
 source ~/root310install/bin/thisroot.sh
 source ~/xgb-py310/bin/activate
 export PATH="$HOME/Projects/Herwig/HerwigPol2/bin:$PATH"
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
 python 4h_analyzer.py \
   --run-c3d4-xgboost-study \
+  --study-mode full \
   --observable-set extended-91-v2 \
   --training-strategy pooled-crossfit-v2 \
   --cv-folds 5 \
   --optuna-trials 40 \
   --analysis-jobs 8 \
+  --shape-jobs 4 \
+  --progress-interval 30 \
   --study-outdir xgboost_c3d4_study_v2
 ```
 
-Passing `--feature-profile corrected28|core52|full91` forces one profile;
-omitting it performs the validation-only global comparison.  Models, fold
+In full mode, passing `--feature-profile corrected28|core52|full91` forces one
+profile; omitting it performs the validation-only global comparison.  Fast-SM,
+preview and smoke modes skip that comparison and use their mode defaults unless a
+profile is supplied explicitly.  Models, fold
 thresholds, bin edges, efficiencies, yields, raw and effective MC statistics,
 \(S_{95}\), cut and shape \(\sigma_{95}\), baseline ratios, maps, contours,
 Optuna histories and the gate decision are written only under the study
 directory.  `method_manifest.json` records package versions, source commit,
 input hashes, normalization inputs, fold populations, schema, feature names,
-strategy, parameters and seeds.
+strategy, parameters and seeds, together with the shape worker count, thread
+caps, checkpoint fingerprints and per-strategy resume counts.
 
 ## Limitations and deferred studies
 
