@@ -42,6 +42,9 @@ if str(CODE_DIR) not in sys.path:
     sys.path.insert(0, str(CODE_DIR))
 
 from sample_report import (  # noqa: E402
+    feature_bin_edges,
+    normalised_histogram,
+    observable_axis_label,
     safe_feature_filename,
     sample_style,
     terminal_number,
@@ -117,10 +120,18 @@ HHHBB_OBSERVABLE_TITLES = {
 HHHBB_SPLIT_LABEL = r"$gg \rightarrow hhhg,\ g\rightarrow b\bar{b}$ (forced split)"
 HHHBB_DIRECT_LABEL = r"$gg \rightarrow h h h b\bar{b}$ (direct)"
 HHHBB_REPORT_TITLE = r"4H HEFT LHE 8b Validation Observables ($m_t \rightarrow \infty$)"
-HHHBB_PLOT_TITLE = r"HEFT validation, $m_t \rightarrow \infty$"
+HHHBB_PLOT_TITLE = r"Validation, $m_t \rightarrow \infty$"
 HHHBB_SHAPE_MIN_BINS = 5
 HHHBB_SHAPE_MAX_BINS = 35
 HHHBB_SHAPE_ENTRIES_PER_BIN = 25.0
+HHHBB_AXIS_LABEL_FONTSIZE = 14
+HHHBB_TICK_LABEL_FONTSIZE = 10
+HHHBB_PLOT_TITLE_FONTSIZE = 15
+HHHBB_LEGEND_FONTSIZE = 8
+HHHBB_RANK_GRID_TITLE_FONTSIZE = 20
+HHHBB_RANK_GRID_NUMBER_FONTSIZE = 38
+HHHBB_B_PT_RANK_GRID_OBSERVABLES = tuple("b%d_pt" % rank for rank in range(1, 9))
+HHHBB_B_PT_RANK_GRID_FEATURE = "ranked_b_pt_grid"
 
 
 @dataclass
@@ -665,6 +676,149 @@ def _write_validation_table(path, samples, correction_summary=None):
     Path(path).write_text("\n".join(lines) + "\n")
 
 
+def _observable_plot_samples(samples, observable):
+    plot_samples = []
+    entries = 0
+    for index, sample in enumerate(samples):
+        values = sample["observables"][observable]["values"]
+        weights = sample["observables"][observable]["weights"]
+        entries += len(values)
+        plot_samples.append(
+            {
+                "label": sample["label"],
+                "values": values,
+                "weights": weights,
+                "style": sample_style(index),
+            }
+        )
+    return plot_samples, entries
+
+
+def _prepare_shape_plot_samples(plot_samples):
+    import numpy as np
+
+    pooled_values = []
+    sample_weights = []
+    prepared_samples = []
+    for sample in plot_samples:
+        values = np.asarray(sample.get("values", []), dtype=float)
+        weights = np.asarray(sample.get("weights", []), dtype=float)
+        mask = np.isfinite(values) & np.isfinite(weights)
+        values = values[mask]
+        weights = weights[mask]
+        if values.size:
+            pooled_values.append(values)
+        sample_weights.append(weights)
+        prepared = dict(sample)
+        prepared["values"] = values
+        prepared["weights"] = weights
+        prepared.setdefault("style", sample_style(len(prepared_samples)))
+        prepared_samples.append(prepared)
+    pooled = np.concatenate(pooled_values) if pooled_values else np.asarray([])
+    edges = feature_bin_edges(
+        pooled,
+        sample_weights,
+        min_bins=HHHBB_SHAPE_MIN_BINS,
+        max_bins=HHHBB_SHAPE_MAX_BINS,
+        entries_per_bin=HHHBB_SHAPE_ENTRIES_PER_BIN,
+    )
+    return prepared_samples, edges
+
+
+def _write_b_pt_rank_grid_plot(path, samples):
+    """Write a 2x4 comparison plot for ranked b-quark pT observables."""
+
+    import os
+
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(2, 4, figsize=(19.2, 8.4))
+    total_entries = 0
+
+    for rank, (observable, ax) in enumerate(
+        zip(HHHBB_B_PT_RANK_GRID_OBSERVABLES, axes.flat), start=1
+    ):
+        plot_samples, entries = _observable_plot_samples(samples, observable)
+        total_entries += entries
+        prepared_samples, edges = _prepare_shape_plot_samples(plot_samples)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        plotted = False
+
+        for sample in prepared_samples:
+            values = sample["values"]
+            weights = sample["weights"]
+            if values.size == 0:
+                continue
+            y, yerr = normalised_histogram(values, weights, edges)
+            if not np.any(np.isfinite(y)):
+                continue
+            style = sample["style"]
+            ax.stairs(
+                y,
+                edges,
+                label=sample["label"],
+                color=style["color"],
+                linestyle=style["linestyle"],
+                linewidth=1.45,
+            )
+            ax.errorbar(
+                centers,
+                y,
+                yerr=yerr,
+                fmt=style["marker"],
+                markersize=2.6,
+                color=style["color"],
+                linestyle="none",
+                linewidth=0.8,
+                capsize=1.6,
+            )
+            plotted = True
+
+        ax.set_xlabel(
+            observable_axis_label(observable), fontsize=HHHBB_AXIS_LABEL_FONTSIZE
+        )
+        ax.set_ylabel(
+            r"$\mathrm{Normalized\ events}/\mathrm{bin}$",
+            fontsize=HHHBB_AXIS_LABEL_FONTSIZE,
+        )
+        ax.tick_params(axis="both", which="major", labelsize=HHHBB_TICK_LABEL_FONTSIZE)
+        ax.grid(True, which="major", linewidth=0.4, alpha=0.35)
+        if plotted:
+            ax.legend(frameon=False, fontsize=HHHBB_LEGEND_FONTSIZE, loc="upper right")
+        else:
+            ax.text(
+                0.5,
+                0.5,
+                "No finite entries",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+            )
+        ax.text(
+            0.97,
+            0.73,
+            str(rank),
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=HHHBB_RANK_GRID_NUMBER_FONTSIZE,
+            fontweight="bold",
+        )
+
+    fig.suptitle(HHHBB_PLOT_TITLE, fontsize=HHHBB_RANK_GRID_TITLE_FONTSIZE)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return int(total_entries)
+
+
 def write_lhe_8b_validation_report_from_samples(
     samples,
     output_dir,
@@ -682,22 +836,18 @@ def write_lhe_8b_validation_report_from_samples(
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     plot_rows = []
+    rank_grid_path = plots_dir / "b_pt_rank_grid.png"
+    rank_grid_entries = _write_b_pt_rank_grid_plot(rank_grid_path, samples)
+    plot_rows.append(
+        {
+            "feature": HHHBB_B_PT_RANK_GRID_FEATURE,
+            "path": str(rank_grid_path),
+            "entries": int(rank_grid_entries),
+        }
+    )
     for observable in HHHBB_OBSERVABLE_ORDER:
         plot_path = plots_dir / ("%s.png" % safe_feature_filename(observable))
-        plot_samples = []
-        entries = 0
-        for index, sample in enumerate(samples):
-            values = sample["observables"][observable]["values"]
-            weights = sample["observables"][observable]["weights"]
-            entries += len(values)
-            plot_samples.append(
-                {
-                    "label": sample["label"],
-                    "values": values,
-                    "weights": weights,
-                    "style": sample_style(index),
-                }
-            )
+        plot_samples, entries = _observable_plot_samples(samples, observable)
         write_observable_shape_plot(
             plot_path,
             observable,
@@ -706,6 +856,10 @@ def write_lhe_8b_validation_report_from_samples(
             max_bins=HHHBB_SHAPE_MAX_BINS,
             entries_per_bin=HHHBB_SHAPE_ENTRIES_PER_BIN,
             title=HHHBB_PLOT_TITLE,
+            axis_label_fontsize=HHHBB_AXIS_LABEL_FONTSIZE,
+            tick_label_fontsize=HHHBB_TICK_LABEL_FONTSIZE,
+            title_fontsize=HHHBB_PLOT_TITLE_FONTSIZE,
+            legend_fontsize=HHHBB_LEGEND_FONTSIZE,
         )
         plot_rows.append(
             {
@@ -734,6 +888,16 @@ def write_lhe_8b_validation_report_from_samples(
                 "min_bins": HHHBB_SHAPE_MIN_BINS,
                 "max_bins": HHHBB_SHAPE_MAX_BINS,
                 "entries_per_bin": HHHBB_SHAPE_ENTRIES_PER_BIN,
+            },
+            "plot_text": {
+                "axis_label_fontsize": HHHBB_AXIS_LABEL_FONTSIZE,
+                "tick_label_fontsize": HHHBB_TICK_LABEL_FONTSIZE,
+                "single_plot_title": HHHBB_PLOT_TITLE,
+            },
+            "rank_pt_grid": {
+                "observables": list(HHHBB_B_PT_RANK_GRID_OBSERVABLES),
+                "layout": "2x4",
+                "number_labels": "large rank numbers placed under each panel legend",
             },
             "higgs_branching_ratio": "BR(h->bb)=1 validation",
             "pair_assignment": (
