@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import os
 import json
+import subprocess
 import sys
 import types
 from unittest import mock
@@ -19,6 +20,255 @@ exec(compile(SOURCE, str(MODULE_PATH), "exec"), DRIVER)
 
 
 class C3D4V2DriverTests(unittest.TestCase):
+    def test_replot_is_mutually_exclusive_with_the_legacy_limit_scan(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "--replot-c3d4-study-contours",
+                "--run-c3d4-limit-scan",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("mutually exclusive", result.stderr)
+        self.assertIn("--run-c3d4-limit-scan", result.stderr)
+
+    def test_v2_mode_defaults_use_distinct_output_directories_and_strategies(self):
+        configured = {}
+        for mode in ("smoke", "preview", "fast-sm", "full"):
+            args = types.SimpleNamespace(
+                study_mode=mode,
+                study_outdir=None,
+                training_strategy=None,
+            )
+            configured[mode] = DRIVER["_configure_v2_mode_defaults"](args)
+
+        self.assertEqual(
+            configured["smoke"].study_outdir,
+            DRIVER["_REPO_DIR"] / "xgboost_c3d4_study_v2_smoke",
+        )
+        self.assertEqual(
+            configured["preview"].study_outdir,
+            DRIVER["_REPO_DIR"] / "xgboost_c3d4_study_v2_preview",
+        )
+        self.assertEqual(
+            configured["fast-sm"].study_outdir,
+            DRIVER["_REPO_DIR"] / "xgboost_c3d4_study_v2_fast-sm",
+        )
+        self.assertEqual(
+            configured["full"].study_outdir,
+            DRIVER["_REPO_DIR"] / "xgboost_c3d4_study_v2",
+        )
+        self.assertEqual(
+            len({args.study_outdir for args in configured.values()}), 4
+        )
+        self.assertEqual(
+            configured["smoke"].training_strategy, "sm-crossfit-v2"
+        )
+        self.assertEqual(
+            configured["fast-sm"].training_strategy, "sm-crossfit-v2"
+        )
+        self.assertEqual(
+            configured["preview"].training_strategy, "pooled-crossfit-v2"
+        )
+        self.assertEqual(
+            configured["full"].training_strategy, "pooled-crossfit-v2"
+        )
+
+    def test_analysis_max_events_is_rejected_before_root_discovery(self):
+        args = types.SimpleNamespace(
+            shape_jobs=1,
+            progress_interval=30.0,
+            analysis_max_events=10,
+        )
+        discover = mock.Mock()
+        original = DRIVER["_discover_analysis_inputs"]
+        DRIVER["_discover_analysis_inputs"] = discover
+        try:
+            with self.assertRaisesRegex(
+                SystemExit, "does not allow --analysis-max-events"
+            ):
+                DRIVER["_run_c3d4_xgboost_study_cli_impl"](args)
+        finally:
+            DRIVER["_discover_analysis_inputs"] = original
+        discover.assert_not_called()
+
+    def test_nonfinite_progress_interval_is_rejected_before_root_discovery(self):
+        args = types.SimpleNamespace(shape_jobs=1, progress_interval=float("inf"))
+        discover = mock.Mock()
+        original = DRIVER["_discover_analysis_inputs"]
+        DRIVER["_discover_analysis_inputs"] = discover
+        try:
+            with self.assertRaisesRegex(SystemExit, "finite and positive"):
+                DRIVER["_run_c3d4_xgboost_study_cli_impl"](args)
+        finally:
+            DRIVER["_discover_analysis_inputs"] = original
+        discover.assert_not_called()
+
+    def test_cli_rejects_invalid_shape_jobs_and_records_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            args = types.SimpleNamespace(
+                shape_jobs=0,
+                progress_interval=30.0,
+                study_outdir=directory / "study",
+                c3d4_scan_outdir=directory / "legacy",
+            )
+            with self.assertRaisesRegex(SystemExit, "shape-jobs"):
+                DRIVER["_run_c3d4_xgboost_study_cli"](args)
+
+            progress = json.loads(
+                (args.study_outdir / "study_progress.json").read_text()
+            )
+            self.assertEqual(progress["status"], "failed")
+            self.assertEqual(progress["last_error"]["error_type"], "SystemExit")
+
+    def test_preview_can_retry_after_failure_before_input_discovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            args = types.SimpleNamespace(
+                shape_jobs=0,
+                progress_interval=30.0,
+                study_mode="preview",
+                study_outdir=directory / "preview",
+                c3d4_scan_outdir=directory / "legacy",
+            )
+
+            with self.assertRaisesRegex(SystemExit, "shape-jobs"):
+                DRIVER["_run_c3d4_xgboost_study_cli"](args)
+
+            manifest = json.loads(
+                (args.study_outdir / "method_manifest.json").read_text()
+            )
+            self.assertEqual(manifest["study_mode"], "preview")
+
+            code_dir = Path(__file__).resolve().parents[1] / "Code"
+            if str(code_dir) not in sys.path:
+                sys.path.insert(0, str(code_dir))
+            from c3d4_xgboost_runner import _validate_study_output_mode
+
+            _validate_study_output_mode(args.study_outdir, "preview")
+
+    def test_invalid_tagged_v2_is_not_reused_when_regeneration_is_disabled(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
+            DRIVER,
+            {"_extended_v2_output_is_current": mock.Mock(return_value=False)},
+        ):
+            directory = Path(directory)
+            raw = directory / "sample.root"
+            tagged = directory / "sample-extended-v2_var.smearCMS.root"
+            raw.touch()
+            tagged.touch()
+
+            with self.assertRaisesRegex(
+                SystemExit, "--no-run-missing-analysis"
+            ):
+                DRIVER["_ensure_analysis_var_roots"](
+                    [directory],
+                    executable=Path("/tmp/analyzer"),
+                    source_file=Path("/tmp/analyzer.cc"),
+                    analysis_tag=DRIVER["EXTENDED_V2_TAG"],
+                    run_missing=False,
+                )
+
+    def test_csv_background_v2_checks_completeness_and_mistag_composition(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            raw = directory / "background.root"
+            tagged = directory / "background-extended-v2_var.smearCMS.root"
+            raw.touch()
+            tagged.touch()
+            sample = {
+                "process_id": "background",
+                "raw_root": raw,
+                "c_quarks": 1,
+                "light_jets": 2,
+            }
+            args = types.SimpleNamespace(
+                force_analysis=False,
+                no_run_missing_analysis=True,
+                analysis_source=Path("/tmp/analyzer.cc"),
+                analysis_exe=Path("/tmp/analyzer"),
+                analysis_max_events=None,
+                analysis_jobs=1,
+                include_auxiliary_samples=False,
+            )
+            validator = mock.Mock(return_value=True)
+            with mock.patch.dict(
+                DRIVER, {"_extended_v2_output_is_current": validator}
+            ):
+                roots = DRIVER["_ensure_background_csv_var_roots"](
+                    [sample], args, analysis_tag=DRIVER["EXTENDED_V2_TAG"]
+                )
+
+            self.assertEqual(roots, [tagged])
+            validator.assert_called_once_with(
+                tagged,
+                raw_root=raw,
+                source_file=args.analysis_source,
+                expected_c_mistags=1,
+                expected_light_mistags=2,
+            )
+
+            with mock.patch.dict(
+                DRIVER,
+                {"_extended_v2_output_is_current": mock.Mock(return_value=False)},
+            ):
+                with self.assertRaisesRegex(
+                    SystemExit, "--no-run-missing-analysis"
+                ):
+                    DRIVER["_ensure_background_csv_var_roots"](
+                        [sample], args, analysis_tag=DRIVER["EXTENDED_V2_TAG"]
+                    )
+
+    def test_legacy_csv_background_retains_existing_output_without_raw_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            raw = directory / "background.root"
+            legacy = directory / "background_var.smearCMS.root"
+            legacy.touch()
+            sample = {
+                "process_id": "background",
+                "raw_root": raw,
+                "c_quarks": 0,
+                "light_jets": 0,
+            }
+            args = types.SimpleNamespace(
+                force_analysis=True,
+                no_run_missing_analysis=False,
+                analysis_source=Path("/tmp/analyzer.cc"),
+                analysis_exe=Path("/tmp/analyzer"),
+                analysis_max_events=None,
+                analysis_jobs=1,
+                include_auxiliary_samples=False,
+            )
+
+            roots = DRIVER["_ensure_background_csv_var_roots"](
+                [sample], args, analysis_tag=None
+            )
+
+            self.assertEqual(roots, [legacy])
+
+    def test_parallel_shape_threads_are_forced_to_one_before_runner_import(self):
+        variables = DRIVER["_SHAPE_THREAD_ENVIRONMENT"]
+        original = {name: os.environ.get(name) for name in variables}
+        try:
+            for name in variables:
+                os.environ[name] = "8"
+            configured = DRIVER["_configure_parallel_shape_threads"](4)
+            self.assertEqual(configured, {name: "1" for name in variables})
+            self.assertEqual({name: os.environ[name] for name in variables}, configured)
+        finally:
+            for name, value in original.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
     def test_tagged_analysis_paths_do_not_replace_legacy_paths(self):
         raw = Path("/tmp/HW-point.root")
         self.assertEqual(
@@ -124,11 +374,14 @@ class C3D4V2DriverTests(unittest.TestCase):
             raw.touch()
             tagged.touch()
             run_one = mock.Mock(return_value=tagged)
+            progress = mock.Mock()
             original_validator = DRIVER["_extended_v2_output_is_current"]
             original_ensure = DRIVER["_ensure_analysis_executable"]
             original_run = DRIVER["_run_one_cpp_analysis"]
             try:
-                DRIVER["_extended_v2_output_is_current"] = mock.Mock(return_value=False)
+                DRIVER["_extended_v2_output_is_current"] = mock.Mock(
+                    side_effect=(False, True)
+                )
                 DRIVER["_ensure_analysis_executable"] = mock.Mock(return_value=Path("/tmp/analyzer"))
                 DRIVER["_run_one_cpp_analysis"] = run_one
                 DRIVER["_ensure_analysis_var_roots"](
@@ -136,6 +389,7 @@ class C3D4V2DriverTests(unittest.TestCase):
                     executable=Path("/tmp/analyzer"),
                     source_file=Path("/tmp/analyzer.cc"),
                     analysis_tag=DRIVER["EXTENDED_V2_TAG"],
+                    progress_callback=progress,
                 )
             finally:
                 DRIVER["_extended_v2_output_is_current"] = original_validator
@@ -143,7 +397,26 @@ class C3D4V2DriverTests(unittest.TestCase):
                 DRIVER["_run_one_cpp_analysis"] = original_run
 
             run_one.assert_called_once()
+            progress.assert_called_once_with(1, 1, "sample.root")
             self.assertTrue(run_one.call_args.kwargs["force"])
+
+    def test_legacy_mixed_variable_root_discovery_order_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            raw = directory / "a.root"
+            paired = directory / "a_var.smearCMS.root"
+            standalone = directory / "b_var.smearCMS.root"
+            for path in (raw, paired, standalone):
+                path.touch()
+
+            roots = DRIVER["_ensure_analysis_var_roots"](
+                [directory],
+                executable=Path("/tmp/analyzer"),
+                source_file=Path("/tmp/analyzer.cc"),
+                analysis_tag=None,
+            )
+
+            self.assertEqual(roots, [paired, standalone])
 
     def test_current_tagged_output_requires_the_complete_data3_contract(self):
         from observable_schemas import (
@@ -211,45 +484,95 @@ class C3D4V2DriverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             tagged = directory / "sample-extended-v2_var.smearCMS.root"
+            raw = directory / "sample.root"
             tagged.touch()
+            raw.touch()
             summary = directory / "sample-extended-v2.analysis_summary.json"
             summary.write_text(json.dumps({
                 "observable_schema": EXTENDED_SCHEMA_ID,
+                "input_file": str(raw),
+                "mc_events_in": 3,
+                "c_mistags": 0,
+                "light_mistags": 0,
+                "required_true_bjets": 8,
                 "total_weight_in": 10.0,
                 "feature_tree_mc_events_out": 3,
                 "feature_tree_weight_out": 3.0,
                 "feature_tree_efficiency": 0.3,
             }))
+            os.utime(raw, (99.0, 99.0))
             os.utime(tagged, (100.0, 100.0))
             os.utime(summary, (101.0, 101.0))
 
             current_file = RootFile()
+            current_file.objects["Data"] = Tree()
             fake_root = types.SimpleNamespace(
                 TFile=types.SimpleNamespace(Open=lambda *args: current_file)
             )
             with mock.patch.dict(sys.modules, {"ROOT": fake_root}):
-                self.assertTrue(DRIVER["_extended_v2_output_is_current"](tagged))
+                self.assertTrue(
+                    DRIVER["_extended_v2_output_is_current"](
+                        tagged,
+                        raw_root=raw,
+                        expected_c_mistags=0,
+                        expected_light_mistags=0,
+                    )
+                )
+                self.assertFalse(
+                    DRIVER["_extended_v2_output_is_current"](
+                        tagged,
+                        raw_root=raw,
+                        expected_c_mistags=1,
+                        expected_light_mistags=0,
+                    )
+                )
 
             wrong_pairings = RootFile(pairing_count=104)
+            wrong_pairings.objects["Data"] = Tree()
             fake_root.TFile.Open = lambda *args: wrong_pairings
             with mock.patch.dict(sys.modules, {"ROOT": fake_root}):
-                self.assertFalse(DRIVER["_extended_v2_output_is_current"](tagged))
+                self.assertFalse(
+                    DRIVER["_extended_v2_output_is_current"](
+                        tagged, raw_root=raw
+                    )
+                )
 
             stale_summary = json.loads(summary.read_text())
-            stale_summary["feature_tree_mc_events_out"] = 2
+            stale_summary["mc_events_in"] = 2
             summary.write_text(json.dumps(stale_summary))
             os.utime(summary, (102.0, 102.0))
             fake_root.TFile.Open = lambda *args: current_file
             with mock.patch.dict(sys.modules, {"ROOT": fake_root}):
-                self.assertFalse(DRIVER["_extended_v2_output_is_current"](tagged))
+                self.assertFalse(
+                    DRIVER["_extended_v2_output_is_current"](
+                        tagged, raw_root=raw
+                    )
+                )
+
+            stale_summary["mc_events_in"] = 3
+            stale_summary["feature_tree_mc_events_out"] = 2
+            summary.write_text(json.dumps(stale_summary))
+            os.utime(summary, (103.0, 103.0))
+            fake_root.TFile.Open = lambda *args: current_file
+            with mock.patch.dict(sys.modules, {"ROOT": fake_root}):
+                self.assertFalse(
+                    DRIVER["_extended_v2_output_is_current"](
+                        tagged, raw_root=raw
+                    )
+                )
 
             stale_summary["feature_tree_mc_events_out"] = 3
             summary.write_text(json.dumps(stale_summary))
-            os.utime(summary, (103.0, 103.0))
+            os.utime(summary, (104.0, 104.0))
             wrong_length = RootFile(feature_length=90)
+            wrong_length.objects["Data"] = Tree()
             fake_root.TFile.Open = lambda *args: wrong_length
             with mock.patch.dict(sys.modules, {"ROOT": fake_root}):
-                self.assertFalse(DRIVER["_extended_v2_output_is_current"](tagged))
+                self.assertFalse(
+                    DRIVER["_extended_v2_output_is_current"](
+                        tagged, raw_root=raw
+                    )
+                )
 
 
 if __name__ == "__main__":
