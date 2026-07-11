@@ -2649,6 +2649,7 @@ def _run_c3d4_xgboost_study_cli_impl(args):
         contour_interpolation=args.c3d4_contour_interpolation,
         xsec_source_dir=args.c3d4_xsec_source_dir,
         xsec_overlay=not args.no_c3d4_xsec_overlay,
+        write_input_report=not args.no_sample_report,
     )
     print("v2 study complete; selected profile =", summary["selected_feature_profile"])
     return 0
@@ -2869,6 +2870,14 @@ def _run_local_xgboost_cli():
         help=(
             "Generate the legacy-style cut/shape exclusion contour family from existing "
             "v2 JSON tables without retraining or rerunning pyhf."
+        ),
+    )
+    parser.add_argument(
+        "--write-c3d4-v2-input-report",
+        action="store_true",
+        help=(
+            "Add normalized and legacy-style stacked input-observable plots to an "
+            "already completed v2 study without retraining."
         ),
     )
     parser.add_argument(
@@ -3154,6 +3163,29 @@ def _run_local_xgboost_cli():
 
     if args.summarize_background_analysis:
         _summarize_background_analysis(args)
+        return 0
+
+    if args.write_c3d4_v2_input_report:
+        conflicts = []
+        if args.run_c3d4_xgboost_study:
+            conflicts.append("--run-c3d4-xgboost-study")
+        if args.replot_c3d4_study_contours:
+            conflicts.append("--replot-c3d4-study-contours")
+        if args.run_c3d4_limit_scan:
+            conflicts.append("--run-c3d4-limit-scan")
+        if conflicts:
+            raise SystemExit(
+                "--write-c3d4-v2-input-report is mutually exclusive with "
+                + " and ".join(conflicts)
+            )
+        from c3d4_xgboost_runner import write_c3d4_input_report_from_manifest
+
+        try:
+            report = write_c3d4_input_report_from_manifest(args.study_outdir)
+        except (OSError, ValueError, RuntimeError) as error:
+            raise SystemExit(f"Cannot write v2 input-observable report: {error}") from None
+        print("v2 input-observable report:", report["index"])
+        print("plots written:", report["plot_count"])
         return 0
 
     if args.replot_c3d4_study_contours:

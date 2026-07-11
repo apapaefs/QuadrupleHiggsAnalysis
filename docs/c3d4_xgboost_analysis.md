@@ -639,6 +639,22 @@ input hashes, normalization inputs, fold populations, schema, feature names,
 strategy, parameters and seeds, together with the shape worker count, thread
 caps, checkpoint fingerprints and per-strategy resume counts.
 
+The command also writes `<study-outdir>/sample_report/index.html`.  For every
+observable in the selected profile this contains a normalized SM/background
+comparison and a legacy-style stacked input-cross-section histogram.  The
+stack uses the same physical event normalization as the v2 study and enlarges
+the SM contribution by 1000 only for display.  Pass `--no-sample-report` to
+disable this output.
+
+The same gallery can be added to a completed study without retraining or
+rerunning the statistical calculation:
+
+```bash
+python 4h_analyzer.py \
+  --write-c3d4-v2-input-report \
+  --study-outdir xgboost_c3d4_study_v2_fast-sm
+```
+
 ## Limitations and deferred studies
 
 The result is conditional on the resolved eight-candidate definition and on

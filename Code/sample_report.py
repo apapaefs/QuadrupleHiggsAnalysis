@@ -447,6 +447,50 @@ def observable_axis_label(name):
     if name.startswith("dr_bb_h"):
         index = name[len("dr_bb_h") :]
         return rf"$\Delta R(b,b)_{{h_{index}}}$"
+    if name.startswith("m_bb_h"):
+        index = name[len("m_bb_h") :]
+        return rf"$m_{{b\bar{{b}},h_{index}}}$ [GeV]"
+    for prefix, symbol, unit in (
+        ("m_hhh_", "m", " [GeV]"),
+        ("m_hh_", "m", " [GeV]"),
+        ("abs_dy_hh_", r"|\Delta y|", ""),
+        ("abs_dphi_hh_", r"|\Delta\phi|", ""),
+    ):
+        if name.startswith(prefix):
+            indices = name[len(prefix) :]
+            return rf"${symbol}(h_{{{','.join(indices)}}})${unit}"
+    for prefix, symbol in (
+        ("abs_cos_theta_star_h", r"|\cos\theta^*|"),
+        ("abs_deta_bb_h", r"|\Delta\eta(b,\bar b)|"),
+        ("abs_dphi_bb_h", r"|\Delta\phi(b,\bar b)|"),
+        ("z_bb_h", "z"),
+    ):
+        if name.startswith(prefix):
+            index = name[len(prefix) :]
+            return rf"${symbol}_{{h_{index}}}$"
+    if name.startswith("min_dr_bpair_"):
+        index = name[len("min_dr_bpair_") :]
+        return rf"${{\min\,\Delta R(b,b)}}_{{{index}}}$"
+    if name.startswith("min_m_bpair_"):
+        index = name[len("min_m_bpair_") :]
+        return rf"${{\min\,m(b,b)}}_{{{index}}}$ [GeV]"
+    extended_labels = {
+        "chi8_second": r"$\chi^2_{8b,\mathrm{second}}$",
+        "delta_chi8": r"$\Delta\chi^2_{8b}$",
+        "n_pairings_chi8_lt60": r"$N(\chi^2_{8b}<60)$",
+        "pt_4h_over_m_4h": r"$p_T(4h)/m(4h)$",
+        "abs_y_4h": r"$|y(4h)|$",
+        "ht_8b": r"$H_T(8b)$ [GeV]",
+        "mean_m_bb": r"$\langle m_{b\bar b}\rangle$ [GeV]",
+        "std_m_bb": r"$\sigma(m_{b\bar b})$ [GeV]",
+        "max_abs_m_bb_minus_125": r"$\max|m_{b\bar b}-125|$ [GeV]",
+        "higgs_rapidity_span": r"$\max y(h)-\min y(h)$",
+        "centrality": r"Centrality",
+        "transverse_sphericity": r"Transverse sphericity",
+        "zness": r"$Z$-likeness",
+    }
+    if name in extended_labels:
+        return extended_labels[name]
     return name.replace("_", r"\_")
 
 

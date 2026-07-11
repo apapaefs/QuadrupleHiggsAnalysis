@@ -58,7 +58,15 @@ from observable_schemas import (
     validate_model_contract,
 )
 from read_root_varfiles import read_ROOT_varfile
-from sample_report import terminal_sm_background_cutflow_table
+from sample_report import (
+    safe_feature_filename,
+    sample_latex_label,
+    sample_style,
+    terminal_sm_background_cutflow_table,
+    write_observable_shape_plot,
+    write_report_index,
+    write_stacked_input_cross_section_plot,
+)
 
 
 METHOD_VERSION = "resolved-8b-c3d4-xgboost-v2.3"
@@ -1831,6 +1839,156 @@ def _normalization_metadata(
             }
             for sample in [*sm_samples, *grid_samples, *background_samples]
         ],
+    }
+
+
+def write_v2_input_observable_report(
+    sm_samples: Sequence[EventSample],
+    background_samples: Sequence[EventSample],
+    output_dir: str | Path,
+    *,
+    observable_set: str,
+    feature_profile: str,
+    luminosity: float,
+) -> dict[str, Any]:
+    """Write v2 input-shape and legacy-style stacked cross-section galleries."""
+
+    if not sm_samples:
+        raise ValueError("The input-observable report requires an SM signal sample")
+    if not background_samples:
+        raise ValueError("The input-observable report requires background samples")
+    luminosity = _finite_float(luminosity, "luminosity")
+    if luminosity <= 0.0:
+        raise ValueError("luminosity must be positive")
+
+    report_dir = Path(output_dir) / "sample_report"
+    plots_dir = report_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    contract = get_feature_contract(observable_set, feature_profile)
+    feature_names = list(contract.feature_names)
+    feature_indices = list(contract.feature_indices)
+
+    report_samples = []
+    sample_rows = []
+    for index, event_sample in enumerate([*sm_samples, *background_samples]):
+        is_signal = event_sample.kind == "sm_signal"
+        metadata = dict(event_sample.metadata or {})
+        label = sample_latex_label(metadata, is_signal=is_signal)
+        effective_xsec_fb = float(np.sum(event_sample.physical_weights)) / luminosity
+        report_samples.append(
+            {
+                "sample_id": event_sample.sample_id,
+                "label": label,
+                "file": str(event_sample.path),
+                "features": event_sample.features,
+                "weights": event_sample.physical_weights,
+                "input_xsec_fb": effective_xsec_fb,
+                "normalisation_weight_sum": float(
+                    np.sum(event_sample.physical_weights)
+                ),
+                "is_signal": is_signal,
+                "process_id": metadata.get("process_id"),
+                "metadata": metadata,
+                "style": sample_style(index),
+            }
+        )
+        sample_rows.append(
+            {
+                "sample_id": event_sample.sample_id,
+                "kind": event_sample.kind,
+                "label": label,
+                "file": str(event_sample.path),
+                "entries": event_sample.entries,
+                "input_xsec_fb": effective_xsec_fb,
+                "process_id": metadata.get("process_id", ""),
+            }
+        )
+
+    plot_rows = []
+    plot_metadata = []
+    for feature_name, feature_index in zip(feature_names, feature_indices):
+        feature_samples = [
+            {**sample, "values": sample["features"][:, feature_index]}
+            for sample in report_samples
+        ]
+        stem = safe_feature_filename(feature_name)
+        normalized_path = plots_dir / f"{stem}.png"
+        stacked_path = plots_dir / f"{stem}_stacked_input_xsec.png"
+        write_observable_shape_plot(
+            normalized_path,
+            feature_name,
+            feature_samples,
+            title=f"Input shape: {feature_name}",
+        )
+        stacked_metadata = write_stacked_input_cross_section_plot(
+            stacked_path,
+            feature_name,
+            feature_samples,
+            signal_scale=1000.0,
+        )
+        plot_rows.extend(
+            [
+                {
+                    "feature": feature_name,
+                    "path": str(normalized_path),
+                    "detail": "normalized input shapes",
+                },
+                {
+                    "feature": feature_name,
+                    "path": str(stacked_path),
+                    "detail": "stacked physical input cross section; SM shown x1000",
+                },
+            ]
+        )
+        plot_metadata.append(
+            {
+                "feature": feature_name,
+                "normalized_shape": str(normalized_path),
+                "stacked_input_xsec": stacked_metadata,
+            }
+        )
+
+    samples_csv = report_dir / "input_samples.csv"
+    _write_rows(samples_csv, sample_rows)
+    metadata = {
+        "observable_set": observable_set,
+        "feature_profile": feature_profile,
+        "feature_names": feature_names,
+        "luminosity_fb_inverse": luminosity,
+        "normalization": (
+            "Physical event weights from the v2 study; stacked bin contents sum "
+            "to the effective input cross section after rate factors."
+        ),
+        "signal_display_scale": 1000.0,
+        "samples": [
+            {"label": row["label"], "file": row["file"]} for row in sample_rows
+        ],
+        "plots": plot_metadata,
+        "report_line": (
+            f"{len(feature_names)} observables; normalized comparisons and stacked "
+            "input cross sections. The SM stack is enlarged by 1000 for visibility."
+        ),
+    }
+    metadata_path = report_dir / "report_metadata.json"
+    _write_json(metadata_path, metadata)
+    index_path = report_dir / "index.html"
+    write_report_index(
+        index_path,
+        plot_rows,
+        samples_csv,
+        metadata,
+        title="4H XGBoost v2 Input Observables",
+        table_label="Input-sample summary",
+    )
+    return {
+        "status": "complete",
+        "directory": str(report_dir),
+        "index": str(index_path),
+        "metadata": str(metadata_path),
+        "input_samples": str(samples_csv),
+        "observable_count": len(feature_names),
+        "plot_count": len(plot_rows),
+        "signal_display_scale": 1000.0,
     }
 
 
@@ -4510,6 +4668,7 @@ def _run_c3d4_study_impl(
     contour_interpolation: str = "linear",
     xsec_source_dir: str | Path | None = DEFAULT_HHHH_XSEC_SOURCE_DIR,
     xsec_overlay: bool = True,
+    write_input_report: bool = False,
 ) -> dict[str, Any]:
     """Run the complete versioned study and return its machine-readable summary."""
 
@@ -4830,6 +4989,9 @@ def _run_c3d4_study_impl(
         },
         "package_versions": runtime_versions,
         "outputs": {},
+        "input_observable_report": {
+            "status": "pending" if write_input_report else "disabled"
+        },
     }
     _write_json_atomic(output_dir / "method_manifest.json", manifest)
     quarantine_strategies = list(strategies)
@@ -5027,6 +5189,30 @@ def _run_c3d4_study_impl(
         }
     )
     _write_json_atomic(output_dir / "method_manifest.json", manifest)
+    input_observable_report = None
+    if write_input_report:
+        progress.emit(
+            "input-report",
+            "Writing normalized and stacked input-observable plots",
+            observable_count=len(
+                get_feature_contract(observable_set, selected_profile).feature_names
+            ),
+        )
+        input_observable_report = write_v2_input_observable_report(
+            sm_samples,
+            background_samples,
+            output_dir,
+            observable_set=observable_set,
+            feature_profile=selected_profile,
+            luminosity=luminosity,
+        )
+        manifest["input_observable_report"] = input_observable_report
+        _write_json_atomic(output_dir / "method_manifest.json", manifest)
+        progress.emit(
+            "input-report",
+            "Completed normalized and stacked input-observable plots",
+            plot_count=input_observable_report["plot_count"],
+        )
     reused_sm_optuna = None
     if reuse_sm_optuna_from is not None:
         reused_sm_optuna = _load_reused_sm_optuna(
@@ -6060,6 +6246,8 @@ def _run_c3d4_study_impl(
             for strategy, result in strategy_results.items()
         },
     }
+    if input_observable_report is not None:
+        output_manifest["input_observable_report"] = input_observable_report
     if "sm-crossfit-v2" in strategy_results:
         sm_strategy_dir = output_dir / "sm-crossfit-v2"
         output_manifest["sm_background_cutflow"] = {
@@ -6130,6 +6318,91 @@ def _read_json_mapping(path: Path) -> dict[str, Any]:
     except (OSError, ValueError, json.JSONDecodeError):
         return {}
     return dict(payload) if isinstance(payload, Mapping) else {}
+
+
+def write_c3d4_input_report_from_manifest(
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    """Add the input-observable gallery to an already completed v2 study."""
+
+    output_dir = Path(output_dir).expanduser().resolve()
+    manifest_path = output_dir / "method_manifest.json"
+    manifest = _read_json_mapping(manifest_path)
+    if not manifest:
+        raise ValueError(f"No readable method_manifest.json found in {output_dir}")
+    if manifest.get("status") != "complete":
+        raise ValueError(
+            "The input-observable gallery can be backfilled only for a completed study"
+        )
+    observable_set = str(manifest.get("observable_set") or "")
+    feature_profile = str(manifest.get("selected_feature_profile") or "")
+    get_feature_contract(observable_set, feature_profile)
+    luminosity = _finite_float(
+        manifest.get("luminosity_fb_inverse"), "luminosity_fb_inverse"
+    )
+    n_folds = int(manifest.get("cv_folds", 5))
+    seed = int(manifest.get("seed", BASE_SEED))
+    max_events = (manifest.get("mode_policy") or {}).get("max_events_per_source")
+
+    specs_by_kind: dict[str, list[dict[str, Any]]] = {
+        "sm_signal": [],
+        "background": [],
+    }
+    for item in manifest.get("inputs", []):
+        if not isinstance(item, Mapping) or item.get("kind") not in specs_by_kind:
+            continue
+        path = Path(str(item.get("path", ""))).expanduser()
+        if not path.is_absolute():
+            path = (Path(__file__).resolve().parents[1] / path).resolve()
+        specs_by_kind[str(item["kind"])].append(
+            {
+                "path": path,
+                "xsec_fb": item.get("xsec_fb"),
+                "rate_factor": item.get("rate_factor", 1.0),
+                "normalisation_weight": item.get("normalisation_weight"),
+                "generated_events": item.get("generated_events"),
+                "metadata": dict(item.get("metadata") or {}),
+            }
+        )
+    if not specs_by_kind["sm_signal"] or not specs_by_kind["background"]:
+        raise ValueError(
+            "The study manifest does not contain both SM signal and background inputs"
+        )
+
+    common = {
+        "observable_set": observable_set,
+        "luminosity": luminosity,
+        "n_folds": n_folds,
+        "seed": seed,
+        "max_events": max_events,
+    }
+    sm_samples = _load_samples(
+        specs_by_kind["sm_signal"], kind="sm_signal", **common
+    )
+    background_samples = _load_samples(
+        specs_by_kind["background"], kind="background", **common
+    )
+    report = write_v2_input_observable_report(
+        sm_samples,
+        background_samples,
+        output_dir,
+        observable_set=observable_set,
+        feature_profile=feature_profile,
+        luminosity=luminosity,
+    )
+    manifest["input_observable_report"] = report
+    outputs = dict(manifest.get("outputs") or {})
+    outputs["input_observable_report"] = report
+    manifest["outputs"] = outputs
+    _write_json_atomic(manifest_path, manifest)
+
+    summary_path = output_dir / "study_summary.json"
+    summary = _read_json_mapping(summary_path)
+    if summary:
+        summary["manifest"] = manifest
+        summary["input_observable_report"] = report
+        _write_json_atomic(summary_path, summary)
+    return report
 
 
 def _validate_study_output_mode(output_dir: Path, study_mode: str) -> None:
@@ -6857,6 +7130,7 @@ def run_c3d4_study(
     contour_interpolation: str = "linear",
     xsec_source_dir: str | Path | None = DEFAULT_HHHH_XSEC_SOURCE_DIR,
     xsec_overlay: bool = True,
+    write_input_report: bool = False,
 ) -> dict[str, Any]:
     """Run the v2 study and always leave truthful terminal restart metadata."""
 
@@ -6891,6 +7165,7 @@ def run_c3d4_study(
         "contour_interpolation": contour_interpolation,
         "xsec_source_dir": xsec_source_dir,
         "xsec_overlay": xsec_overlay,
+        "write_input_report": write_input_report,
     }
     try:
         return _run_c3d4_study_impl(**arguments)
@@ -6929,4 +7204,6 @@ __all__ = [
     "ZeroSplitModelError",
     "replot_c3d4_study_contours",
     "run_c3d4_study",
+    "write_c3d4_input_report_from_manifest",
+    "write_v2_input_observable_report",
 ]

@@ -2620,6 +2620,87 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
                 raise
         self.assertEqual([row["status"] for row in rows], ["ok", "ok"])
 
+    def test_v2_input_report_writes_normalized_and_stacked_full91_gallery(self):
+        signal = sample("sm", "sm_signal", [1] * 5, [3, 6, 9, 12, 15])
+        background = sample("bkg", "background", [1] * 5, [2, 4, 6, 8, 10])
+        background.metadata = {"process_id": "gg_to_8b"}
+        stacked_metadata = {
+            "kind": "stacked_input_xsec",
+            "signal_scale": 1000.0,
+        }
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            runner, "write_observable_shape_plot"
+        ) as normalized_plot, mock.patch.object(
+            runner,
+            "write_stacked_input_cross_section_plot",
+            return_value=stacked_metadata,
+        ) as stacked_plot:
+            report = runner.write_v2_input_observable_report(
+                [signal],
+                [background],
+                directory,
+                observable_set="extended-91-v2",
+                feature_profile="full91",
+                luminosity=3000.0,
+            )
+
+            self.assertEqual(normalized_plot.call_count, 91)
+            self.assertEqual(stacked_plot.call_count, 91)
+            self.assertEqual(report["plot_count"], 182)
+            self.assertTrue(Path(report["index"]).is_file())
+            self.assertTrue(Path(report["metadata"]).is_file())
+            first_samples = stacked_plot.call_args_list[0].args[2]
+            np.testing.assert_array_equal(first_samples[0]["weights"], signal.physical_weights)
+            np.testing.assert_array_equal(
+                first_samples[1]["weights"], background.physical_weights
+            )
+            self.assertAlmostEqual(
+                first_samples[0]["input_xsec_fb"],
+                float(np.sum(signal.physical_weights)) / 3000.0,
+            )
+
+    def test_backfill_report_uses_only_sm_and_background_manifest_inputs(self):
+        manifest = {
+            "status": "complete",
+            "observable_set": "extended-91-v2",
+            "selected_feature_profile": "full91",
+            "luminosity_fb_inverse": 3000.0,
+            "cv_folds": 5,
+            "seed": 12345,
+            "mode_policy": {"max_events_per_source": None},
+            "inputs": [
+                {"kind": "sm_signal", "path": "/sm.root", "xsec_fb": 1.0},
+                {"kind": "grid_signal", "path": "/grid.root", "xsec_fb": 1.0},
+                {"kind": "background", "path": "/bkg.root", "xsec_fb": 2.0},
+            ],
+            "outputs": {},
+        }
+        loaded_signal = sample("sm", "sm_signal", [1] * 5, [1] * 5)
+        loaded_background = sample("bkg", "background", [1] * 5, [1] * 5)
+        report = {"status": "complete", "plot_count": 182, "index": "/index.html"}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "method_manifest.json").write_text(json.dumps(manifest))
+            with mock.patch.object(
+                runner,
+                "_load_samples",
+                side_effect=[[loaded_signal], [loaded_background]],
+            ) as load_samples, mock.patch.object(
+                runner, "write_v2_input_observable_report", return_value=report
+            ) as write_report:
+                result = runner.write_c3d4_input_report_from_manifest(output)
+
+            self.assertEqual(result, report)
+            self.assertEqual(load_samples.call_count, 2)
+            self.assertEqual(load_samples.call_args_list[0].kwargs["kind"], "sm_signal")
+            self.assertEqual(load_samples.call_args_list[1].kwargs["kind"], "background")
+            self.assertNotIn("grid_signal", repr(load_samples.call_args_list))
+            write_report.assert_called_once()
+            updated = json.loads((output / "method_manifest.json").read_text())
+            self.assertEqual(updated["outputs"]["input_observable_report"], report)
+
 
 if __name__ == "__main__":
     unittest.main()
