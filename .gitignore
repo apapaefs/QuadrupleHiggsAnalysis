@@ -13,6 +13,8 @@
 
 # Reproducibility archives intentionally retain generator card .dat files.
 !MadGraphCards/**/*.dat
+# UFO restriction cards are source inputs, not generated event data.
+!MadGraphModels/**/*.dat
 
 # Build and Python cache artifacts
 *.o
