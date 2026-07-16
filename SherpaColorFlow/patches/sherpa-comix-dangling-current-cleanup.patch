@@ -1,0 +1,65 @@
+diff --git a/COMIX/Phasespace/PS_Generator.C b/COMIX/Phasespace/PS_Generator.C
+index d4aef3b..0bb69b8 100644
+--- a/COMIX/Phasespace/PS_Generator.C
++++ b/COMIX/Phasespace/PS_Generator.C
+@@ -376,23 +376,45 @@ bool PS_Generator::Construct(Amplitude *const ampl,NLO_subevtlist *const subs)
+   dummy->Delete();
+   }
+   msg_Debugging()<<"}\n";
+-  for (size_t j(m_n-2);j>1;--j)
+-    for (Current_Vector::iterator cit(m_cur[j].begin());
+-	 cit!=m_cur[j].end();++cit)
+-      if ((*cit)->Dangling()) {
++  for (size_t j(m_n-2);j>1;--j) {
++    Current_Vector::iterator cit(m_cur[j].begin());
++    while (cit!=m_cur[j].end()) {
++      if (!(*cit)->Dangling()) {
++	++cit;
++	continue;
++      }
++      Current *const dead(*cit);
+ #ifdef DEBUG__BG
+-	msg_Debugging()<<"  delete current "<<**cit
+-		       <<", "<<(*cit)->Dangling()<<"\n";
++	msg_Debugging()<<"  delete current "<<*dead
++		       <<", "<<dead->Dangling()<<"\n";
+ #endif
+-	for (Current_Vector::iterator ctit(m_ctt.begin());
+-	     ctit!=m_ctt.end();++ctit)
+-	  if (*ctit==*cit) {
+-	    m_ctt.erase(ctit);
+-	    break;
++	// AddCurrent registers currents in several lookup maps.  Purge all
++	// references before AddSTCC or a later Construct dereferences them.
++	for (Current_Vector::iterator it(m_ctt.begin());it!=m_ctt.end();) {
++	  if (*it==dead) it=m_ctt.erase(it);
++	  else ++it;
++	}
++	TCC_Map::iterator tit(m_tccs.find(dead->CId()));
++	if (tit!=m_tccs.end()) {
++	  Current_Vector &tccs(tit->second);
++	  for (Current_Vector::iterator it(tccs.begin());it!=tccs.end();) {
++	    if (*it==dead) it=tccs.erase(it);
++	    else ++it;
+ 	  }
+-	delete *cit;
+-	cit=--m_cur[j].erase(cit);
+-      }
++	  if (tccs.empty()) m_tccs.erase(tit);
++	}
++	for (CB_MMap::iterator it(m_cmap.begin());it!=m_cmap.end();) {
++	  if (it->first==dead || it->second==dead) it=m_cmap.erase(it);
++	  else ++it;
++	}
++	for (CB_Map::iterator it(m_cbmap.begin());it!=m_cbmap.end();) {
++	  if (it->first==dead || it->second==dead) it=m_cbmap.erase(it);
++	  else ++it;
++	}
++	delete dead;
++	cit=m_cur[j].erase(cit);
++    }
++  }
+   msg_Debugging()<<METHOD<<"(): Phase space statistics (n="
+ 		 <<m_n<<") {\n  level currents vertices\n"<<std::right;
+   double ismass(0.0);
+

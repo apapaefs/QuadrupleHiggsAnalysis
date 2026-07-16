@@ -13,6 +13,10 @@ export.
 - `sherpa/`: patched Sherpa source, based on official Sherpa commit
   `a7ba2c8b98da1fbc5e9fc290f1b8e6584afa71fe`.
 - `patches/sherpa-lhef-color-flow-hack.patch`: portable source patch.
+- `patches/sherpa-comix-dangling-current-cleanup.patch`: removes dangling
+  Comix phase-space currents from every lookup registry before deletion. This
+  prevents a first-point use-after-free in high-multiplicity processes such as
+  `gg -> hh + b bbar b bbar`.
 - `Examples/GluonFusion_GG_4bbbar_LHE/Sherpa.yaml`: corrected `gg -> 8b`
   card following the tiresias setup.
 - `Examples/GluonFusion_GG_3bbbar_ccbar_LHE/Sherpa.yaml`: `gg -> 6b + c cbar`.
