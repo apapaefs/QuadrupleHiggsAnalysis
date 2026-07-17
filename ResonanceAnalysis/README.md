@@ -59,8 +59,23 @@ No b-, double-b-, c-, or light-tag efficiency is applied in C++.
 ## Categories and normalization
 
 A jet with capped B-hadron multiplicity two is one merged Higgs candidate. A
-resolved Higgs is a pair of single-tag objects. The four reconstructed Higgs
-candidates define three exclusive categories:
+resolved Higgs is a pair of single-tag objects. For the fixed charm- and
+light-mistag composition of a sample, the extractor enumerates all admissible
+resolved/merged assignments, including every allowed choice of double-b jets
+and every pairing of the selected single-tag objects into four Higgs
+candidates. Each assignment is ranked with
+
+\[
+{\cal S}_h=\sum_{i=1}^{4}
+\left(\frac{m_{h_i}-m_h}{m_h}\right)^2,
+\qquad m_h=125\ {\rm GeV},
+\]
+
+and the assignment with the smallest value is retained. The feature tree
+records this value as `best_score`, together with `second_score` for the
+next-best assignment and `score_gap = second_score - best_score`; the latter
+two are set to `-1` when no second assignment exists. The four reconstructed
+Higgs candidates define three exclusive categories:
 
 | Category | Definition |
 | --- | --- |
