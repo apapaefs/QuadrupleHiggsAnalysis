@@ -24,6 +24,11 @@ export.
 - `Examples/GluonFusion_HEFT_GG_H_3bbbar_Hbb_LHE/Sherpa.yaml`: HEFT
   `gg -> h + 6b`, with `h -> b bbar` forced using the Herwig signal-card
   BR=1 convention.
+- `Examples/GluonFusion_UFO_HEFT_GG_HH_LHE/`: stable-Higgs
+  `gg -> hh` integration card for the Sherpa-adapted `heft_c3d4` UFO.
+- `Examples/GluonFusion_UFO_HEFT_GG_HH_2bbbar_LHE/`: inclusive stable-Higgs
+  `gg -> hh + b bbar b bbar` card retaining both the bottom-Yukawa and HEFT
+  amplitudes.
 - `Examples/GluonFusion_GG_2bbbar_2ccbar_LHE/Sherpa.yaml`: `gg -> 4b + 4c`.
 - `Examples/GluonFusion_GG_2bbbar_ccbar_2j_LHE/Sherpa.yaml`: `gg -> 4b + 2c + 2j`.
 - `Examples/GluonFusion_GG_2bbbar_4j_LHE/Sherpa.yaml`: `gg -> 4b + 4j`.
@@ -45,6 +50,12 @@ export.
   LHE source groups and rescales partially-unweighted `XWGTUP` values to a
   requested total cross section.
 - `scripts/build_sherpa_mpi.sh`: MPI build helper.
+- `scripts/prepare_heft_c3d4_sherpa_ufo.py`: validates and copies the tracked
+  `heft_c3d4` UFO, adds the two embedded QCD powers to its `GH`/`Gphi`
+  coupling metadata, and records source/adapted hashes.
+- `scripts/run_gg_hh_c3_fit.py`: resumable sequential `c3=-2,-1,0` integration
+  and exact quadratic fit for the 14 TeV `gg -> hh` card. It integrates with
+  `-e 0` and does not generate production events.
 - `scripts/prepare_sherpa_run.py`: copies an example into a run directory,
   keeps `EVENTS` as the requested total with `MPI_EVENT_MODE: 1`, and applies
   the MPI seed/progress settings used for long high-multiplicity runs. With
@@ -52,7 +63,31 @@ export.
   `<run_dir>/run_seeded_generation.sh`; this is generated per run directory and
   is not stored under `scripts/`.
 
-## Build on physres1
+## Build on physres1 or physres2
+
+The build helper enables Sherpa's UFO interface by default while leaving the
+Sherpa Python add-on disabled. The interpreter selected at configure time is
+embedded in `Sherpa-generate-model`, so use a persistent virtual environment
+rather than a temporary Python installation. The following Python 3.9-compatible
+environment is the reference setup on `physres2`:
+
+```bash
+export UFO_VENV=$HOME/Projects/4H/sherpa-ufo-venv
+python3 -m venv "$UFO_VENV"
+"$UFO_VENV/bin/python" -m pip install --upgrade pip
+"$UFO_VENV/bin/python" -m pip install \
+  numpy==1.26.4 sympy==1.13.3 opt-einsum==3.4.0
+export PYTHON_EXECUTABLE=$UFO_VENV/bin/python
+```
+
+During conversion, Sherpa's bundled, source-pinned `opt_einsum` must precede
+the pinned PyPI `opt-einsum` in `PYTHONPATH`. The PyPI implementation cannot
+contract the symbolic scalar used by this high-multiplicity Lorentz model.
+
+The wrapper first looks for the project OpenMPI installation and, when that is
+not present, falls back to `/usr/lib64/openmpi`. Set `MPI_HOME` explicitly to
+override that selection. For example, use the project installation on
+`physres1`:
 
 ```bash
 cd ~/Projects/QuadrupleHiggsAnalysis/SherpaColorFlow
@@ -62,23 +97,181 @@ export SHERPA_PREFIX=$HOME/Projects/4H/sherpa-colorflow-mpi
 export BUILD_DIR=$HOME/Projects/4H/sherpa-colorflow-build
 
 MPI_HOME=$MPI_HOME \
+PYTHON_EXECUTABLE=$PYTHON_EXECUTABLE \
 PREFIX=$SHERPA_PREFIX \
 BUILD_DIR=$BUILD_DIR \
 ./scripts/build_sherpa_mpi.sh
 ```
 
-Then activate the installation:
+On `physres2`, where the project OpenMPI prefix is absent, omit an inherited
+override and let the wrapper select the system installation:
 
 ```bash
-export MPI_HOME=/home/apapaefs/Projects/4H/sherpa-deps/openmpi-4.1.6
+unset MPI_HOME
+PYTHON_EXECUTABLE=$PYTHON_EXECUTABLE \
+PREFIX=$SHERPA_PREFIX \
+BUILD_DIR=$BUILD_DIR \
+JOBS=32 \
+./scripts/build_sherpa_mpi.sh
+```
+
+Set `SHERPA_ENABLE_UFO=OFF` on the wrapper command only when an internal-model
+build without UFO conversion support is intentionally required.
+
+Then activate the installation. Read `CMAKE_INSTALL_LIBDIR` from the build
+cache instead of assuming that the platform installed libraries below `lib`
+rather than `lib64` (or another GNU install directory):
+
+```bash
 export SHERPA_PREFIX=$HOME/Projects/4H/sherpa-colorflow-mpi
+export BUILD_DIR=$HOME/Projects/4H/sherpa-colorflow-build
+
+if [[ -z "${MPI_HOME:-}" ]]; then
+  if [[ -x /home/apapaefs/Projects/4H/sherpa-deps/openmpi-4.1.6/bin/mpirun ]]; then
+    export MPI_HOME=/home/apapaefs/Projects/4H/sherpa-deps/openmpi-4.1.6
+  else
+    export MPI_HOME=/usr/lib64/openmpi
+  fi
+fi
+
+SHERPA_LIBDIR_REL=$(awk '/^CMAKE_INSTALL_LIBDIR:/ {
+  sub(/^[^=]*=/, ""); value=$0
+} END { print value }' "$BUILD_DIR/CMakeCache.txt")
+test -n "$SHERPA_LIBDIR_REL"
+case "$SHERPA_LIBDIR_REL" in
+  /*) export SHERPA_LIBDIR=$SHERPA_LIBDIR_REL ;;
+  *)  export SHERPA_LIBDIR=$SHERPA_PREFIX/$SHERPA_LIBDIR_REL ;;
+esac
 
 export PATH=$SHERPA_PREFIX/bin:$MPI_HOME/bin:$PATH
-export LD_LIBRARY_PATH=$SHERPA_PREFIX/lib/SHERPA-MC:$SHERPA_PREFIX/lib:$SHERPA_PREFIX/lib64:$MPI_HOME/lib:${LD_LIBRARY_PATH:-}
+export LD_LIBRARY_PATH=$SHERPA_LIBDIR/SHERPA-MC:$SHERPA_LIBDIR:$MPI_HOME/lib:$MPI_HOME/lib64:${LD_LIBRARY_PATH:-}
 export LHAPDF_DATA_PATH=$SHERPA_PREFIX/share/SHERPA-MC/LHAPDF
 export LHAPATH=$LHAPDF_DATA_PATH
 
 Sherpa --version
+```
+
+Confirm that the installed model generator is enabled and tied to the intended
+interpreter before converting a UFO model:
+
+```bash
+grep '^SHERPA_ENABLE_UFO:BOOL=ON$' "$BUILD_DIR/CMakeCache.txt"
+grep '^SHERPA_ENABLE_PYTHON:BOOL=OFF$' "$BUILD_DIR/CMakeCache.txt"
+test -x "$SHERPA_PREFIX/bin/Sherpa-generate-model"
+test "$(head -n 1 "$SHERPA_PREFIX/bin/Sherpa-generate-model")" = \
+  "#!$PYTHON_EXECUTABLE"
+"$SHERPA_PREFIX/bin/Sherpa-generate-model" --help
+```
+
+The UFO interface generates and compiles a Sherpa C++ model library. UFO event
+generation is supported by Comix, not Amegic. The Python environment and the
+source UFO directory are only needed during conversion; the resulting model
+library is sufficient at run time.
+
+## Adapt and convert `heft_c3d4`
+
+The original MadGraph UFO leaves the two powers of the strong coupling inside
+`GH` and `Gphi` out of its coupling-order metadata. This is useful in some
+MadGraph workflows but prevents Sherpa from assigning the intended running
+`alpha_s` power. Never edit that tracked model in place. Prepare a validated
+copy named `heft_c3d4_sherpa` instead:
+
+```bash
+cd ~/Projects/QuadrupleHiggsAnalysis
+export UFO_SCRATCH=$HOME/Projects/4H/sherpa-ufo-models/heft_c3d4-sherpa-v1
+mkdir -p "$UFO_SCRATCH"
+python3 SherpaColorFlow/scripts/prepare_heft_c3d4_sherpa_ufo.py \
+  MadGraphModels/heft_c3d4 \
+  "$UFO_SCRATCH/heft_c3d4_sherpa"
+```
+
+The adapter requires the exact reviewed metadata for all eleven `GH`/`Gphi`
+couplings before writing the copy. Its `sherpa_ufo_provenance.json` records the
+source tree, adapter, adapted tree, and individual transformation hashes.
+
+This UFO uses legacy absolute Python imports, so expose the scratch model
+directory explicitly during conversion. Put Sherpa's installed Python
+site-packages first: the generated launcher appends that directory too late to
+override a conflicting package already imported from the virtual environment.
+Use the same OpenMPI compiler wrappers as the Sherpa build. Do not pass
+`--auto_convert`: the source is already Python 3 compatible, and automatic
+conversion would create a different model name.
+
+```bash
+export UFO_MODEL=$UFO_SCRATCH/heft_c3d4_sherpa
+export UFO_GENERATED=$UFO_SCRATCH/generated
+SHERPA_PYTHON_SITE=$(awk -F"'" '/^sys.path.append/ { print $2 }' \
+  "$SHERPA_PREFIX/bin/Sherpa-generate-model")
+test -d "$SHERPA_PYTHON_SITE/ufo_interface"
+test -x "$MPI_HOME/bin/mpicc"
+test -x "$MPI_HOME/bin/mpicxx"
+cd "$UFO_SCRATCH"
+PYTHONPATH="$SHERPA_PYTHON_SITE:$UFO_MODEL${PYTHONPATH:+:$PYTHONPATH}" \
+CC="$MPI_HOME/bin/mpicc" \
+CXX="$MPI_HOME/bin/mpicxx" \
+  "$SHERPA_PREFIX/bin/Sherpa-generate-model" "$UFO_MODEL" \
+  --nmax 7 --ncore 32 --output_dir "$UFO_GENERATED"
+```
+
+The converter currently does not propagate failures from every CMake build or
+install subprocess. A zero converter exit status is therefore insufficient.
+Verify the fresh library, its dynamic dependencies, and representative two-,
+three-, and four-gluon Higgs-pair source before using it:
+
+```bash
+MODEL_LIBRARY=$SHERPA_LIBDIR/SHERPA-MC/libSherpaheft_c3d4_sherpa.so
+test -s "$MODEL_LIBRARY"
+ldd "$MODEL_LIBRARY"
+rg -n 'GGHH|GGGHH|GGGGHH' "$UFO_GENERATED"
+```
+
+## Integrate and fit `gg -> hh` at 14 TeV
+
+The `gg_hh_ufo` and `gg_hh4b_ufo` aliases copy complete example bundles,
+including their tagged UFO parameter card. Both Higgs bosons remain undecayed;
+the cards disable Sherpa showers, fragmentation, MPI, beam remnants, and hard
+decays so Herwig can perform the later Higgs decays.
+
+The two-body card uses Sherpa's dedicated process-level `SChannel` map for the
+massive 2-to-2 phase space. This is needed at `c3=-1`: the full matrix element
+then reduces to the four-point `ggHH` contact interaction, for which the
+graph-derived Comix phase-space channel has no propagator graph. `SChannel`
+retains the requested full amplitude-order bounds and agrees with both the
+default graph-derived result away from the contact-only point and the
+independent `TChannel` 2-to-2 map.
+
+The fit driver initializes and integrates the three symmetric basis points
+sequentially using 32 ranks. It writes per-attempt logs, point JSON markers, a
+CSV table, and the coefficient covariance under
+`runs/gg_hh_c3_fit_14tev/`. Completed points with matching card, parameter-card,
+model, and execution metadata are reused; mismatches are refused. The three
+points use deterministic, widely separated base random seeds so their MPI rank
+streams are distinct when propagating the point errors into the coefficient
+covariance.
+
+```bash
+cd ~/Projects/QuadrupleHiggsAnalysis/SherpaColorFlow
+./scripts/run_gg_hh_c3_fit.py \
+  --np 32 \
+  --mpirun "$MPI_HOME/bin/mpirun" \
+  --model-library "$MODEL_LIBRARY" \
+  --model-provenance "$UFO_MODEL/sherpa_ufo_provenance.json"
+```
+
+The fitted convention is
+`sigma(kappa_lambda) = A*kappa_lambda^2 + B*kappa_lambda + C`, with
+`kappa_lambda = 1+c3`. The driver uses `kappa_lambda=-1,0,+1` and propagates
+the independent integration errors exactly into the `(A,B,C)` covariance.
+It always calls the integration as `Sherpa -e 0 Sherpa.yaml`, so this step
+does not create LHE events.
+
+The inclusive high-multiplicity card is intended only for initialization in
+the initial validation pass:
+
+```bash
+./scripts/prepare_sherpa_run.py gg_hh4b_ufo runs/gg_hh4b_ufo_init --np 32
+cd runs/gg_hh4b_ufo_init
+Sherpa -I Sherpa.yaml
 ```
 
 If CMake prints `SHERPA: GIT IS NOT AVAILABLE!`, that is expected for this
@@ -137,21 +330,34 @@ export LHAPATH=$PDFDIR
 
 ## Prepare and run examples
 
-The OpenMPI executable for this bundle is
-`/home/apapaefs/Projects/4H/sherpa-deps/openmpi-4.1.6/bin/mpirun`. Use it
-explicitly so the run does not accidentally pick up another MPI implementation
-from the environment.
+Use `$MPI_HOME/bin/mpirun` explicitly so the run uses the same MPI
+implementation selected for the build. This is the project OpenMPI prefix on
+`physres1` and normally `/usr/lib64/openmpi` on `physres2`.
 
 Activate the local Sherpa MPI install before preparing or launching runs:
 
 ```bash
 cd ~/Projects/QuadrupleHiggsAnalysis/SherpaColorFlow
 
-export MPI_HOME=/home/apapaefs/Projects/4H/sherpa-deps/openmpi-4.1.6
 export SHERPA_PREFIX=$HOME/Projects/4H/sherpa-colorflow-mpi
+export BUILD_DIR=$HOME/Projects/4H/sherpa-colorflow-build
+
+if [[ -x /home/apapaefs/Projects/4H/sherpa-deps/openmpi-4.1.6/bin/mpirun ]]; then
+  export MPI_HOME=/home/apapaefs/Projects/4H/sherpa-deps/openmpi-4.1.6
+else
+  export MPI_HOME=/usr/lib64/openmpi
+fi
+
+SHERPA_LIBDIR_REL=$(awk '/^CMAKE_INSTALL_LIBDIR:/ {
+  sub(/^[^=]*=/, ""); value=$0
+} END { print value }' "$BUILD_DIR/CMakeCache.txt")
+case "$SHERPA_LIBDIR_REL" in
+  /*) export SHERPA_LIBDIR=$SHERPA_LIBDIR_REL ;;
+  *)  export SHERPA_LIBDIR=$SHERPA_PREFIX/$SHERPA_LIBDIR_REL ;;
+esac
 
 export PATH=$SHERPA_PREFIX/bin:$MPI_HOME/bin:$PATH
-export LD_LIBRARY_PATH=$SHERPA_PREFIX/lib/SHERPA-MC:$SHERPA_PREFIX/lib:$SHERPA_PREFIX/lib64:$MPI_HOME/lib:${LD_LIBRARY_PATH:-}
+export LD_LIBRARY_PATH=$SHERPA_LIBDIR/SHERPA-MC:$SHERPA_LIBDIR:$MPI_HOME/lib:$MPI_HOME/lib64:${LD_LIBRARY_PATH:-}
 export LHAPDF_DATA_PATH=$SHERPA_PREFIX/share/SHERPA-MC/LHAPDF
 export LHAPATH=$LHAPDF_DATA_PATH
 ```
@@ -174,8 +380,7 @@ $MPI_HOME/bin/mpirun \
 ```
 
 `prepare_sherpa_run.py` prints the follow-up commands after it writes the run
-directory. The printed MPI command uses `mpirun`; on physres1 use
-`$MPI_HOME/bin/mpirun` in its place.
+directory. Replace its unqualified `mpirun` with `$MPI_HOME/bin/mpirun`.
 
 To save a log:
 
@@ -349,6 +554,8 @@ Available process keys:
 | `gg6bcc` | `g g -> b bbar b bbar b bbar c cbar` | `gg_3bbbar_ccbar` |
 | `gg6b2j` | `g g -> b bbar b bbar b bbar j j` | `gg_3bbbar_2j` |
 | `gg_h6b_heft` | HEFT `g g -> h + 6b`, `h -> b bbar` forced | `gg_heft_h_3bbbar_hbb` |
+| `gg_hh_ufo` | UFO HEFT `g g -> h h`, stable Higgs bosons | `gg_hh_ufo_heft` |
+| `gg_hh4b_ufo` | UFO HEFT `g g -> h h + b bbar b bbar`, stable Higgs bosons | `gg_hh_2bbbar_ufo_heft` |
 | `gg4b4c` | `g g -> b bbar b bbar c cbar c cbar` | `gg_2bbbar_2ccbar` |
 | `gg4b2c2j` | `g g -> b bbar b bbar c cbar j j` | `gg_2bbbar_ccbar_2j` |
 | `gg4b4j` | `g g -> b bbar b bbar j j j j` | `gg_2bbbar_4j` |

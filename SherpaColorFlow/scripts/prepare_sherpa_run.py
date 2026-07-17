@@ -16,6 +16,8 @@ EXAMPLES = {
     "gg6bcc": ROOT / "Examples" / "GluonFusion_GG_3bbbar_ccbar_LHE",
     "gg8b": ROOT / "Examples" / "GluonFusion_GG_4bbbar_LHE",
     "gg_h6b_heft": ROOT / "Examples" / "GluonFusion_HEFT_GG_H_3bbbar_Hbb_LHE",
+    "gg_hh_ufo": ROOT / "Examples" / "GluonFusion_UFO_HEFT_GG_HH_LHE",
+    "gg_hh4b_ufo": ROOT / "Examples" / "GluonFusion_UFO_HEFT_GG_HH_2bbbar_LHE",
     "ttbar4b_0c4j": ROOT / "Examples" / "GluonFusion_GG_TTbar_4b_AllHad_0c4j_DecayOS_LHE",
     "ttbar4b_1c3j": ROOT / "Examples" / "GluonFusion_GG_TTbar_4b_AllHad_1c3j_DecayOS_LHE",
     "ttbar4b_2c2j": ROOT / "Examples" / "GluonFusion_GG_TTbar_4b_AllHad_2c2j_DecayOS_LHE",
@@ -143,6 +145,27 @@ if [ ! -e "$RESULT_DIRECTORY" ] && [ ! -e "${{RESULT_DIRECTORY}}.zip" ]; then
   exit 2
 fi
 
+read_card_reference() {{
+  local key="$1"
+  awk -v key="$key" '
+    $0 ~ "^[[:space:]]*" key ":[[:space:]]*" {{
+      value=$0
+      sub("^[[:space:]]*" key ":[[:space:]]*", "", value)
+      sub("[[:space:]]*#.*$", "", value)
+      sub("^[[:space:]]*", "", value)
+      sub("[[:space:]]*$", "", value)
+      print value
+      exit
+    }}
+  ' "$CARD"
+}}
+
+UFO_PARAM_CARD="$(read_card_reference UFO_PARAM_CARD)"
+if [ -n "$UFO_PARAM_CARD" ] && [ ! -f "$UFO_PARAM_CARD" ]; then
+  echo "Missing UFO_PARAM_CARD '$UFO_PARAM_CARD' referenced by $CARD" >&2
+  exit 2
+fi
+
 if [ -e "$OUTBASE" ] && [ ! -d "$OUTBASE" ]; then
   echo "OUTBASE '$OUTBASE' exists and is not a directory" >&2
   exit 2
@@ -171,6 +194,24 @@ copy_if_missing() {{
   fi
 }}
 
+copy_card_input() {{
+  local src="$1"
+  if [ -z "$src" ] || [[ "$src" = /* ]]; then
+    return
+  fi
+  case "$src" in
+    ..|../*|*/../*|*/..)
+      echo "Refusing card input outside the run directory: $src" >&2
+      exit 2
+      ;;
+  esac
+  local dst="$workdir/$src"
+  if [ ! -e "$dst" ]; then
+    mkdir -p "$(dirname "$dst")"
+    cp -a "$src" "$dst"
+  fi
+}}
+
 for idx in $(seq 1 "$JOBS"); do
   events_this="$base_events"
   if [ "$idx" -le "$remainder" ]; then
@@ -188,6 +229,7 @@ for idx in $(seq 1 "$JOBS"); do
   copy_if_missing Process.zip
   copy_if_missing "$RESULT_DIRECTORY"
   copy_if_missing "${{RESULT_DIRECTORY}}.zip"
+  copy_card_input "$UFO_PARAM_CARD"
 
   (
     cd "$workdir"

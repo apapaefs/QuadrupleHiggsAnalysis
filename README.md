@@ -170,6 +170,8 @@ Available Sherpa process keys:
 | `gg6bcc` | `g g -> b bbar b bbar b bbar c cbar` | `SherpaColorFlow/Examples/GluonFusion_GG_3bbbar_ccbar_LHE/Sherpa.yaml` |
 | `gg6b2j` | `g g -> b bbar b bbar b bbar j j` | `SherpaColorFlow/Examples/GluonFusion_GG_3bbbar_2j_LHE/Sherpa.yaml` |
 | `gg_h6b_heft` | HEFT `g g -> h + 6b`, `h -> b bbar` forced with Herwig-style BR=1 | `SherpaColorFlow/Examples/GluonFusion_HEFT_GG_H_3bbbar_Hbb_LHE/Sherpa.yaml` |
+| `gg_hh_ufo` | UFO HEFT `g g -> h h`, stable Higgs bosons | `SherpaColorFlow/Examples/GluonFusion_UFO_HEFT_GG_HH_LHE/Sherpa.yaml` |
+| `gg_hh4b_ufo` | UFO HEFT `g g -> h h + b bbar b bbar`, stable Higgs bosons | `SherpaColorFlow/Examples/GluonFusion_UFO_HEFT_GG_HH_2bbbar_LHE/Sherpa.yaml` |
 | `gg4b4c` | `g g -> b bbar b bbar c cbar c cbar` | `SherpaColorFlow/Examples/GluonFusion_GG_2bbbar_2ccbar_LHE/Sherpa.yaml` |
 | `gg4b2c2j` | `g g -> b bbar b bbar c cbar j j` | `SherpaColorFlow/Examples/GluonFusion_GG_2bbbar_ccbar_2j_LHE/Sherpa.yaml` |
 | `gg4b4j` | `g g -> b bbar b bbar j j j j` | `SherpaColorFlow/Examples/GluonFusion_GG_2bbbar_4j_LHE/Sherpa.yaml` |

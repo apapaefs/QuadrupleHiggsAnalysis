@@ -15,6 +15,8 @@
 !MadGraphCards/**/*.dat
 # UFO restriction cards are source inputs, not generated event data.
 !MadGraphModels/**/*.dat
+# Sherpa UFO examples likewise require their tagged parameter cards.
+!SherpaColorFlow/Examples/**/param_heft_c3d4_sherpa.dat
 
 # Build and Python cache artifacts
 *.o

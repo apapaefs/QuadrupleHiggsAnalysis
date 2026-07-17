@@ -110,6 +110,99 @@ class PrepareSherpaRunTests(unittest.TestCase):
             self.assertIn("Refusing to use non-empty OUTBASE", result.stderr)
             self.assertFalse((existing_job / "sherpa_4321.log").exists())
 
+    def test_seeded_runner_copies_ufo_parameter_card_to_each_shard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "gg8b_seeded"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "gg8b",
+                    str(run_dir),
+                    "--total-events",
+                    "2",
+                    "--seeded-jobs",
+                    "2",
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+            )
+
+            parameter_card = run_dir / "param_heft_c3d4_sherpa.dat"
+            parameter_card.write_text("BLOCK SMINPUTS\n  3  1.190000e-01\n")
+            with (run_dir / "Sherpa.yaml").open("a") as card:
+                card.write("\nUFO_PARAM_CARD: param_heft_c3d4_sherpa.dat\n")
+            (run_dir / "Process").mkdir()
+            (run_dir / "Results_PartiallyUnweighted").mkdir()
+
+            fake_bin = Path(tmp) / "bin"
+            fake_bin.mkdir()
+            fake_sherpa = fake_bin / "Sherpa"
+            fake_sherpa.write_text(
+                "#!/bin/sh\n"
+                "test -f param_heft_c3d4_sherpa.dat || exit 42\n"
+                "exit 0\n"
+            )
+            fake_sherpa.chmod(0o755)
+
+            env = os.environ.copy()
+            env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
+            result = subprocess.run(
+                [str(run_dir / "run_seeded_generation.sh"), "2", "2"],
+                cwd=str(run_dir),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for job in ("job_0001", "job_0002"):
+                copied = run_dir / "events" / job / parameter_card.name
+                self.assertEqual(copied.read_bytes(), parameter_card.read_bytes())
+
+    def test_seeded_runner_fails_before_launch_when_ufo_parameter_card_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "gg8b_seeded"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "gg8b",
+                    str(run_dir),
+                    "--total-events",
+                    "1",
+                    "--seeded-jobs",
+                    "1",
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+            )
+
+            with (run_dir / "Sherpa.yaml").open("a") as card:
+                card.write("\nUFO_PARAM_CARD: param_heft_c3d4_sherpa.dat\n")
+            (run_dir / "Process").mkdir()
+            (run_dir / "Results_PartiallyUnweighted").mkdir()
+
+            result = subprocess.run(
+                [str(run_dir / "run_seeded_generation.sh"), "1", "1"],
+                cwd=str(run_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn(
+                "Missing UFO_PARAM_CARD 'param_heft_c3d4_sherpa.dat' referenced by Sherpa.yaml",
+                result.stderr,
+            )
+            self.assertFalse((run_dir / "events").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
