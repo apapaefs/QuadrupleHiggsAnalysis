@@ -52,7 +52,8 @@ export.
 - `scripts/build_sherpa_mpi.sh`: MPI build helper.
 - `scripts/prepare_heft_c3d4_sherpa_ufo.py`: validates and copies the tracked
   `heft_c3d4` UFO, adds the two embedded QCD powers to its `GH`/`Gphi`
-  coupling metadata, and records source/adapted hashes.
+  coupling metadata, and records source/adapted hashes. The resulting portable
+  UFO source is tracked at `../MadGraphModels/heft_c3d4_sherpa`.
 - `scripts/run_gg_hh_c3_fit.py`: resumable sequential `c3=-2,-1,0` integration
   and exact quadratic fit for the 14 TeV `gg -> hh` card. It integrates with
   `-e 0` and does not generate production events.
@@ -168,28 +169,32 @@ generation is supported by Comix, not Amegic. The Python environment and the
 source UFO directory are only needed during conversion; the resulting model
 library is sufficient at run time.
 
-## Adapt and convert `heft_c3d4`
+## Convert the tracked `heft_c3d4_sherpa` model
 
 The original MadGraph UFO leaves the two powers of the strong coupling inside
 `GH` and `Gphi` out of its coupling-order metadata. This is useful in some
 MadGraph workflows but prevents Sherpa from assigning the intended running
-`alpha_s` power. Never edit that tracked model in place. Prepare a validated
-copy named `heft_c3d4_sherpa` instead:
+`alpha_s` power. The repository therefore keeps the original model unchanged
+and tracks a validated adapted copy at `MadGraphModels/heft_c3d4_sherpa`.
+Its `sherpa_ufo_provenance.json` records the source, adapter, adapted-tree, and
+individual transformation hashes.
+
+Regenerate the tracked copy after an intentional change to the original model
+or adapter, and review the resulting diff:
 
 ```bash
 cd ~/Projects/QuadrupleHiggsAnalysis
-export UFO_SCRATCH=$HOME/Projects/4H/sherpa-ufo-models/heft_c3d4-sherpa-v1
-mkdir -p "$UFO_SCRATCH"
 python3 SherpaColorFlow/scripts/prepare_heft_c3d4_sherpa_ufo.py \
   MadGraphModels/heft_c3d4 \
-  "$UFO_SCRATCH/heft_c3d4_sherpa"
+  MadGraphModels/heft_c3d4_sherpa \
+  --source-root "$PWD" \
+  --force
 ```
 
 The adapter requires the exact reviewed metadata for all eleven `GH`/`Gphi`
-couplings before writing the copy. Its `sherpa_ufo_provenance.json` records the
-source tree, adapter, adapted tree, and individual transformation hashes.
+couplings before replacing the tracked copy.
 
-This UFO uses legacy absolute Python imports, so expose the scratch model
+This UFO uses legacy absolute Python imports, so expose the tracked model
 directory explicitly during conversion. Put Sherpa's installed Python
 site-packages first: the generated launcher appends that directory too late to
 override a conflicting package already imported from the virtual environment.
@@ -198,8 +203,11 @@ Use the same OpenMPI compiler wrappers as the Sherpa build. Do not pass
 conversion would create a different model name.
 
 ```bash
-export UFO_MODEL=$UFO_SCRATCH/heft_c3d4_sherpa
+cd ~/Projects/QuadrupleHiggsAnalysis
+export UFO_MODEL=$PWD/MadGraphModels/heft_c3d4_sherpa
+export UFO_SCRATCH=$HOME/Projects/4H/sherpa-ufo-models/heft_c3d4-sherpa-build
 export UFO_GENERATED=$UFO_SCRATCH/generated
+mkdir -p "$UFO_SCRATCH"
 SHERPA_PYTHON_SITE=$(awk -F"'" '/^sys.path.append/ { print $2 }' \
   "$SHERPA_PREFIX/bin/Sherpa-generate-model")
 test -d "$SHERPA_PYTHON_SITE/ufo_interface"

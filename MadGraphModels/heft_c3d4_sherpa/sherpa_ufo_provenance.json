@@ -1,0 +1,174 @@
+{
+  "adapted": {
+    "couplings_py_sha256": "4e579b908fe957df7e2d6118554ad40b04b13ad43b78b395d5944c8bb4d5deba",
+    "tree_sha256_excluding_provenance": "6c7ca424d99e3b140e03a5287a1adafb3b27f9be1c769fdc5789888c990ac660"
+  },
+  "adapter": "prepare_heft_c3d4_sherpa_ufo.py",
+  "adapter_sha256": "4d5dccbf53ddd4e39fe7ee4bf823fbe9e7619f2e80f35af065d149426594a772",
+  "output_model_name": "heft_c3d4_sherpa",
+  "schema_version": 1,
+  "source": {
+    "couplings_py_sha256": "1afff1a51ce69fbcc00c99af8ffb32d53fe371e0c22968b5c38077cda914834d",
+    "path": "MadGraphModels/heft_c3d4",
+    "tree_sha256": "9981dad19d0320c7d388d791fc2e83d2323b8726212623eb537f2ca2b117dc7f"
+  },
+  "transformation": {
+    "couplings": [
+      {
+        "adapted_order": {
+          "HIG": 1,
+          "QCD": 2
+        },
+        "effective_parameters": [
+          "GH"
+        ],
+        "name": "GC_13",
+        "original_order": {
+          "HIG": 1
+        }
+      },
+      {
+        "adapted_order": {
+          "HIG": 1,
+          "QCD": 3
+        },
+        "effective_parameters": [
+          "GH"
+        ],
+        "name": "GC_14",
+        "original_order": {
+          "HIG": 1,
+          "QCD": 1
+        }
+      },
+      {
+        "adapted_order": {
+          "HIG": 1,
+          "QCD": 4
+        },
+        "effective_parameters": [
+          "GH"
+        ],
+        "name": "GC_15",
+        "original_order": {
+          "HIG": 1,
+          "QCD": 2
+        }
+      },
+      {
+        "adapted_order": {
+          "HIG": 1,
+          "QCD": 2
+        },
+        "effective_parameters": [
+          "Gphi"
+        ],
+        "name": "GC_16",
+        "original_order": {
+          "HIG": 1
+        }
+      },
+      {
+        "adapted_order": {
+          "HIG": 1,
+          "QCD": 3
+        },
+        "effective_parameters": [
+          "Gphi"
+        ],
+        "name": "GC_17",
+        "original_order": {
+          "HIG": 1,
+          "QCD": 1
+        }
+      },
+      {
+        "adapted_order": {
+          "HIG": 1,
+          "QCD": 4
+        },
+        "effective_parameters": [
+          "GH"
+        ],
+        "name": "GC_GGGGHH",
+        "original_order": {
+          "HIG": 1,
+          "QCD": 2
+        }
+      },
+      {
+        "adapted_order": {
+          "HIG": 1,
+          "QCD": 4
+        },
+        "effective_parameters": [
+          "GH"
+        ],
+        "name": "GC_GGGGHHH",
+        "original_order": {
+          "HIG": 1,
+          "QCD": 2
+        }
+      },
+      {
+        "adapted_order": {
+          "HIG": 1,
+          "QCD": 3
+        },
+        "effective_parameters": [
+          "GH"
+        ],
+        "name": "GC_GGGHH",
+        "original_order": {
+          "HIG": 1,
+          "QCD": 1
+        }
+      },
+      {
+        "adapted_order": {
+          "HIG": 1,
+          "QCD": 3
+        },
+        "effective_parameters": [
+          "GH"
+        ],
+        "name": "GC_GGGHHH",
+        "original_order": {
+          "HIG": 1,
+          "QCD": 1
+        }
+      },
+      {
+        "adapted_order": {
+          "HIG": 1,
+          "QCD": 2
+        },
+        "effective_parameters": [
+          "GH"
+        ],
+        "name": "GC_GGHH",
+        "original_order": {
+          "HIG": 1
+        }
+      },
+      {
+        "adapted_order": {
+          "HIG": 1,
+          "QCD": 2
+        },
+        "effective_parameters": [
+          "GH"
+        ],
+        "name": "GC_GGHHH",
+        "original_order": {
+          "HIG": 1
+        }
+      }
+    ],
+    "effective_parameters": [
+      "GH",
+      "Gphi"
+    ],
+    "qcd_order_increment": 2
+  }
+}

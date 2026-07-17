@@ -321,13 +321,38 @@ def _copy_ufo(source: Path, destination: Path) -> None:
     )
 
 
-def adapt_ufo(source: Path, output: Path, force: bool = False) -> Path:
+def _provenance_source_path(source: Path, source_root: Optional[Path]) -> str:
+    """Return an absolute or explicitly rooted source path for provenance."""
+
+    source_resolved = source.resolve()
+    if source_root is None:
+        return str(source_resolved)
+
+    root_resolved = Path(source_root).resolve()
+    try:
+        relative = source_resolved.relative_to(root_resolved)
+    except ValueError as error:
+        raise AdapterError(
+            "Source UFO {} is not inside provenance source root {}".format(
+                source_resolved, root_resolved
+            )
+        ) from error
+    return relative.as_posix()
+
+
+def adapt_ufo(
+    source: Path,
+    output: Path,
+    force: bool = False,
+    source_root: Optional[Path] = None,
+) -> Path:
     """Create and return a validated Sherpa-specific UFO copy."""
 
     source = Path(source)
     output = Path(output)
     _validate_source(source)
     _validate_output_path(source, output)
+    provenance_source_path = _provenance_source_path(source, source_root)
 
     # Validate all assumptions before creating, deleting, or replacing output.
     source_couplings_text = (source / "couplings.py").read_text(encoding="utf-8")
@@ -352,7 +377,7 @@ def adapt_ufo(source: Path, output: Path, force: bool = False) -> Path:
             "adapter_sha256": sha256_file(Path(__file__)),
             "output_model_name": OUTPUT_MODEL_NAME,
             "source": {
-                "path": str(source.resolve()),
+                "path": provenance_source_path,
                 "tree_sha256": source_tree_hash,
                 "couplings_py_sha256": source_couplings_hash,
             },
@@ -398,13 +423,26 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="replace a non-empty output directory after source validation",
     )
+    parser.add_argument(
+        "--source-root",
+        type=Path,
+        help=(
+            "record the source UFO path relative to this directory; use the "
+            "repository root when regenerating a tracked adapted model"
+        ),
+    )
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        output = adapt_ufo(args.source_ufo, args.output_ufo, force=args.force)
+        output = adapt_ufo(
+            args.source_ufo,
+            args.output_ufo,
+            force=args.force,
+            source_root=args.source_root,
+        )
     except AdapterError as error:
         raise SystemExit("error: {}".format(error))
     provenance = output / PROVENANCE_FILENAME
