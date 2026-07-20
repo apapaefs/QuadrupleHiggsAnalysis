@@ -11,6 +11,7 @@ import json
 import math
 from pathlib import Path
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -384,9 +385,26 @@ def _run_job(
 
 
 def main() -> int:
+    feature_set = "resonance-hybrid-v1"
+    for index, argument in enumerate(sys.argv[1:], start=1):
+        if argument == "--feature-set":
+            if index + 1 >= len(sys.argv):
+                raise SystemExit("--feature-set requires a value")
+            feature_set = sys.argv[index + 1]
+        elif argument.startswith("--feature-set="):
+            feature_set = argument.split("=", 1)[1]
+    if feature_set == "fatjet-ak8-softdrop-v1":
+        from prepare_resonance_fatjet_features import main as fatjet_main
+
+        return fatjet_main(sys.argv[1:])
     code_dir = Path(__file__).resolve().parent
     default_root = code_dir.parent
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--feature-set",
+        choices=("resonance-hybrid-v1", "fatjet-ak8-softdrop-v1"),
+        default="resonance-hybrid-v1",
+    )
     parser.add_argument("--analysis-root", type=Path, default=default_root)
     parser.add_argument("--kind", choices=("all", "signals", "backgrounds"), default="all")
     parser.add_argument("--topology", choices=("all", "direct", "cascade"), default="all")

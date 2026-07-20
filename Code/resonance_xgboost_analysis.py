@@ -3454,6 +3454,11 @@ def run_analysis(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--feature-set",
+        choices=("resonance-hybrid-v1", "fatjet-ak8-softdrop-v1"),
+        default="resonance-hybrid-v1",
+    )
     parser.add_argument("--analysis-root", type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument("--topology", required=True, choices=("direct", "cascade"))
     parser.add_argument("--mode", choices=("full", "smoke", "normalization-only"), default="full")
@@ -3488,7 +3493,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    feature_set = "resonance-hybrid-v1"
+    for index, argument in enumerate(arguments):
+        if argument == "--feature-set" and index + 1 < len(arguments):
+            feature_set = arguments[index + 1]
+        elif argument.startswith("--feature-set="):
+            feature_set = argument.split("=", 1)[1]
+    if feature_set == "fatjet-ak8-softdrop-v1":
+        from resonance_fatjet_xgboost_analysis import main as fatjet_main
+
+        return fatjet_main(arguments)
+    args = build_parser().parse_args(arguments)
     if not math.isfinite(args.luminosity) or args.luminosity <= 0.0:
         raise SystemExit("--luminosity must be positive and finite")
     for name in (
