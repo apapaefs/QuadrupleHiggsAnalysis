@@ -16,8 +16,63 @@ the `Data2` tree, `variables[29]`, the existing SM-trained model, the exact
 single-bin Poisson \(CL_s\) construction, `--run-c3d4-limit-scan`, untagged
 ROOT files and `xgboost_c3d4_scan/`.  The new `extended-91-v2` schema is stored
 in a separate `Data3` tree in files named
-`*-extended-v2_var.smearCMS.root`; all study products are written below
-`xgboost_c3d4_study_v2/`.
+`*-extended-v2-uniform-smear-v1_var.smearCMS.root`; all study products are
+written below `xgboost_c3d4_study_v2_uniform-smear-v1/`.  The former
+`extended-v2` tag is rejected, so files produced with different four-vector
+smearing prescriptions cannot be mixed or overwritten.
+
+## Jet-energy smearing
+
+The detector response follows the CMS-like energy resolution used in
+[our triple-Higgs analysis](https://arxiv.org/abs/2509.16364).  For a jet with
+energy \(E\), one Gaussian fluctuation is drawn,
+
+\[
+E'=\max(E_{\min},E+\Delta E),\qquad
+\Delta E\sim {\cal N}(0,\sigma_E),\qquad E_{\min}=10^{-6}\ {\rm GeV},
+\]
+
+with
+
+\[
+\sigma_E =
+\begin{cases}
+\sqrt{(0.05E)^2+(1.5)^2E}, & |\eta|\leq 3,\\
+\sqrt{(0.13E)^2+(2.7)^2E}, & 3<|\eta|\leq 5.
+\end{cases}
+\]
+
+All energies in this expression are in GeV.  The analysis requires
+\(|\eta|<2.5\), so accepted jets always use the first branch.  The cited
+paper keeps the jet angles fixed and maps the fluctuated energy to the
+massless four-vector \(p'_T=E'/\cosh\eta\).  This remains the exact untagged
+`legacy-28-v1` behaviour: the raw \(p_T>20\) GeV and pseudorapidity cuts are
+applied before smearing.
+
+For `extended-91-v2`, the same energy fluctuation is instead propagated to a
+possibly massive reconstructed jet with one correlated scale factor,
+
+\[
+s=E'/E,\qquad p'^{\mu}=s\,p^{\mu},\qquad m'=s\,m.
+\]
+
+This massive-jet extension is specific to the versioned v2 workflow; it is
+not the massless mapping quoted from the cited paper.  It leaves \(\eta\) and
+\(\phi\) unchanged, scales all four components consistently and does not
+hold the original jet mass fixed.  Finite raw \(\eta\) and \(p_T\) are
+required, then the \(|\eta|<2.5\) requirement is applied, the jet is smeared
+exactly once, and the reconstructed requirement \(p'_T>20\) GeV is imposed.
+Thus the v2 population includes upward threshold migrations and excludes downward
+migrations.  Both true-\(b\) and non-\(b\) jets are audited before the
+event-level true-\(b\) multiplicity requirement; upward migrations are
+reported in the disjoint raw-\(p_T\) intervals 10--12, 12--15 and 15--20 GeV.
+
+The pseudo-random seed is fixed to `14101983`.  ROOT and JSON metadata record
+the smearing model, acceptance order, four-vector scaling, seed, energy floor,
+number of Gaussian draws and the maximum numerical residual in
+\(|m'-sm|\).  Existing tagged output is reused only when these values, the
+migration-bin closure and the reported efficiency ratios all satisfy the v2
+contract.
 
 ## Event population and reconstruction
 
@@ -363,7 +418,7 @@ status, elapsed time and an estimated remaining time.  For example, from a
 second shell one can monitor it with
 
 ```bash
-watch -n 10 'jq . xgboost_c3d4_study_v2/study_progress.json'
+watch -n 10 'jq . xgboost_c3d4_study_v2_uniform-smear-v1/study_progress.json'
 ```
 
 Checkpointing resumes the pointwise shape calculation once a repeated full
@@ -405,7 +460,7 @@ The v2 driver provides four explicitly labelled execution levels:
 
 Preview, fast-SM and full modes reject `--max-events`.  The v2 workflow also rejects
 `--analysis-max-events` in every mode: truncating the C++ analysis could place
-a partial sample under the shared `*-extended-v2_var.smearCMS.root` filename
+a partial sample under the shared `*-extended-v2-uniform-smear-v1_var.smearCMS.root` filename
 and silently contaminate a later production run.  Smoke mode truncates only
 the Python read of an existing feature tree.  Its tables carry
 `physics_result_valid=false` and its plots are watermarked
@@ -429,7 +484,7 @@ python 4h_analyzer.py \
   --study-mode smoke
 ```
 
-The default output is `xgboost_c3d4_study_v2_smoke/`.  Use
+The default output is `xgboost_c3d4_study_v2_uniform-smear-v1_smoke/`.  Use
 `--smoke-max-events N` or `--max-events N` to change the Python-side cap.
 
 A physics-faithful quick preview is
@@ -442,7 +497,7 @@ python 4h_analyzer.py \
   --training-strategy pooled-crossfit-v2
 ```
 
-The default output is `xgboost_c3d4_study_v2_preview/`.  No Optuna or pyhf
+The default output is `xgboost_c3d4_study_v2_uniform-smear-v1_preview/`.  No Optuna or pyhf
 shape calculation is run.  The preliminary exclusion map is written to
 
 ```text
@@ -467,7 +522,7 @@ python 4h_analyzer.py \
   --training-strategy sm-crossfit-v2 \
   --c3d4-signal-dir HerwigSignalPoints/c3d4_10k/events \
   --c3d4-signal-dir HerwigSignalPoints/c3d4_additional/events \
-  --study-outdir xgboost_c3d4_study_v2_dense_preview
+  --study-outdir xgboost_c3d4_study_v2_uniform-smear-v1_dense_preview
 ```
 
 At least three unique points are required.  Duplicate coordinates are
@@ -481,7 +536,7 @@ The fixed-parameter SM-only shape study is
 python 4h_analyzer.py \
   --run-c3d4-xgboost-study \
   --study-mode fast-sm \
-  --reuse-sm-optuna-from xgboost_c3d4_study_v2 \
+  --optuna-trials 0 \
   --shape-jobs 8 \
   --c3d4-contour-interpolation clough-tocher
 ```
@@ -490,18 +545,11 @@ It uses the complete event samples, `full91`, five-fold SM training, the exact
 cut limit and the same pyhf score-shape likelihood as full mode.  It skips the
 feature-profile comparison, every Optuna study, pooled training and the
 parameterized-classifier gate.  Its default output is
-`xgboost_c3d4_study_v2_fast-sm/`.
+`xgboost_c3d4_study_v2_uniform-smear-v1_fast-sm/`.
 
-With `--reuse-sm-optuna-from`, the runner reads the completed source manifest
-and the five files
-`sm-crossfit-v2/optuna/fold_<f>_history.json`.  It requires the same observable
-schema, selected feature profile, fold count and base seed, then freezes the
-source best trial separately for each rotation.  The five SM models are
-retrained on the current event samples; old models, validation thresholds,
-score bins and pyhf results are not reused.  The source study, manifest and
-history hashes, best trials, objective values and parameters are recorded in
-the new manifest and model metadata.  This preserves cross-fitting while
-avoiding a new Optuna scan.
+No previous Optuna history is reused in this command.  In particular, tuning
+results from a legacy or pre-uniform-smearing study must not be imported into
+the new detector-response contract.
 
 ### Legacy-style exclusion contours
 
@@ -556,7 +604,7 @@ retraining XGBoost or rerunning pyhf:
 ```bash
 python 4h_analyzer.py \
   --replot-c3d4-study-contours \
-  --study-outdir xgboost_c3d4_study_v2
+  --study-outdir xgboost_c3d4_study_v2_uniform-smear-v1
 ```
 
 Use the preview or smoke output directory explicitly when replotting those
@@ -573,7 +621,7 @@ without rerunning XGBoost or pyhf:
 ```bash
 python 4h_analyzer.py \
   --replot-c3d4-study-contours \
-  --study-outdir xgboost_c3d4_study_v2_fast-sm \
+  --study-outdir xgboost_c3d4_study_v2_uniform-smear-v1_fast-sm \
   --c3d4-contour-interpolation clough-tocher \
   --c3d4-plot-nbins 801
 ```
@@ -607,9 +655,11 @@ The full v2 study is run in the ROOT/Python environment containing ROOT,
 XGBoost, pyhf 0.7.6 and Optuna 4.9.0:
 
 ```bash
+set +u
+source ~/Projects/Herwig/Herwig-730-full-python3-rivet4/bin/activate
 source ~/root310install/bin/thisroot.sh
 source ~/xgb-py310/bin/activate
-export PATH="$HOME/Projects/Herwig/HerwigPol2/bin:$PATH"
+set -u
 export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
@@ -624,7 +674,7 @@ python 4h_analyzer.py \
   --analysis-jobs 8 \
   --shape-jobs 4 \
   --progress-interval 30 \
-  --study-outdir xgboost_c3d4_study_v2
+  --study-outdir xgboost_c3d4_study_v2_uniform-smear-v1
 ```
 
 In full mode, passing `--feature-profile corrected28|core52|full91` forces one
@@ -652,7 +702,7 @@ rerunning the statistical calculation:
 ```bash
 python 4h_analyzer.py \
   --write-c3d4-v2-input-report \
-  --study-outdir xgboost_c3d4_study_v2_fast-sm
+  --study-outdir xgboost_c3d4_study_v2_uniform-smear-v1_fast-sm
 ```
 
 ## Limitations and deferred studies

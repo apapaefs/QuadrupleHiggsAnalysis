@@ -23,7 +23,8 @@ from typing import Any, Mapping, Sequence
 
 LEGACY_SCHEMA_ID = "legacy-28-v1"
 EXTENDED_SCHEMA_ID = "extended-91-v2"
-EXTENDED_FILE_TAG = "-extended-v2"
+EXTENDED_FILE_TAG = "-extended-v2-uniform-smear-v1"
+LEGACY_EXTENDED_FILE_TAG = "-extended-v2"
 PAIRING_COUNT = 105
 
 MODEL_METADATA_ATTRIBUTE = "fourhiggs_model_metadata"
@@ -381,7 +382,9 @@ def strip_extended_v2_tag(path_or_name: str | Path) -> str:
     """Strip only the v2 analysis tag from the final path component."""
 
     path = Path(path_or_name)
-    canonical_name = path.name.replace(EXTENDED_FILE_TAG, "")
+    canonical_name = path.name
+    for analysis_tag in (EXTENDED_FILE_TAG, LEGACY_EXTENDED_FILE_TAG):
+        canonical_name = canonical_name.replace(analysis_tag, "")
     if str(path.parent) in ("", "."):
         return canonical_name
     return str(path.with_name(canonical_name))
@@ -405,7 +408,7 @@ _ANALYSIS_SUFFIXES = (
 def canonical_sample_basename(path_or_name: str | Path) -> str:
     """Return a tag- and analysis-suffix-free sample basename.
 
-    For example, ``sample-extended-v2_var.smearCMS.root`` and
+    For example, ``sample-extended-v2-uniform-smear-v1_var.smearCMS.root`` and
     ``sample_var.smearCMS.root`` both map to ``sample``.  This is the key used
     to locate the same sample's Herwig ``.out`` and analysis-summary metadata.
     """
@@ -795,6 +798,7 @@ __all__ = [
     "EXTENDED_CORRECTED28_FEATURE_NAMES",
     "EXTENDED_FEATURE_UNITS",
     "EXTENDED_FILE_TAG",
+    "LEGACY_EXTENDED_FILE_TAG",
     "EXTENDED_SCHEMA_ID",
     "FEATURE_PROFILE_INDICES",
     "FeatureContract",

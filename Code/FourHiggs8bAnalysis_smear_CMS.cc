@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <numeric>
@@ -35,6 +36,14 @@ constexpr int kHiggsCount = 4;
 constexpr int kHiggsPairCount = kHiggsCount * (kHiggsCount - 1) / 2;
 constexpr int kVariableCount = 29;
 constexpr double kZBosonMass = 91.1876;
+constexpr double kMinimumSmearedEnergy = 1.0e-6;
+constexpr unsigned long kJetSmearingSeed = 14101983;
+constexpr const char* kExtendedOutputTag = "extended-v2-uniform-smear-v1";
+constexpr const char* kLegacyExtendedOutputTag = "extended-v2";
+constexpr const char* kJetSmearingModelId = "cms-energy-uniform-fourvector-v1";
+constexpr const char* kJetSmearingAcceptanceOrder =
+    "raw_abs_eta_then_smear_then_smeared_pt";
+constexpr const char* kJetSmearingFourVectorScaling = "uniform_correlated";
 
 using Pairing = std::array<int, kSelectedBJets>;
 
@@ -65,6 +74,11 @@ struct Reconstruction {
   std::array<PseudoJet, kHiggsCount> higgses = {};
 };
 
+struct NonBJetCandidate {
+  PseudoJet p4;
+  bool is_charm = false;
+};
+
 using ExtendedReconstruction = extended91::Reconstruction<PseudoJet>;
 
 char* getCmdOption(char** begin, char** end, const std::string& option);
@@ -75,7 +89,10 @@ double deltaR(const PseudoJet& p1, const PseudoJet& p2);
 bool overlapsWithAny(const PseudoJet& jet, const std::vector<PseudoJet>& selected, double max_delta_r);
 bool jetEfficiencyAccept(const PseudoJet& jet);
 double btagWeight(const PseudoJet& jet);
-PseudoJet smearJetCMS(double energy, double pt, double pz, double phi, double eta);
+double smearedJetEnergyCMS(const PseudoJet& jet);
+PseudoJet smearJetCMSLegacyMassless(const PseudoJet& jet);
+PseudoJet smearJetCMSUniformFourVector(const PseudoJet& jet,
+                                      double& mass_scaling_residual);
 
 std::string makeOutputName(const std::string& infile, const std::string& replacement);
 std::string formatArray(const std::array<double, kHiggsCount>& values);
@@ -139,7 +156,7 @@ int main(int argc, char* argv[]) {
   }
 
   const std::string infile(argv[1]);
-  rnd.SetSeed(14101983);
+  rnd.SetSeed(kJetSmearingSeed);
 
   double evweight = 0.0;
   int numbJets = 0;
@@ -199,9 +216,16 @@ int main(int argc, char* argv[]) {
     tag = std::string("-") + getCmdOption(argv, argv + argc, "-t");
     std::cout << "Adding tag: " << tag << std::endl;
   }
-  const bool write_extended_v2 = tag == "-extended-v2";
+  if (tag == std::string("-") + kLegacyExtendedOutputTag) {
+    std::cerr << "Error: output tag '" << kLegacyExtendedOutputTag
+              << "' belongs to the previous massless smearing model; use '"
+              << kExtendedOutputTag << "' for the current analysis" << std::endl;
+    return 1;
+  }
+  const bool write_extended_v2 = tag == std::string("-") + kExtendedOutputTag;
   if (write_extended_v2) {
-    std::cout << "Enabling extended-91-v2 Data3 output" << std::endl;
+    std::cout << "Enabling extended-91-v2 Data3 output with smearing model "
+              << kJetSmearingModelId << std::endl;
   }
 
   int maxevents = event_number;
@@ -317,6 +341,17 @@ int main(int argc, char* argv[]) {
   double feature_tree_weight_out = 0.0;
   long long undefined_helicity_count = 0;
   long long sanitized_extended_feature_count = 0;
+  long long true_b_upward_pt_migrations = 0;
+  long long true_b_downward_pt_migrations = 0;
+  long long non_b_upward_pt_migrations = 0;
+  long long non_b_downward_pt_migrations = 0;
+  long long true_b_upward_pt_migrations_raw_pt_10_12_gev = 0;
+  long long true_b_upward_pt_migrations_raw_pt_12_15_gev = 0;
+  long long true_b_upward_pt_migrations_raw_pt_15_20_gev = 0;
+  long long non_b_upward_pt_migrations_raw_pt_10_12_gev = 0;
+  long long non_b_upward_pt_migrations_raw_pt_12_15_gev = 0;
+  long long non_b_upward_pt_migrations_raw_pt_15_20_gev = 0;
+  double max_smearing_mass_scaling_residual_gev = 0.0;
 
   TopHist h_dummy(10, output_top, "dummy histo", 0, 1);
   TopHist h_pT_b(60, output_top, "pT of selected b jets", 0, 300);
@@ -377,13 +412,108 @@ int main(int argc, char* argv[]) {
     total_event_in += 1.0;
 
     std::vector<PseudoJet> true_bjets_unsorted;
-    for (int jj = 0; jj < numbJets; ++jj) {
-      PseudoJet bjet_candidate(thebJets[1][jj], thebJets[2][jj], thebJets[3][jj], thebJets[0][jj]);
-      if (bjet_candidate.perp() > kBJetPtCut &&
-          std::fabs(bjet_candidate.eta()) < kBJetEtaCut &&
-          jetEfficiencyAccept(bjet_candidate)) {
-        PseudoJet smeared = smearJetCMS(bjet_candidate.e(), bjet_candidate.perp(), bjet_candidate.pz(),
-                                        bjet_candidate.phi(), bjet_candidate.eta());
+    std::vector<NonBJetCandidate> tagged_non_b_candidates;
+    if (write_extended_v2) {
+      // The versioned v2 path smears every finite, eta-accepted stored jet
+      // exactly once before applying the reconstructed-pT threshold.  Both
+      // populations are processed before any event-level multiplicity cut so
+      // the migration audit is unconditional.
+      for (int jj = 0; jj < numbJets; ++jj) {
+        PseudoJet bjet_candidate(
+            thebJets[1][jj], thebJets[2][jj], thebJets[3][jj], thebJets[0][jj]);
+        const double raw_eta = bjet_candidate.eta();
+        const double raw_pt = bjet_candidate.perp();
+        if (!std::isfinite(raw_eta) || !std::isfinite(raw_pt) ||
+            std::fabs(raw_eta) >= kBJetEtaCut) {
+          continue;
+        }
+
+        double mass_scaling_residual = 0.0;
+        PseudoJet smeared = smearJetCMSUniformFourVector(
+            bjet_candidate, mass_scaling_residual);
+        max_smearing_mass_scaling_residual_gev = std::max(
+            max_smearing_mass_scaling_residual_gev, mass_scaling_residual);
+        const double smeared_pt = smeared.perp();
+        const bool raw_passes_pt = raw_pt > kBJetPtCut;
+        const bool smeared_passes_pt =
+            std::isfinite(smeared_pt) && smeared_pt > kBJetPtCut;
+        // Count every upward migration. The documented 10--20 GeV bins must
+        // exhaust this total; a jet stored below 10 GeV therefore breaks the
+        // metadata closure and prevents silent reuse of an underspecified input.
+        if (!raw_passes_pt && smeared_passes_pt) {
+          ++true_b_upward_pt_migrations;
+          if (raw_pt >= 10.0 && raw_pt < 12.0) {
+            ++true_b_upward_pt_migrations_raw_pt_10_12_gev;
+          } else if (raw_pt >= 12.0 && raw_pt < 15.0) {
+            ++true_b_upward_pt_migrations_raw_pt_12_15_gev;
+          } else if (raw_pt >= 15.0 && raw_pt <= kBJetPtCut) {
+            ++true_b_upward_pt_migrations_raw_pt_15_20_gev;
+          }
+        } else if (raw_passes_pt && !smeared_passes_pt) {
+          ++true_b_downward_pt_migrations;
+        }
+        if (!smeared_passes_pt || !jetEfficiencyAccept(smeared)) {
+          continue;
+        }
+        smeared.set_user_index(static_cast<int>(thebJets[4][jj]));
+        true_bjets_unsorted.push_back(smeared);
+      }
+
+      for (int jj = 0; jj < numJets; ++jj) {
+        PseudoJet jet_candidate(
+            theJets[1][jj], theJets[2][jj], theJets[3][jj], theJets[0][jj]);
+        const double raw_eta = jet_candidate.eta();
+        const double raw_pt = jet_candidate.perp();
+        if (!std::isfinite(raw_eta) || !std::isfinite(raw_pt) ||
+            std::fabs(raw_eta) >= kBJetEtaCut) {
+          continue;
+        }
+
+        double mass_scaling_residual = 0.0;
+        PseudoJet smeared = smearJetCMSUniformFourVector(
+            jet_candidate, mass_scaling_residual);
+        max_smearing_mass_scaling_residual_gev = std::max(
+            max_smearing_mass_scaling_residual_gev, mass_scaling_residual);
+        const double smeared_pt = smeared.perp();
+        const bool raw_passes_pt = raw_pt > kBJetPtCut;
+        const bool smeared_passes_pt =
+            std::isfinite(smeared_pt) && smeared_pt > kBJetPtCut;
+        if (!raw_passes_pt && smeared_passes_pt) {
+          ++non_b_upward_pt_migrations;
+          if (raw_pt >= 10.0 && raw_pt < 12.0) {
+            ++non_b_upward_pt_migrations_raw_pt_10_12_gev;
+          } else if (raw_pt >= 12.0 && raw_pt < 15.0) {
+            ++non_b_upward_pt_migrations_raw_pt_12_15_gev;
+          } else if (raw_pt >= 15.0 && raw_pt <= kBJetPtCut) {
+            ++non_b_upward_pt_migrations_raw_pt_15_20_gev;
+          }
+        } else if (raw_passes_pt && !smeared_passes_pt) {
+          ++non_b_downward_pt_migrations;
+        }
+        if (!smeared_passes_pt || !jetEfficiencyAccept(smeared)) {
+          continue;
+        }
+        smeared.set_user_index(static_cast<int>(theJets[4][jj]));
+        NonBJetCandidate candidate;
+        candidate.p4 = smeared;
+        candidate.is_charm = cTag[jj] > 0.0;
+        tagged_non_b_candidates.push_back(candidate);
+      }
+    } else {
+      // Preserve the historical untagged preprocessing: require raw pT first,
+      // apply the dormant efficiency on the raw jet, then use the massless
+      // E'/cosh(eta) mapping documented in the earlier analysis.
+      for (int jj = 0; jj < numbJets; ++jj) {
+        PseudoJet bjet_candidate(
+            thebJets[1][jj], thebJets[2][jj], thebJets[3][jj], thebJets[0][jj]);
+        const double raw_eta = bjet_candidate.eta();
+        const double raw_pt = bjet_candidate.perp();
+        if (!std::isfinite(raw_eta) || !std::isfinite(raw_pt) ||
+            raw_pt <= kBJetPtCut || std::fabs(raw_eta) >= kBJetEtaCut ||
+            !jetEfficiencyAccept(bjet_candidate)) {
+          continue;
+        }
+        PseudoJet smeared = smearJetCMSLegacyMassless(bjet_candidate);
         smeared.set_user_index(static_cast<int>(thebJets[4][jj]));
         true_bjets_unsorted.push_back(smeared);
       }
@@ -397,25 +527,38 @@ int main(int argc, char* argv[]) {
 
     std::vector<PseudoJet> c_mistag_candidates_unsorted;
     std::vector<PseudoJet> light_mistag_candidates_unsorted;
-    for (int jj = 0; jj < numJets; ++jj) {
-      PseudoJet jet_candidate(theJets[1][jj], theJets[2][jj], theJets[3][jj], theJets[0][jj]);
-      if (jet_candidate.perp() <= kBJetPtCut ||
-          std::fabs(jet_candidate.eta()) >= kBJetEtaCut ||
-          !jetEfficiencyAccept(jet_candidate)) {
-        continue;
+    if (write_extended_v2) {
+      for (const NonBJetCandidate& candidate : tagged_non_b_candidates) {
+        if (overlapsWithAny(candidate.p4, true_bjets, kDuplicateJetDeltaR)) {
+          continue;
+        }
+        if (candidate.is_charm) {
+          c_mistag_candidates_unsorted.push_back(candidate.p4);
+        } else {
+          light_mistag_candidates_unsorted.push_back(candidate.p4);
+        }
       }
-
-      PseudoJet smeared = smearJetCMS(jet_candidate.e(), jet_candidate.perp(), jet_candidate.pz(),
-                                      jet_candidate.phi(), jet_candidate.eta());
-      smeared.set_user_index(static_cast<int>(theJets[4][jj]));
-      if (overlapsWithAny(smeared, true_bjets, kDuplicateJetDeltaR)) {
-        continue;
-      }
-
-      if (cTag[jj] > 0.0) {
-        c_mistag_candidates_unsorted.push_back(smeared);
-      } else {
-        light_mistag_candidates_unsorted.push_back(smeared);
+    } else {
+      for (int jj = 0; jj < numJets; ++jj) {
+        PseudoJet jet_candidate(
+            theJets[1][jj], theJets[2][jj], theJets[3][jj], theJets[0][jj]);
+        const double raw_eta = jet_candidate.eta();
+        const double raw_pt = jet_candidate.perp();
+        if (!std::isfinite(raw_eta) || !std::isfinite(raw_pt) ||
+            raw_pt <= kBJetPtCut || std::fabs(raw_eta) >= kBJetEtaCut ||
+            !jetEfficiencyAccept(jet_candidate)) {
+          continue;
+        }
+        PseudoJet smeared = smearJetCMSLegacyMassless(jet_candidate);
+        smeared.set_user_index(static_cast<int>(theJets[4][jj]));
+        if (overlapsWithAny(smeared, true_bjets, kDuplicateJetDeltaR)) {
+          continue;
+        }
+        if (cTag[jj] > 0.0) {
+          c_mistag_candidates_unsorted.push_back(smeared);
+        } else {
+          light_mistag_candidates_unsorted.push_back(smeared);
+        }
       }
     }
 
@@ -615,6 +758,24 @@ int main(int argc, char* argv[]) {
   dat2.cd();
   Data2.Write();
   if (write_extended_v2) {
+    TNamed analysis_output_tag("analysis_output_tag", kExtendedOutputTag);
+    analysis_output_tag.Write();
+    TNamed jet_smearing_model_id("jet_smearing_model_id", kJetSmearingModelId);
+    jet_smearing_model_id.Write();
+    TNamed jet_smearing_acceptance_order("jet_smearing_acceptance_order",
+                                         kJetSmearingAcceptanceOrder);
+    jet_smearing_acceptance_order.Write();
+    TNamed jet_smearing_fourvector_scaling("jet_smearing_fourvector_scaling",
+                                           kJetSmearingFourVectorScaling);
+    jet_smearing_fourvector_scaling.Write();
+    TParameter<Long64_t>("jet_smearing_seed",
+                         static_cast<Long64_t>(kJetSmearingSeed)).Write();
+    TParameter<double>("jet_smearing_min_energy_gev",
+                       kMinimumSmearedEnergy).Write();
+    TParameter<int>("jet_smearing_gaussian_draws_per_jet", 1).Write();
+    TParameter<int>("jet_smearing_correlated_mass_scaling", 1).Write();
+    TParameter<double>("max_smearing_mass_scaling_residual_gev",
+                       max_smearing_mass_scaling_residual_gev).Write();
     Data3->Write();
     TNamed observable_schema("Data3_observable_schema", "extended-91-v2");
     observable_schema.Write();
@@ -694,9 +855,24 @@ int main(int argc, char* argv[]) {
   const std::string output_summary = makeOutputName(infile, tag + ".analysis_summary.json");
   std::ofstream outsummary(output_summary.c_str(), std::ios::out);
   if (outsummary) {
+    if (write_extended_v2) {
+      outsummary << std::setprecision(17);
+    }
     outsummary << "{\n";
     outsummary << "  \"input_file\": \"" << infile << "\",\n";
     if (write_extended_v2) {
+      outsummary << "  \"analysis_output_tag\": \"" << kExtendedOutputTag << "\",\n";
+      outsummary << "  \"jet_smearing_model_id\": \"" << kJetSmearingModelId << "\",\n";
+      outsummary << "  \"jet_smearing_acceptance_order\": \""
+                 << kJetSmearingAcceptanceOrder << "\",\n";
+      outsummary << "  \"jet_smearing_fourvector_scaling\": \""
+                 << kJetSmearingFourVectorScaling << "\",\n";
+      outsummary << "  \"jet_smearing_correlated_mass_scaling\": true,\n";
+      outsummary << "  \"jet_smearing_preserves_jet_mass\": false,\n";
+      outsummary << "  \"jet_smearing_gaussian_draws_per_jet\": 1,\n";
+      outsummary << "  \"jet_smearing_seed\": " << kJetSmearingSeed << ",\n";
+      outsummary << "  \"jet_smearing_min_energy_gev\": "
+                 << kMinimumSmearedEnergy << ",\n";
       outsummary << "  \"observable_schema\": \"extended-91-v2\",\n";
     }
     outsummary << "  \"c_mistags\": " << c_mistags << ",\n";
@@ -705,6 +881,30 @@ int main(int argc, char* argv[]) {
     outsummary << "  \"pt_cut_gev\": " << kBJetPtCut << ",\n";
     outsummary << "  \"eta_cut\": " << kBJetEtaCut << ",\n";
     outsummary << "  \"min_delta_r_jets\": " << kMinDeltaRBJets << ",\n";
+    if (write_extended_v2) {
+      outsummary << "  \"true_b_upward_pt_migrations\": "
+                 << true_b_upward_pt_migrations << ",\n";
+      outsummary << "  \"true_b_downward_pt_migrations\": "
+                 << true_b_downward_pt_migrations << ",\n";
+      outsummary << "  \"non_b_upward_pt_migrations\": "
+                 << non_b_upward_pt_migrations << ",\n";
+      outsummary << "  \"non_b_downward_pt_migrations\": "
+                 << non_b_downward_pt_migrations << ",\n";
+      outsummary << "  \"true_b_upward_pt_migrations_raw_pt_10_12_gev\": "
+                 << true_b_upward_pt_migrations_raw_pt_10_12_gev << ",\n";
+      outsummary << "  \"true_b_upward_pt_migrations_raw_pt_12_15_gev\": "
+                 << true_b_upward_pt_migrations_raw_pt_12_15_gev << ",\n";
+      outsummary << "  \"true_b_upward_pt_migrations_raw_pt_15_20_gev\": "
+                 << true_b_upward_pt_migrations_raw_pt_15_20_gev << ",\n";
+      outsummary << "  \"non_b_upward_pt_migrations_raw_pt_10_12_gev\": "
+                 << non_b_upward_pt_migrations_raw_pt_10_12_gev << ",\n";
+      outsummary << "  \"non_b_upward_pt_migrations_raw_pt_12_15_gev\": "
+                 << non_b_upward_pt_migrations_raw_pt_12_15_gev << ",\n";
+      outsummary << "  \"non_b_upward_pt_migrations_raw_pt_15_20_gev\": "
+                 << non_b_upward_pt_migrations_raw_pt_15_20_gev << ",\n";
+      outsummary << "  \"max_smearing_mass_scaling_residual_gev\": "
+                 << max_smearing_mass_scaling_residual_gev << ",\n";
+    }
     outsummary << "  \"mc_events_in\": " << total_event_in << ",\n";
     outsummary << "  \"total_weight_in\": " << total_weight_in << ",\n";
     outsummary << "  \"preselection_mc_events_out\": " << preselection_eventcount << ",\n";
@@ -787,7 +987,8 @@ bool jetEfficiencyAccept(const PseudoJet& jet) {
     return true;
   }
 
-  double epsilon = 0.75 + (0.95 - 0.75) * jet.perp() / (50.0 - 20.0);
+  double epsilon =
+      0.75 + (0.95 - 0.75) * (jet.perp() - 20.0) / (50.0 - 20.0);
   epsilon = std::max(0.0, std::min(1.0, epsilon));
   return rnd.Rndm() <= epsilon;
 }
@@ -799,7 +1000,15 @@ double btagWeight(const PseudoJet& /*jet*/) {
   return 1.0;
 }
 
-PseudoJet smearJetCMS(double energy, double /*pt*/, double /*pz*/, double phi, double eta) {
+double smearedJetEnergyCMS(const PseudoJet& jet) {
+  const double energy = jet.e();
+  if (!std::isfinite(energy) || energy <= 0.0) {
+    std::cerr << "Error: cannot smear a jet with non-finite or non-positive energy: "
+              << energy << std::endl;
+    std::exit(1);
+  }
+
+  const double eta = jet.eta();
   double sigma_energy = 0.0;
   if (std::fabs(eta) <= 3.0) {
     sigma_energy = std::sqrt(std::pow(energy * 0.05, 2) + energy * std::pow(1.5, 2));
@@ -807,10 +1016,35 @@ PseudoJet smearJetCMS(double energy, double /*pt*/, double /*pz*/, double phi, d
     sigma_energy = std::sqrt(std::pow(energy * 0.130, 2) + energy * std::pow(2.7, 2));
   }
 
-  const double smeared_energy = std::max(1.0e-6, energy + rnd.Gaus(0.0, sigma_energy));
+  return std::max(kMinimumSmearedEnergy,
+                  energy + rnd.Gaus(0.0, sigma_energy));
+}
+
+PseudoJet smearJetCMSLegacyMassless(const PseudoJet& jet) {
+  const double smeared_energy = smearedJetEnergyCMS(jet);
   TLorentzVector momentum;
-  momentum.SetPtEtaPhiE(smeared_energy / std::cosh(eta), eta, phi, smeared_energy);
+  momentum.SetPtEtaPhiE(smeared_energy / std::cosh(jet.eta()), jet.eta(),
+                        jet.phi(), smeared_energy);
   return PseudoJet(momentum.Px(), momentum.Py(), momentum.Pz(), momentum.E());
+}
+
+PseudoJet smearJetCMSUniformFourVector(const PseudoJet& jet,
+                                      double& mass_scaling_residual) {
+  const double energy = jet.e();
+  const double smeared_energy = smearedJetEnergyCMS(jet);
+  const double scale = smeared_energy / energy;
+
+  // Scale the complete jet four-vector so the existing jet mass receives the
+  // same fractional detector response as its energy instead of being set to zero.
+  const PseudoJet output(scale * jet.px(), scale * jet.py(), scale * jet.pz(),
+                         smeared_energy);
+  mass_scaling_residual = std::fabs(output.m() - scale * jet.m());
+  if (!std::isfinite(mass_scaling_residual)) {
+    std::cerr << "Error: non-finite correlated jet-mass scaling residual"
+              << std::endl;
+    std::exit(1);
+  }
+  return output;
 }
 
 std::string makeOutputName(const std::string& infile, const std::string& replacement) {

@@ -15,9 +15,11 @@ scalar widths are 1 GeV. Each signal point contains 10,000 Herwig events.
 
 ## Current state (2026-07-16)
 
-- All **42 direct** and **441 cascade** feature ROOT files are complete under
-  `ResonanceAnalysis/features/`.
-- Three branch-complete background feature samples are ready:
+- All **42 direct** and **441 cascade** raw Herwig signal samples are ready.
+  Their earlier fixed-mass feature files remain under
+  `ResonanceAnalysis/features/` as a non-overwritten legacy campaign and are
+  rejected by the current feature validator.
+- Three branch-complete background raw samples are ready:
   `HW-gg_hhhh_SM`, `HW-gg_to_6b_2j`, and `HW-gg_to_4b_4j`.
 - The other nine required QCD/reducible backgrounds still need the
   non-overwriting Herwig regeneration and feature-extraction steps below.
@@ -33,12 +35,10 @@ Run from the project root:
 ```bash
 cd ~/Projects/QuadrupleHiggsAnalysis
 
-source /etc/profile.d/modules.sh
-module load herwig/stable-full-py3-rivet4
-source ~/xgb-py310/bin/activate
-
 set +u
+source ~/Projects/Herwig/Herwig-730-full-python3-rivet4/bin/activate
 source ~/root310install/bin/thisroot.sh
+source ~/xgb-py310/bin/activate
 set -u
 
 export OMP_NUM_THREADS=1
@@ -51,10 +51,20 @@ python3 -m unittest discover -s Code/tests -p 'test_resonance_xgboost_analysis.p
 ```
 
 The extractor reads the raw HwSim `Data` tree and requires
-`bHadronMultiplicity`; it refuses branchless inputs. It applies the raw
-\(p_T>20\) GeV and \(|\eta|<2.5\) acceptance, deterministic CMS-style energy
-smearing that preserves the jet mass, and writes a `ResonanceFeatures` tree.
-No b-, double-b-, c-, or light-tag efficiency is applied in C++.
+`bHadronMultiplicity`; it refuses branchless inputs. Jets first satisfy the
+finite \(|\eta|<2.5\) preselection. Their energies are then fluctuated with the
+deterministic CMS-style resolution, using exactly one Gaussian draw per
+eta-accepted stored jet, before the analysis requirement on the smeared
+\(p_T>20\) GeV is applied. The complete four-vector is multiplied by
+\(E_{\rm smear}/E\), so the direction is fixed and the jet mass scales in
+correlation with its energy. The preprocessing contract is
+`cms-energy-uniform-fourvector-v1`. No b-, double-b-, c-, or light-tag
+efficiency is applied in C++. The JSON diagnostics record upward and downward
+20 GeV threshold migrations separately for true-b and non-b candidates, as
+well as the maximum residual in the expected correlated mass scaling. Upward
+migrations are additionally split by raw jet transverse momentum into
+`[10,12)`, `[12,15)`, and `[15,20]` GeV bins to expose sensitivity to the
+10 GeV HwSim storage threshold.
 
 ## Categories and normalization
 
@@ -156,10 +166,24 @@ normalization nuisance.
 
 ## Short technical smoke test
 
-First validate or create the three currently available background feature
-pairs. Existing compatible ROOT/JSON pairs are kept:
+First create complete features for the three direct and three cascade points
+selected by `--smoke-points 3`, followed by the three currently available
+backgrounds. These products use the versioned, non-overwriting production
+directory and are retained when the full extraction is resumed. The second
+command also writes the resolved smoke-background manifest:
 
 ```bash
+python3 Code/prepare_resonance_features.py \
+  --analysis-root . \
+  --kind signals \
+  --only HW-gg_iota0_hhhh-miota_0525 \
+  --only HW-gg_iota0_hhhh-miota_1100 \
+  --only HW-gg_iota0_hhhh-miota_5000 \
+  --only HW-gg_iota0_eta0eta0_hhhh-miota_0575-meta_0275 \
+  --only HW-gg_iota0_eta0eta0_hhhh-miota_3000-meta_0625 \
+  --only HW-gg_iota0_eta0eta0_hhhh-miota_5000-meta_2400 \
+  --workers 6
+
 python3 Code/prepare_resonance_features.py \
   --analysis-root . \
   --kind backgrounds \
@@ -175,19 +199,21 @@ python3 Code/resonance_xgboost_analysis.py \
   --analysis-root . \
   --topology direct \
   --mode smoke \
-  --background-manifest ResonanceAnalysis/background_manifest_smoke.csv \
+  --signal-root-dir ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1 \
+  --background-manifest ResonanceAnalysis/background_manifest_smoke_cms-energy-uniform-fourvector-v1.csv \
   --smoke-points 3 \
   --smoke-max-events 250 \
-  --output-dir ResonanceAnalysis/results/smoke/direct
+  --output-dir ResonanceAnalysis/results/smoke/cms-energy-uniform-fourvector-v1/direct
 
 python3 Code/resonance_xgboost_analysis.py \
   --analysis-root . \
   --topology cascade \
   --mode smoke \
-  --background-manifest ResonanceAnalysis/background_manifest_smoke.csv \
+  --signal-root-dir ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1 \
+  --background-manifest ResonanceAnalysis/background_manifest_smoke_cms-energy-uniform-fourvector-v1.csv \
   --smoke-points 3 \
   --smoke-max-events 250 \
-  --output-dir ResonanceAnalysis/results/smoke/cascade
+  --output-dir ResonanceAnalysis/results/smoke/cms-energy-uniform-fourvector-v1/cascade
 ```
 
 Smoke mode checks loading, mass-aware features, folds, tagging closure, output
@@ -215,6 +241,7 @@ nohup python3 -u Code/prepare_resonance_background_roots.py \
   --analysis-root . \
   --manifest ResonanceAnalysis/background_manifest.csv \
   --workers 4 \
+  --herwig "$HOME/Projects/Herwig/Herwig-730-full-python3-rivet4/bin/Herwig" \
   > ResonanceAnalysis/logs/background-regeneration.log 2>&1 &
 ```
 
@@ -231,41 +258,54 @@ tail -f ResonanceAnalysis/logs/background-regeneration.log
 python3 -m json.tool ResonanceAnalysis/background_regeneration_status.json | less
 ```
 
-Once regeneration is complete, validate the 483 existing signal feature pairs
-and produce all missing background features:
+Once regeneration is complete, extract new features for all 483 signal points
+and all backgrounds. The old fixed-mass feature pairs are neither overwritten
+nor reused:
 
 ```bash
 nohup python3 -u Code/prepare_resonance_features.py \
   --analysis-root . \
   --kind all \
   --workers 8 \
-  > ResonanceAnalysis/logs/feature-extraction.log 2>&1 &
+  > ResonanceAnalysis/logs/feature-extraction-cms-energy-uniform-fourvector-v1.log 2>&1 &
 ```
 
 `--workers 8` means eight independent extractor processes. Monitor
-`ResonanceAnalysis/feature_campaign_status.json` and the per-sample logs under
-`ResonanceAnalysis/logs/features/`.
+`ResonanceAnalysis/feature_campaign_status_cms-energy-uniform-fourvector-v1.json`
+and the per-sample logs under
+`ResonanceAnalysis/logs/features/cms-energy-uniform-fourvector-v1/`. The new
+ROOT/JSON pairs are written below
+`ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1/`, and the helper
+writes
+`ResonanceAnalysis/background_manifest_cms-energy-uniform-fourvector-v1.csv`
+with the matching background paths.
 
 ## Full direct and cascade analyses
 
-Do not start these until all non-optional rows in `background_manifest.csv`
-have compatible feature ROOT/JSON pairs. The two topologies can then run in
-parallel:
+Do not start these until the feature-extraction command exits successfully,
+`ResonanceAnalysis/background_manifest_cms-energy-uniform-fourvector-v1.csv`
+exists, and every non-optional row in that resolved manifest has a compatible
+feature ROOT/JSON pair. The versioned feature status must also report an empty
+`last_run_failures` list. The two topologies can then run in parallel:
 
 ```bash
 nohup python3 -u Code/resonance_xgboost_analysis.py \
   --analysis-root . \
   --topology direct \
   --mode full \
-  --output-dir ResonanceAnalysis/results/direct \
-  > ResonanceAnalysis/logs/xgboost-direct.log 2>&1 &
+  --signal-root-dir ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1 \
+  --background-manifest ResonanceAnalysis/background_manifest_cms-energy-uniform-fourvector-v1.csv \
+  --output-dir ResonanceAnalysis/results/cms-energy-uniform-fourvector-v1/direct \
+  > ResonanceAnalysis/logs/xgboost-direct-cms-energy-uniform-fourvector-v1.log 2>&1 &
 
 nohup python3 -u Code/resonance_xgboost_analysis.py \
   --analysis-root . \
   --topology cascade \
   --mode full \
-  --output-dir ResonanceAnalysis/results/cascade \
-  > ResonanceAnalysis/logs/xgboost-cascade.log 2>&1 &
+  --signal-root-dir ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1 \
+  --background-manifest ResonanceAnalysis/background_manifest_cms-energy-uniform-fourvector-v1.csv \
+  --output-dir ResonanceAnalysis/results/cms-energy-uniform-fourvector-v1/cascade \
+  > ResonanceAnalysis/logs/xgboost-cascade-cms-energy-uniform-fourvector-v1.log 2>&1 &
 ```
 
 Full mode requires pyhf before training and exits nonzero if any required
