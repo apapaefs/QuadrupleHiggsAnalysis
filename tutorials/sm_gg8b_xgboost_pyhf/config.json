@@ -1,0 +1,69 @@
+{
+  "schema": "extended-91-v2",
+  "feature_profile": "corrected28",
+  "sqrt_s_tev": 14.0,
+  "luminosity_fb": 3000.0,
+  "sm_cross_section_fb": 0.000124288,
+  "branching_ratio_hbb": 0.5824,
+  "btag_efficiency": 0.85,
+  "n_folds": 5,
+  "seed": 12345,
+  "binning": {
+    "quantiles": [
+      0.0,
+      0.5,
+      0.75,
+      0.9,
+      0.97,
+      1.0
+    ],
+    "min_bins": 2,
+    "max_bins": 5,
+    "min_background_raw": 25,
+    "min_background_neff": 10.0,
+    "within_fraction": 0.01
+  },
+  "background_normsys": {
+    "name": "gg8b_norm",
+    "lo": 0.9,
+    "hi": 1.1,
+    "enabled": true,
+    "description": "Illustrative correlated normalization uncertainty; not a measured gg->8b theory uncertainty."
+  },
+  "xgboost_params": {
+    "n_estimators": 300,
+    "max_depth": 3,
+    "learning_rate": 0.05,
+    "min_child_weight": 1.0,
+    "subsample": 0.9,
+    "colsample_bytree": 0.9,
+    "gamma": 0.0,
+    "reg_alpha": 0.0,
+    "reg_lambda": 1.0
+  },
+  "samples": [
+    {
+      "name": "sm_hhhh_8b",
+      "label": 1,
+      "root_path": "Signals/events/HW-gg_hhhh_SM-extended-v2_var.smearCMS.root",
+      "summary_path": "Signals/events/HW-gg_hhhh_SM-extended-v2.analysis_summary.json",
+      "cross_section_fb": 0.000124288,
+      "k_factor": 2.0,
+      "rate_factor_kind": "signal_hhhh_8b",
+      "sha256_root": "70688a574bb175e7a4a319209aa13b0335536417ebd8aa53a6ecc60b5fd9c6e1",
+      "sha256_summary": "948f5048afaa2a3d6595b63203c54fb4a84eae0f190acc9490918eebae1f5247"
+    },
+    {
+      "name": "gg8b",
+      "label": 0,
+      "root_path": "Backgrounds/events/HW-gg_to_8b-extended-v2_var.smearCMS.root",
+      "summary_path": "Backgrounds/events/HW-gg_to_8b-extended-v2.analysis_summary.json",
+      "cross_section_fb": 1.03875,
+      "k_factor": 2.0,
+      "rate_factor_kind": "background_8b",
+      "generation_integration_error_fraction": 0.0254,
+      "sha256_root": "b5514870553f792045465d3f893efe48ac9c1752d4f5de5000c416149766bef1",
+      "sha256_summary": "6e60f04e87e9566e2675019e44e76e92906c0b4c4f5e6c9fe4bfb99dbaed7acd"
+    }
+  ]
+}

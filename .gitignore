@@ -28,6 +28,10 @@ Code/FourHiggs8bAnalysis_smear_CMS
 /LTS_MG5aMC_v3.5.15.tgz
 /HerwigForcedSplitting/
 /tmp/
+/.venv-sm-gg8b-tutorial/
+tutorials/sm_gg8b_xgboost_pyhf/tutorial_outputs/
+tutorials/sm_gg8b_xgboost_pyhf/*.executed.ipynb
+tutorials/sm_gg8b_xgboost_pyhf/.ipynb_checkpoints/
 
 # Local OS/editor artifacts
 .DS_Store

@@ -1316,8 +1316,17 @@ def pyhf_combined_limit(
         workspace = pyhf.Workspace(spec)
         model = workspace.model(measurement_name="expected_limit")
         data = workspace.data(model)
-        observed, expected = pyhf.infer.intervals.upper_limits.upper_limit(
-            data, model, level=1.0 - confidence_level
+        # pyhf 0.7.6 does not forward ``level`` from ``upper_limit`` to its
+        # automatic root finder when ``scan=None``. Call the same root finder
+        # directly so non-default confidence levels are honored.
+        poi_scan_bounds = model.config.suggested_bounds()[model.config.poi_index]
+        observed, expected = pyhf.infer.intervals.upper_limits.toms748_scan(
+            data,
+            model,
+            float(poi_scan_bounds[0]),
+            float(poi_scan_bounds[1]),
+            level=1.0 - confidence_level,
+            test_stat="qtilde",
         )
         observed_value = float(np.asarray(observed))
         expected_values = np.asarray(expected, dtype=float).reshape(-1)

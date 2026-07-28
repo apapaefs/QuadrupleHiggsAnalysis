@@ -311,6 +311,27 @@ class PyhfTests(unittest.TestCase):
         self.assertEqual(shape["status"], "ok")
         self.assertLess(shape["expected_median"], one_bin["expected_median"])
 
+    @unittest.skipUnless(importlib.util.find_spec("pyhf"), "pyhf is optional locally")
+    def test_requested_confidence_level_changes_pyhf_limit(self):
+        channel = [{"name": "one", "signal": [1.0], "background": [2.9206089]}]
+        limit_90 = study.pyhf_combined_limit(
+            channel,
+            include_staterror=False,
+            confidence_level=0.90,
+            poi_bounds=(0.0, 20.0),
+            raise_on_failure=True,
+        )
+        limit_95 = study.pyhf_combined_limit(
+            channel,
+            include_staterror=False,
+            confidence_level=0.95,
+            poi_bounds=(0.0, 20.0),
+            raise_on_failure=True,
+        )
+        self.assertEqual(limit_90["confidence_level"], 0.90)
+        self.assertEqual(limit_95["confidence_level"], 0.95)
+        self.assertLess(limit_90["expected_median"], limit_95["expected_median"])
+
 
 class ParameterizedTests(unittest.TestCase):
     def test_parameterized_gate_passes_only_when_all_requirements_hold(self):
