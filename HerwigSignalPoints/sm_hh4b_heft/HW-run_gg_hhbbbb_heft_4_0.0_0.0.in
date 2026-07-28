@@ -22,7 +22,7 @@ set LesHouchesHandler:WeightOption VarNegWeight
 set LesHouchesHandler:CascadeHandler /Herwig/Shower/ShowerHandler
 set LesHouchesHandler:HadronizationHandler /Herwig/Hadronization/ClusterHadHandler
 set LesHouchesHandler:DecayHandler /Herwig/Decays/DecayHandler
-set theLHReader:FileName /home/apapaefs/Projects/QuadrupleHiggsAnalysis/Signals/sm_hh4b_heft/lhe/gg_hh4b_ufo_heft_sm_9514events_normalized.lhe
+set theLHReader:FileName /home/apapaefs/Projects/QuadrupleHiggsAnalysis/Signals/sm_hh4b_heft/lhe/gg_hh4b_ufo_heft_sm_9515events_normalized.lhe
 
 set /Herwig/Shower/ShowerHandler:MaxPtIsMuF Yes
 set /Herwig/Shower/ShowerHandler:RestrictPhasespace Yes
@@ -45,7 +45,7 @@ set theGenerator:RandomNumberGenerator /Herwig/Random
 set theGenerator:StandardModelParameters /Herwig/Model
 set theGenerator:EventHandler /Herwig/EventHandlers/LesHouchesHandler
 set theGenerator:EventHandler:Cuts /Herwig/Cuts/NoCuts
-set theGenerator:NumberOfEvents 9514
+set theGenerator:NumberOfEvents 9515
 set theGenerator:RandomNumberGenerator:Seed 28072026
 set theGenerator:DebugLevel 0
 set theGenerator:PrintEvent 100

@@ -3,11 +3,11 @@
   "cross_section_pb": 9.62241e-06,
   "cross_section_uncertainty_pb": 8.76932e-07,
   "d4": 0.0,
-  "event_count": 9514,
-  "lhe_path": "Signals/sm_hh4b_heft/lhe/gg_hh4b_ufo_heft_sm_9514events_normalized.lhe",
-  "lhe_sha256": "2e0e1807a160e1a372a8c22e012228d204b493c049864c6293f2c8bb4ad711e7",
+  "event_count": 9515,
+  "lhe_path": "Signals/sm_hh4b_heft/lhe/gg_hh4b_ufo_heft_sm_9515events_normalized.lhe",
+  "lhe_sha256": "8705883302f839924a4aedc0c106ebfeef00f4e54304f57699dd7e6ab579b83e",
   "normalization": "sum(XWGTUP) equals cross_section_pb",
   "process": "SM HEFT gg -> hh + b bbar b bbar",
-  "snapshot": "physres2:SherpaColorFlow/runs/gg_hh4b_ufo_integration_14tev/events_20k_1 at 2026-07-28",
+  "snapshot": "physres2:SherpaColorFlow/runs/gg_hh4b_ufo_integration_14tev/events_20k_1 after all shards stopped on 2026-07-28",
   "source_shards": 64
 }

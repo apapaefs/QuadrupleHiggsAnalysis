@@ -535,7 +535,7 @@ class C3D4V2DriverTests(unittest.TestCase):
                 json.dumps(
                     {
                         "cross_section_pb": 9.62241e-06,
-                        "event_count": 9514,
+                        "event_count": 9515,
                     }
                 )
             )
@@ -548,7 +548,7 @@ class C3D4V2DriverTests(unittest.TestCase):
             ](tagged, 10000)
 
             self.assertEqual(source, metadata_file)
-            self.assertEqual(generated, 9514)
+            self.assertEqual(generated, 9515)
             self.assertAlmostEqual(xsec_fb, 0.00962241)
 
     def test_summary_lookup_keeps_extended_tag(self):

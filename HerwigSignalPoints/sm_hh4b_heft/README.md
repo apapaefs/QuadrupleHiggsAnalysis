@@ -1,10 +1,15 @@
 # SM hh+4b HEFT signal
 
 This singleton campaign showers the normalized Sherpa
-`gg -> hh + b bbar b bbar` SM HEFT snapshot. The LHE contains 9,514 complete
-events from 64 still-running shards and has
+`gg -> hh + b bbar b bbar` SM HEFT snapshot. The LHE contains 9,515 complete
+events from 64 closed shards and has
 `sum(XWGTUP) = 9.62241e-06 pb`. Both stable Higgs bosons are forced to
 `h0 -> b,bbar` in Herwig.
+
+The source production requested 20,000 events, but all 64 Sherpa processes
+exited with code 2 after writing valid, closed LHE shards. The recovered 9,515
+events pass the repository mass-shell and color-flow validator; this campaign
+therefore uses that complete recovered set rather than claiming 20,000 events.
 
 Run on Tiresias from the repository root:
 
