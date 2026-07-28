@@ -1,4 +1,5 @@
 import csv
+import importlib.util
 import json
 import math
 import sys
@@ -11,24 +12,30 @@ from pathlib import Path
 REPO_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_DIR))
 sys.path.insert(0, str(REPO_DIR / "Code"))
-sys.modules.setdefault("xgboost", types.SimpleNamespace(XGBClassifier=object))
-sys.modules.setdefault("sklearn", types.ModuleType("sklearn"))
-sys.modules.setdefault(
-    "sklearn.model_selection",
-    types.SimpleNamespace(train_test_split=lambda *args, **kwargs: args),
-)
-sys.modules.setdefault(
-    "sklearn.metrics",
-    types.SimpleNamespace(
-        accuracy_score=lambda *args, **kwargs: 0.0,
-        confusion_matrix=lambda *args, **kwargs: [],
-        RocCurveDisplay=object,
-        roc_auc_score=lambda *args, **kwargs: 0.0,
-        roc_curve=lambda *args, **kwargs: ([], [], []),
-    ),
-)
-sys.modules.setdefault("tqdm", types.ModuleType("tqdm"))
-sys.modules.setdefault("tqdm.auto", types.SimpleNamespace(tqdm=lambda iterable=None, *args, **kwargs: iterable))
+if importlib.util.find_spec("xgboost") is None:
+    sys.modules.setdefault("xgboost", types.SimpleNamespace(XGBClassifier=object))
+if importlib.util.find_spec("sklearn") is None:
+    sys.modules.setdefault("sklearn", types.ModuleType("sklearn"))
+    sys.modules.setdefault(
+        "sklearn.model_selection",
+        types.SimpleNamespace(train_test_split=lambda *args, **kwargs: args),
+    )
+    sys.modules.setdefault(
+        "sklearn.metrics",
+        types.SimpleNamespace(
+            accuracy_score=lambda *args, **kwargs: 0.0,
+            confusion_matrix=lambda *args, **kwargs: [],
+            RocCurveDisplay=object,
+            roc_auc_score=lambda *args, **kwargs: 0.0,
+            roc_curve=lambda *args, **kwargs: ([], [], []),
+        ),
+    )
+if importlib.util.find_spec("tqdm") is None:
+    sys.modules.setdefault("tqdm", types.ModuleType("tqdm"))
+    sys.modules.setdefault(
+        "tqdm.auto",
+        types.SimpleNamespace(tqdm=lambda iterable=None, *args, **kwargs: iterable),
+    )
 
 from ForcedSplitting.hhhbb_campaign import HHHBBCampaignConfig, monitor_mg5_grid, run_hhhbb_campaign  # noqa: E402
 from ForcedSplitting.lhe_merge import merge_weighted_lhe_chunks  # noqa: E402

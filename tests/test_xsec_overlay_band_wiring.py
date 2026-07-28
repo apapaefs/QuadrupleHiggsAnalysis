@@ -87,8 +87,8 @@ class HHHHXsecOverlayBandWiringTests(unittest.TestCase):
         self.assertIn("plot_d4_range=(-300.0, 300.0)", module_text)
         self.assertIn('default=-20.0, help="Minimum c3', (REPO_DIR / "4h_analyzer.py").read_text())
         self.assertIn('default=20.0, help="Maximum c3', (REPO_DIR / "4h_analyzer.py").read_text())
-        self.assertIn('default=-300.0, help="Minimum d4', (REPO_DIR / "4h_analyzer.py").read_text())
-        self.assertIn('default=300.0, help="Maximum d4', (REPO_DIR / "4h_analyzer.py").read_text())
+        self.assertIn('default=-500.0, help="Minimum d4', (REPO_DIR / "4h_analyzer.py").read_text())
+        self.assertIn('default=500.0, help="Maximum d4', (REPO_DIR / "4h_analyzer.py").read_text())
 
     def test_hhhh_xsec_overlay_writes_atlas_variant_without_ratio_contours(self):
         module_text = MODULE_PATH.read_text()

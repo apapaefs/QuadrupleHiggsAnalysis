@@ -226,13 +226,21 @@ split and nonconstant training scores; zero-split Optuna trials are pruned.
 Within every source, valid original event indices are sorted, shuffled with a
 SHA-256-derived seed based on the canonical source ID and 12345, and assigned
 round-robin to five folds.  For rotation \(f\), fold \(f\) is the test set,
-fold \((f+1)\bmod5\) is the validation set, and the remaining three folds are
-used for training.  Every event is therefore scored once by a model that saw
-it in neither training nor validation.  Test-fold weights are never rescaled;
-the union of the five test partitions is already the full physical yield.
-Validation weights are multiplied by the predeclared factor of five, since
-each validation fold is a deterministic one-in-five subsample.  This estimate
-uses no test-fold event or weight while choosing thresholds or hyperparameters.
+fold \((f+1)\bmod5\) is the inner validation set, and the remaining three folds
+are used for training.  Fold \(f\) is the outer test set for that rotation.
+Every event is therefore scored once by a model that saw it in neither
+training nor validation, and the selection applied to the event uses only the
+paired inner validation fold.  Test-fold weights are never rescaled; the union
+of the five outer test partitions is already the full physical yield.
+Validation weights are multiplied by the predeclared factor of five when a
+single inner fold is used to project rates to the complete sample.  This
+estimate uses no event or weight from its paired outer test fold.
+
+An event may occur in the training or inner validation partition of a
+different rotation.  This is the standard nested-cross-fit reuse: the five
+development procedures are correlated, but every event's own outer-test score
+and selection are constructed without that event.  Only the five disjoint
+outer test partitions enter the final templates.
 
 The fixed current XGBoost configuration is first run for `corrected28`,
 `core52` and `full91` on identical folds.  One global profile is selected from
@@ -290,20 +298,27 @@ difference is reported explicitly and is not called an ML improvement.
 
 ## Score-shape likelihood
 
-For each held-out channel, candidate score edges start from validation
-background quantiles \([0,0.50,0.75,0.90,0.97,1]\).  All subsets giving two
-to five bins are considered, with positive signed background, at least 25 raw
-entries and at least 10 effective entries required in every validation bin.
-The validation pyhf limit including the signal and background MC-statistical
-`staterror` terms selects the shape; the explicit raw/effective-entry
-requirements provide an additional guard against poorly populated bins.
-Candidates within 1% prefer fewer bins.
+For each outer test channel, candidate score edges start from the paired inner
+validation fold's background quantiles
+\([0,0.50,0.75,0.90,0.97,1]\).  All subsets giving two to five bins are
+considered independently in each rotation, with positive signed background,
+at least 25 raw entries and at least 10 effective entries required in every
+validation bin.  The single-channel validation weights are multiplied by five
+to project their yields to the complete sample; their `staterror` terms are
+scaled consistently and therefore retain the relative MC precision of the
+one-fold validation estimate.  The validation pyhf limit including the signal
+and background MC-statistical terms selects the shape.  Candidates within 1%
+prefer fewer bins.
 
-The fold-specific numerical edges are frozen and applied to the corresponding
-test fold.  If a signed test signal or background bin is non-positive, the
-next coarser validation-valid candidate is used.  Negative yields are never clipped.  Each
-signal template is normalized to a production cross section of 1 fb, so the
-shared pyhf POI is directly \(\sigma\) in fb.
+There is no common bin-count or edge-structure decision across validation
+folds.  The fold-specific numerical edges and bin count are frozen and applied
+only to the corresponding outer test fold.  If a signed test signal or
+background bin is non-positive, the next coarser candidate from that fold's
+validation-defined hierarchy is used.  Negative yields are never clipped.
+Thus an event never influences the binning used for its own channel, although
+the development samples of different rotations overlap.  Each signal template
+is normalized to a production cross section of 1 fb, so the shared pyhf POI is
+directly \(\sigma\) in fb.
 
 The output contains:
 

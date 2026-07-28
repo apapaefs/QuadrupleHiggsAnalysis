@@ -1946,6 +1946,46 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
         with self.assertRaises(ValueError):
             runner._partition_scale(1)
 
+    def test_inner_validation_projection_is_explicit_and_preserves_relative_mc_stat(self):
+        point = sample("p0", "grid_signal", [1] * 5, [1] * 5, 0, 0)
+        record = {
+            "validation": {
+                "signal_rows": {
+                    point.sample_id: {
+                        "scores": np.asarray([0.2, 0.8]),
+                        "unit_xsec_weights": np.asarray([5.0, 10.0]),
+                        "scale": 5.0,
+                    }
+                },
+                "background_rows": {
+                    "background": {
+                        "scores": np.asarray([0.2, 0.8]),
+                        "physical_weights": np.asarray([15.0, 20.0]),
+                        "scale": 5.0,
+                    }
+                },
+            }
+        }
+        unscaled = runner._validation_fold_arrays(record, point)
+        projected = runner._validation_fold_arrays(
+            record,
+            point,
+            scale_to_full=True,
+            n_folds=5,
+        )
+
+        np.testing.assert_allclose(
+            projected["signal_weights"], 5.0 * unscaled["signal_weights"]
+        )
+        np.testing.assert_allclose(
+            projected["background_weights"], 5.0 * unscaled["background_weights"]
+        )
+        self.assertAlmostEqual(
+            np.sum(np.square(projected["background_weights"]))
+            / np.sum(np.square(unscaled["background_weights"])),
+            25.0,
+        )
+
     def test_optuna_fingerprint_binds_schema_and_inputs(self):
         common = {
             "profile": "corrected28",
@@ -2070,16 +2110,25 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
             )
         fine = {
             "n_bins": 2,
-            "fold_edges": [[0.0, 0.5, 1.0] for _ in range(5)],
+            "edges": [0.0, 0.5, 1.0],
         }
         coarse = {
             "n_bins": 1,
-            "fold_edges": [[0.0, 1.0] for _ in range(5)],
+            "edges": [0.0, 1.0],
         }
         selection = {
             "status": "ok",
-            "selected": fine,
-            "fallback_hierarchy": [fine, coarse],
+            "selection_scope": "nested_per_rotation",
+            "per_fold": [
+                {
+                    "status": "ok",
+                    "rotation": rotation,
+                    "test_fold": rotation,
+                    "validation_fold": (rotation + 1) % 5,
+                    "fallback_hierarchy": [fine, coarse],
+                }
+                for rotation in range(5)
+            ],
         }
         successful_fit = {"status": "ok", "expected_median": 4.0}
         with mock.patch.object(
@@ -2095,7 +2144,85 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
         self.assertEqual(result["status"], "ok")
         self.assertTrue(result["used_fallback"])
         self.assertEqual(result["bin_count"], 1)
-        self.assertFalse(result["test_binning_attempts"][0]["positive_test_signal"])
+        self.assertEqual(result["fold_bin_counts"], [1, 1, 1, 1, 1])
+        self.assertFalse(
+            result["test_binning_attempts"][0]["attempts"][0][
+                "positive_test_signal"
+            ]
+        )
+
+    def test_nested_shape_likelihood_accepts_fold_local_bin_counts(self):
+        point = sample("p0", "grid_signal", [1] * 5, [1] * 5, 0, 0)
+        records = populated_shape_records([point])
+        fine = {"n_bins": 2, "edges": [0.0, 0.5, 1.0]}
+        coarse = {"n_bins": 1, "edges": [0.0, 1.0]}
+        selected = [fine, coarse, fine, coarse, fine]
+        selection = {
+            "status": "ok",
+            "selection_scope": "nested_per_rotation",
+            "per_fold": [
+                {
+                    "status": "ok",
+                    "rotation": rotation,
+                    "test_fold": rotation,
+                    "validation_fold": (rotation + 1) % 5,
+                    "fallback_hierarchy": [candidate],
+                }
+                for rotation, candidate in enumerate(selected)
+            ],
+        }
+        successful_fit = {"status": "ok", "expected_median": 4.0}
+        with mock.patch.object(
+            runner, "_candidate_maps_for_validation", return_value=([], [])
+        ), mock.patch.object(
+            runner, "_select_shape_candidate", return_value=selection
+        ), mock.patch.object(
+            runner, "pyhf_one_bin_limit", return_value=successful_fit
+        ), mock.patch.object(
+            runner, "pyhf_combined_limit", return_value=successful_fit
+        ):
+            result = runner._shape_results([point], records)[0]
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["fold_bin_counts"], [2, 1, 2, 1, 2])
+        self.assertAlmostEqual(result["bin_count"], 1.6)
+        self.assertEqual(
+            [len(edges) - 1 for edges in result["fold_bin_edges"]],
+            result["fold_bin_counts"],
+        )
+
+    def test_shape_selection_uses_one_inner_validation_channel_at_a_time(self):
+        point = sample("p0", "grid_signal", [1] * 5, [1] * 5, 0, 0)
+        records = populated_shape_records([point])
+        candidate_maps, candidate_keys = runner._candidate_maps_for_validation(
+            records, point
+        )
+        successful_fit = {"status": "ok", "expected_median": 4.0}
+        with mock.patch.object(
+            runner, "pyhf_combined_limit", return_value=successful_fit
+        ) as combined_limit:
+            selection = runner._select_shape_candidate(
+                records,
+                point,
+                candidate_maps,
+                candidate_keys,
+            )
+
+        self.assertEqual(selection["status"], "ok")
+        self.assertEqual(selection["selection_scope"], "nested_per_rotation")
+        self.assertFalse(selection["self_evaluation_reuse"])
+        self.assertEqual(len(selection["per_fold"]), 5)
+        for rotation, fold_selection in enumerate(selection["per_fold"]):
+            self.assertEqual(fold_selection["selection_scope"], "single_inner_validation_fold")
+            self.assertEqual(fold_selection["test_fold"], rotation)
+            self.assertEqual(fold_selection["validation_fold"], (rotation + 1) % 5)
+            self.assertNotEqual(
+                fold_selection["test_fold"], fold_selection["validation_fold"]
+            )
+        self.assertGreater(combined_limit.call_count, 0)
+        self.assertTrue(
+            all(len(call.args[0]) == 1 for call in combined_limit.call_args_list)
+        )
 
     def test_invalid_validation_signal_is_terminal_and_checkpoint_reusable(self):
         point = sample("p0", "grid_signal", [1] * 5, [1] * 5, 0, 0)

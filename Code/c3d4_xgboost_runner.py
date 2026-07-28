@@ -69,12 +69,12 @@ from sample_report import (
 )
 
 
-METHOD_VERSION = "resolved-8b-c3d4-xgboost-v2.3"
+METHOD_VERSION = "resolved-8b-c3d4-xgboost-v2.4"
 CLASSIFIER_WEIGHT_SCALE_VERSION = "equal-class-mean-effective-row-weight-1-v1"
 BASE_SEED = 12345
 DEFAULT_PROFILES = ("corrected28", "core52", "full91")
-SHAPE_CHECKPOINT_VERSION = 1
-SHAPE_ORCHESTRATION_VERSION = "parallel-checkpoint-v1"
+SHAPE_CHECKPOINT_VERSION = 2
+SHAPE_ORCHESTRATION_VERSION = "nested-per-rotation-binning-v2"
 LEGACY_CONTOUR_STYLE_VERSION = "legacy-c3d4-overlay-v1"
 DEFAULT_CONTOUR_C3_RANGE = (-20.0, 20.0)
 DEFAULT_CONTOUR_D4_RANGE = (-500.0, 500.0)
@@ -3153,7 +3153,7 @@ def _write_standard_maps(
         ("xgboost_efficiency", "Cross-fitted XGBoost efficiency", False),
         ("threshold_mean", "Mean validation-selected threshold", False),
         ("cut_sigma95_fb", "Exact single-bin expected cross-section limit", True),
-        ("bin_count", "Validation-selected score-bin count", False),
+        ("bin_count", "Mean per-fold validation-selected score-bin count", False),
         ("pyhf_one_bin_sigma95_fb", "pyhf asymptotic one-bin control", True),
         ("shape_sigma95_fb", "pyhf score-shape limit with MC statistics", True),
         ("shape_ratio_to_pyhf_one_bin", "Shape / pyhf one-bin limit ratio", False),
@@ -3411,7 +3411,19 @@ def _shape_model_for_record(record: Mapping[str, Any]) -> Any:
 def _validation_fold_arrays(
     record: Mapping[str, Any],
     sample: EventSample | ShapePoint,
+    *,
+    scale_to_full: bool = False,
+    n_folds: int | None = None,
 ) -> dict[str, np.ndarray]:
+    """Return one rotation's validation scores and physical template weights.
+
+    Validation rows are stored with a predeclared scale, which is removed
+    first.  The unscaled view is used when the five validation folds are
+    aggregated as one complete cross-fit diagnostic.  The full-sample view
+    then multiplies the unbiased one-fold estimate by ``n_folds`` and is used
+    only for the inner, per-rotation binning decision.
+    """
+
     validation = record["validation"]
     signal = validation["signal_rows"][sample.sample_id]
     if validation.get("parameterized"):
@@ -3434,15 +3446,26 @@ def _validation_fold_arrays(
         background_rows = validation["background_rows"]
     background_scores = []
     background_weights = []
+    if scale_to_full:
+        if n_folds is None:
+            n_folds = int(record.get("_n_folds", round(float(signal["scale"]))))
+        if int(n_folds) < 2:
+            raise ValueError("full-sample validation projection requires at least two folds")
+        projection_scale = float(n_folds)
+    else:
+        projection_scale = 1.0
     for row in background_rows.values():
         background_scores.append(np.asarray(row["scores"], dtype=float))
         background_weights.append(
-            np.asarray(row["physical_weights"], dtype=float) / float(row["scale"])
+            np.asarray(row["physical_weights"], dtype=float)
+            / float(row["scale"])
+            * projection_scale
         )
     return {
         "signal_scores": np.asarray(signal["scores"], dtype=float),
         "signal_weights": np.asarray(signal["unit_xsec_weights"], dtype=float)
-        / float(signal["scale"]),
+        / float(signal["scale"])
+        * projection_scale,
         "background_scores": np.concatenate(background_scores),
         "background_weights": np.concatenate(background_weights),
     }
@@ -3558,9 +3581,14 @@ def _compact_shape_records(
 def _candidate_maps_for_validation(
     records: Sequence[Mapping[str, Any]],
     sample: EventSample | ShapePoint,
-) -> tuple[list[dict[tuple[int, ...], Mapping[str, Any]]], list[tuple[int, ...]]]:
-    maps = []
-    common: set[tuple[int, ...]] | None = None
+) -> tuple[
+    list[dict[tuple[int, ...], Mapping[str, Any]]],
+    list[list[tuple[int, ...]]],
+]:
+    """Enumerate candidate quantile structures independently in every rotation."""
+
+    maps: list[dict[tuple[int, ...], Mapping[str, Any]]] = []
+    ordered_keys: list[list[tuple[int, ...]]] = []
     # The background score distribution alone defines the quantile edges.
     for record in records:
         arrays = _validation_fold_arrays(record, sample)
@@ -3575,10 +3603,8 @@ def _candidate_maps_for_validation(
             for candidate in candidates
         }
         maps.append(mapping)
-        keys = set(mapping)
-        common = keys if common is None else common.intersection(keys)
-    ordered = sorted(common or set(), key=lambda key: (len(key), key))
-    return maps, ordered
+        ordered_keys.append(sorted(mapping, key=lambda key: (len(key), key)))
+    return maps, ordered_keys
 
 
 def _valid_background_channel(channel: Mapping[str, Any]) -> bool:
@@ -3613,54 +3639,53 @@ def _poi_bounds_for_channels(channels: Sequence[Mapping[str, Any]]) -> tuple[flo
     return (0.0, max(100.0, 100.0 * estimate))
 
 
-def _select_shape_candidate(
-    records: Sequence[Mapping[str, Any]],
+def _select_shape_candidate_for_rotation(
+    record: Mapping[str, Any],
     sample: EventSample | ShapePoint,
-    candidate_maps: Sequence[Mapping[tuple[int, ...], Mapping[str, Any]]],
-    common_candidates: Sequence[tuple[int, ...]],
+    candidate_map: Mapping[tuple[int, ...], Mapping[str, Any]],
+    candidate_keys: Sequence[tuple[int, ...]],
+    *,
+    rotation: int,
+    n_folds: int,
 ) -> dict[str, Any]:
+    """Choose one channel's binning without consulting any outer-test event."""
+
+    arrays = _validation_fold_arrays(
+        record,
+        sample,
+        scale_to_full=True,
+        n_folds=n_folds,
+    )
     evaluated = []
-    for key in common_candidates:
+    for key in candidate_keys:
         if len(key) - 1 < 2:
             continue
-        channels = []
-        fold_edges = []
-        valid_background = True
-        valid_signal = True
-        for rotation, (record, mapping) in enumerate(zip(records, candidate_maps)):
-            arrays = _validation_fold_arrays(record, sample)
-            edges = mapping[key]["edges"]
-            channel = build_pyhf_channel(
-                f"validation_fold{rotation}",
-                arrays["signal_scores"],
-                arrays["signal_weights"],
-                arrays["background_scores"],
-                arrays["background_weights"],
-                edges,
-            )
-            if not _valid_background_channel(channel):
-                valid_background = False
-                break
-            if not _valid_signal_channel(channel):
-                valid_signal = False
-                break
-            channels.append(channel)
-            fold_edges.append(list(map(float, edges)))
+        edges = candidate_map[key]["edges"]
+        channel = build_pyhf_channel(
+            f"validation_fold{(rotation + 1) % n_folds}_for_test_fold{rotation}",
+            arrays["signal_scores"],
+            arrays["signal_weights"],
+            arrays["background_scores"],
+            arrays["background_weights"],
+            edges,
+        )
+        valid_background = _valid_background_channel(channel)
+        valid_signal = _valid_signal_channel(channel)
         if not valid_background:
             fit = {"status": "invalid_background", "expected_median": None}
         elif not valid_signal:
             fit = {"status": "invalid_signal", "expected_median": None}
         else:
             fit = pyhf_combined_limit(
-                channels,
+                [channel],
                 include_staterror=True,
-                poi_bounds=_poi_bounds_for_channels(channels),
+                poi_bounds=_poi_bounds_for_channels([channel]),
             )
         evaluated.append(
             {
                 "base_edge_indices": list(key),
                 "n_bins": len(key) - 1,
-                "fold_edges": fold_edges,
+                "edges": list(map(float, edges)),
                 "valid": bool(
                     valid_background
                     and valid_signal
@@ -3688,7 +3713,10 @@ def _select_shape_candidate(
         if numerical_failures:
             return {
                 "status": "pyhf_failed",
-                "error": "one or more validation-binning pyhf fits failed numerically",
+                "rotation": int(rotation),
+                "test_fold": int(rotation),
+                "validation_fold": int((rotation + 1) % n_folds),
+                "error": "one or more inner-validation binning fits failed numerically",
                 "failed_candidates": numerical_failures,
                 "candidates": evaluated,
             }
@@ -3698,16 +3726,24 @@ def _select_shape_candidate(
         if invalid_signal:
             return {
                 "status": "invalid_signal",
+                "rotation": int(rotation),
+                "test_fold": int(rotation),
+                "validation_fold": int((rotation + 1) % n_folds),
                 "error": (
-                    "no 2--5-bin candidate has non-negative validation signal "
-                    "templates with positive sensitivity in every fold"
+                    "no 2--5-bin candidate has a non-negative inner-validation "
+                    "signal template with positive sensitivity"
                 ),
                 "invalid_signal_candidates": invalid_signal,
                 "candidates": evaluated,
             }
         return {
             "status": "failed",
-            "error": "no 2--5-bin candidate satisfies every validation-fold MC constraint",
+            "rotation": int(rotation),
+            "test_fold": int(rotation),
+            "validation_fold": int((rotation + 1) % n_folds),
+            "error": (
+                "no 2--5-bin candidate satisfies the inner-validation MC constraints"
+            ),
             "candidates": evaluated,
         }
     minimum = min(float(row["expected_limit_fb"]) for row in valid)
@@ -3743,31 +3779,25 @@ def _select_shape_candidate(
         )
         fallback.append(chosen)
         current_indices = set(chosen["base_edge_indices"])
-    one_bin_keys = [key for key in common_candidates if len(key) - 1 == 1]
+    one_bin_keys = [key for key in candidate_keys if len(key) - 1 == 1]
     if one_bin_keys:
         nested_one_bin_keys = [key for key in one_bin_keys if set(key).issubset(current_indices)]
         key = (nested_one_bin_keys or one_bin_keys)[0]
-        fold_edges = []
-        valid_one_bin = True
-        for rotation, (record, mapping) in enumerate(zip(records, candidate_maps)):
-            arrays = _validation_fold_arrays(record, sample)
-            edges = mapping[key]["edges"]
-            channel = build_pyhf_channel(
-                f"validation_fold{rotation}_onebin",
-                arrays["signal_scores"],
-                arrays["signal_weights"],
-                arrays["background_scores"],
-                arrays["background_weights"],
-                edges,
-            )
-            valid_one_bin = valid_one_bin and _valid_background_channel(channel)
-            fold_edges.append(list(map(float, edges)))
-        if valid_one_bin:
+        edges = candidate_map[key]["edges"]
+        channel = build_pyhf_channel(
+            f"validation_fold{(rotation + 1) % n_folds}_onebin_for_test_fold{rotation}",
+            arrays["signal_scores"],
+            arrays["signal_weights"],
+            arrays["background_scores"],
+            arrays["background_weights"],
+            edges,
+        )
+        if _valid_background_channel(channel) and _valid_signal_channel(channel):
             fallback.append(
                 {
                     "base_edge_indices": list(key),
                     "n_bins": 1,
-                    "fold_edges": fold_edges,
+                    "edges": list(map(float, edges)),
                     "valid": True,
                     "expected_limit_fb": None,
                     "fit_status": "fallback_only",
@@ -3776,10 +3806,84 @@ def _select_shape_candidate(
             )
     return {
         "status": "ok",
+        "rotation": int(rotation),
+        "test_fold": int(rotation),
+        "validation_fold": int((rotation + 1) % n_folds),
+        "selection_scope": "single_inner_validation_fold",
+        "validation_weight_scale": float(n_folds),
         "selected": selected,
         "minimum_expected_limit_fb": minimum,
         "fallback_hierarchy": fallback,
         "candidates": evaluated,
+    }
+
+
+def _select_shape_candidate(
+    records: Sequence[Mapping[str, Any]],
+    sample: EventSample | ShapePoint,
+    candidate_maps: Sequence[Mapping[tuple[int, ...], Mapping[str, Any]]],
+    candidate_keys_by_rotation: Sequence[Sequence[tuple[int, ...]]],
+) -> dict[str, Any]:
+    """Select fold-local binnings in a nested five-fold cross-fit.
+
+    A global validation choice would indirectly let every event help choose the
+    binning later applied when that event appears in its outer test fold.  Here
+    rotation ``f`` uses only validation fold ``(f+1) mod K`` to choose the
+    numerical edges and bin count for test fold ``f``.  The final likelihood
+    may therefore combine heterogeneous channels, but every event's own
+    channel remains untouched by that event during training and selection.
+    """
+
+    if not (
+        len(records) == len(candidate_maps) == len(candidate_keys_by_rotation)
+    ):
+        raise ValueError(
+            "shape records and per-rotation validation candidates must align"
+        )
+    n_folds = len(records)
+    rotations = [
+        int(record.get("rotation", position))
+        for position, record in enumerate(records)
+    ]
+    if rotations != list(range(n_folds)):
+        raise ValueError(
+            "shape records must be ordered by unique rotations 0 through n_folds-1"
+        )
+    selections = [
+        _select_shape_candidate_for_rotation(
+            record,
+            sample,
+            candidate_map,
+            candidate_keys,
+            rotation=rotation,
+            n_folds=n_folds,
+        )
+        for rotation, record, candidate_map, candidate_keys in zip(
+            rotations,
+            records,
+            candidate_maps,
+            candidate_keys_by_rotation,
+        )
+    ]
+    statuses = [str(selection.get("status")) for selection in selections]
+    if all(status == "ok" for status in statuses):
+        status = "ok"
+        error = None
+    elif "pyhf_failed" in statuses:
+        status = "pyhf_failed"
+        error = "one or more inner-validation shape fits failed numerically"
+    elif "invalid_signal" in statuses:
+        status = "invalid_signal"
+        error = "one or more inner-validation folds has no admissible signal shape"
+    else:
+        status = "failed"
+        error = "one or more inner-validation folds has no admissible score shape"
+    return {
+        "status": status,
+        "error": error,
+        "selection_scope": "nested_per_rotation",
+        "self_evaluation_reuse": False,
+        "per_fold": selections,
     }
 
 
@@ -3818,21 +3922,24 @@ def _evaluate_shape_point(
     records: Sequence[Mapping[str, Any]],
     *,
     shared_candidates: tuple[
-        list[dict[tuple[int, ...], Mapping[str, Any]]], list[tuple[int, ...]]
+        list[dict[tuple[int, ...], Mapping[str, Any]]],
+        list[list[tuple[int, ...]]],
     ]
     | None,
 ) -> dict[str, Any]:
-    """Evaluate the unchanged pyhf prescription for exactly one grid point."""
+    """Evaluate the nested-cross-fit pyhf prescription for one grid point."""
 
     parameterized = any(record["validation"].get("parameterized") for record in records)
     _clear_parameter_caches(records)
     try:
         if parameterized:
-            candidate_maps, common_candidates = _candidate_maps_for_validation(records, sample)
+            candidate_maps, candidate_keys_by_rotation = (
+                _candidate_maps_for_validation(records, sample)
+            )
         else:
             if shared_candidates is None:
                 raise RuntimeError("Non-parameterized shape evaluation lacks shared candidates")
-            candidate_maps, common_candidates = shared_candidates
+            candidate_maps, candidate_keys_by_rotation = shared_candidates
         test_arrays = [_test_fold_arrays(record, sample) for record in records]
         one_bin_signal = [float(np.sum(arrays["signal_weights"])) for arrays in test_arrays]
         one_bin_background = [
@@ -3887,7 +3994,7 @@ def _evaluate_shape_point(
             records,
             sample,
             candidate_maps,
-            common_candidates,
+            candidate_keys_by_rotation,
         )
         base = {
             "point_id": sample.point_id,
@@ -3929,16 +4036,21 @@ def _evaluate_shape_point(
             # not support a statistically admissible score shape.
             return {**base, "terminal_reason": "invalid_binning"}
 
-        chosen_channels = None
-        chosen = None
+        chosen_channels = []
+        chosen_candidates = []
         attempts = []
-        for fallback_level, candidate in enumerate(selection["fallback_hierarchy"]):
-            channels = []
-            positive_background = True
-            positive_signal = True
-            for rotation, record in enumerate(records):
-                arrays = _test_fold_arrays(record, sample)
-                edges = candidate["fold_edges"][rotation]
+        for rotation, (record, fold_selection) in enumerate(
+            zip(records, selection["per_fold"])
+        ):
+            arrays = _test_fold_arrays(record, sample)
+            fold_attempts = []
+            chosen_channel = None
+            chosen_candidate = None
+            chosen_level = None
+            for fallback_level, candidate in enumerate(
+                fold_selection["fallback_hierarchy"]
+            ):
+                edges = candidate["edges"]
                 channel = build_pyhf_channel(
                     f"test_fold{rotation}",
                     arrays["signal_scores"],
@@ -3947,30 +4059,46 @@ def _evaluate_shape_point(
                     arrays["background_weights"],
                     edges,
                 )
-                if np.any(np.asarray(channel["background"], dtype=float) <= 0.0):
-                    positive_background = False
-                if np.any(np.asarray(channel["signal"], dtype=float) <= 0.0):
-                    positive_signal = False
-                channels.append(channel)
+                positive_background = bool(
+                    np.all(np.asarray(channel["background"], dtype=float) > 0.0)
+                )
+                positive_signal = bool(
+                    np.all(np.asarray(channel["signal"], dtype=float) > 0.0)
+                )
+                fold_attempts.append(
+                    {
+                        "fallback_level": int(fallback_level),
+                        "n_bins": int(candidate["n_bins"]),
+                        "edges": list(map(float, edges)),
+                        "positive_test_background": positive_background,
+                        "positive_test_signal": positive_signal,
+                    }
+                )
+                if positive_background and positive_signal:
+                    chosen_channel = channel
+                    chosen_candidate = candidate
+                    chosen_level = fallback_level
+                    break
             attempts.append(
                 {
-                    "fallback_level": fallback_level,
-                    "n_bins": candidate["n_bins"],
-                    "positive_test_background": positive_background,
-                    "positive_test_signal": positive_signal,
+                    "rotation": int(rotation),
+                    "test_fold": int(rotation),
+                    "validation_fold": int((rotation + 1) % len(records)),
+                    "attempts": fold_attempts,
+                    "chosen_fallback_level": (
+                        None if chosen_level is None else int(chosen_level)
+                    ),
                 }
             )
-            if positive_background and positive_signal:
-                chosen_channels = channels
-                chosen = candidate
-                break
-        if chosen_channels is None:
-            return {
-                **base,
-                "status": "failed_nonpositive_test_bin",
-                "terminal_reason": "nonpositive_test_bin",
-                "test_binning_attempts": attempts,
-            }
+            if chosen_channel is None or chosen_candidate is None:
+                return {
+                    **base,
+                    "status": "failed_nonpositive_test_bin",
+                    "terminal_reason": "nonpositive_test_bin",
+                    "test_binning_attempts": attempts,
+                }
+            chosen_channels.append(chosen_channel)
+            chosen_candidates.append(chosen_candidate)
 
         poi_bounds = _poi_bounds_for_channels(chosen_channels)
         shape_no_stat = pyhf_combined_limit(
@@ -3991,6 +4119,12 @@ def _evaluate_shape_point(
             include_staterror=True,
             poi_bounds=_poi_bounds_for_channels(channels_up),
         )
+        fold_bin_counts = [
+            int(candidate["n_bins"]) for candidate in chosen_candidates
+        ]
+        fold_fallback_levels = [
+            int(attempt["chosen_fallback_level"]) for attempt in attempts
+        ]
         return {
             **base,
             "status": (
@@ -4007,10 +4141,15 @@ def _evaluate_shape_point(
                 )
                 else "pyhf_failed"
             ),
-            "bin_count": int(chosen["n_bins"]),
-            "used_fallback": bool(attempts[-1]["fallback_level"] > 0),
-            "fallback_level": int(attempts[-1]["fallback_level"]),
-            "fold_bin_edges": chosen["fold_edges"],
+            "bin_count": float(np.mean(fold_bin_counts)),
+            "fold_bin_counts": fold_bin_counts,
+            "used_fallback": bool(any(level > 0 for level in fold_fallback_levels)),
+            "fallback_level": int(max(fold_fallback_levels)),
+            "fold_fallback_levels": fold_fallback_levels,
+            "fold_bin_edges": [
+                list(map(float, candidate["edges"]))
+                for candidate in chosen_candidates
+            ],
             "test_binning_attempts": attempts,
             "pyhf_one_bin_control": one_bin,
             "pyhf_shape_no_mcstat": shape_no_stat,
@@ -4183,6 +4322,10 @@ def _shape_fingerprint(
         "shape_algorithm": {
             "backend": "pyhf-asymptotic-numpy",
             "confidence_level": 0.95,
+            "binning_selection": "nested-per-rotation-inner-validation",
+            "selection_scope": "one validation fold for its paired outer test fold",
+            "validation_rate_scale": int(n_folds),
+            "global_validation_likelihood": False,
             "score_quantiles": [0.0, 0.50, 0.75, 0.90, 0.97, 1.0],
             "min_bins": 1,
             "max_bins": 5,
@@ -4949,6 +5092,10 @@ def _run_c3d4_study_impl(
         "requested_training_strategy": requested_mode_inputs["training_strategy"],
         "cv_folds": cv_folds,
         "fold_rule": "test=f, validation=(f+1)%5, train=remaining three",
+        "shape_binning_rule": (
+            "nested per rotation: validation=(f+1)%5 alone selects the binning "
+            "for test=f; no joint choice across validation folds"
+        ),
         "seed": int(seed),
         "luminosity_fb_inverse": float(luminosity),
         "normalization_inputs": normalization_inputs,

@@ -1,5 +1,6 @@
 import csv
 import importlib
+import importlib.util
 import math
 import sys
 import tempfile
@@ -11,24 +12,30 @@ from pathlib import Path
 REPO_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_DIR))
 sys.path.insert(0, str(REPO_DIR / "Code"))
-sys.modules.setdefault("xgboost", types.SimpleNamespace(XGBClassifier=object))
-sys.modules.setdefault("sklearn", types.ModuleType("sklearn"))
-sys.modules.setdefault(
-    "sklearn.model_selection",
-    types.SimpleNamespace(train_test_split=lambda *args, **kwargs: args),
-)
-sys.modules.setdefault(
-    "sklearn.metrics",
-    types.SimpleNamespace(
-        accuracy_score=lambda *args, **kwargs: 0.0,
-        confusion_matrix=lambda *args, **kwargs: [],
-        RocCurveDisplay=object,
-        roc_auc_score=lambda *args, **kwargs: 0.0,
-        roc_curve=lambda *args, **kwargs: ([], [], []),
-    ),
-)
-sys.modules.setdefault("tqdm", types.ModuleType("tqdm"))
-sys.modules.setdefault("tqdm.auto", types.SimpleNamespace(tqdm=lambda iterable=None, *args, **kwargs: iterable))
+if importlib.util.find_spec("xgboost") is None:
+    sys.modules.setdefault("xgboost", types.SimpleNamespace(XGBClassifier=object))
+if importlib.util.find_spec("sklearn") is None:
+    sys.modules.setdefault("sklearn", types.ModuleType("sklearn"))
+    sys.modules.setdefault(
+        "sklearn.model_selection",
+        types.SimpleNamespace(train_test_split=lambda *args, **kwargs: args),
+    )
+    sys.modules.setdefault(
+        "sklearn.metrics",
+        types.SimpleNamespace(
+            accuracy_score=lambda *args, **kwargs: 0.0,
+            confusion_matrix=lambda *args, **kwargs: [],
+            RocCurveDisplay=object,
+            roc_auc_score=lambda *args, **kwargs: 0.0,
+            roc_curve=lambda *args, **kwargs: ([], [], []),
+        ),
+    )
+if importlib.util.find_spec("tqdm") is None:
+    sys.modules.setdefault("tqdm", types.ModuleType("tqdm"))
+    sys.modules.setdefault(
+        "tqdm.auto",
+        types.SimpleNamespace(tqdm=lambda iterable=None, *args, **kwargs: iterable),
+    )
 
 from xgboost_root_varfiles_module import _point_metadata_from_path, combine_signal_component_rows  # noqa: E402
 
