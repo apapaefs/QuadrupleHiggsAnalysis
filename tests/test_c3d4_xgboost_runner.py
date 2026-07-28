@@ -2473,6 +2473,43 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
         self.assertFalse(result["cross_section_fit_applied"])
         self.assertNotIn("cut_sigma95_fb", result)
 
+    def test_sm_hh4b_terminal_result_prints_complete_standalone_summary(self):
+        row = {
+            "classifier_strategy": "sm-crossfit-v2",
+            "xsec_fb": 0.01,
+            "rate_factor": 0.2,
+            "effective_feature_xsec_fb": 0.001,
+            "effective_selected_xsec_fb": 0.0005,
+            "analysis_efficiency": 0.5,
+            "xgboost_efficiency": 0.5,
+            "final_efficiency": 0.25,
+            "nominal_selected_signal_yield": 1.5,
+            "nominal_selected_signal_staterror": 0.1,
+            "selected_raw_entries": 25,
+            "entries": 100,
+        }
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            runner._print_postfit_sm_hh4b_result(row)
+
+        text = output.getvalue()
+        self.assertIn("SM hh+4b post-training signal result", text)
+        self.assertIn("classifier strategy = sm-crossfit-v2", text)
+        self.assertIn("effective inclusive cross section = 0.002 fb", text)
+        self.assertIn("final efficiency = 0.25", text)
+        self.assertIn(
+            "nominal selected yield at study luminosity = 1.5 +- 0.1",
+            text,
+        )
+        self.assertIn("selected MC count = 25 / 100", text)
+        self.assertTrue(
+            text.rstrip().endswith(
+                "limits/background role = none "
+                "(standalone SM signal diagnostic)"
+            )
+        )
+
     def test_parameterized_postfit_hhhbb_is_scored_at_its_true_coordinate(self):
         hhhbb = sample(
             "hhhbb",

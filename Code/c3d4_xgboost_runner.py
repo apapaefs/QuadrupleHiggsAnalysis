@@ -1688,7 +1688,7 @@ def _publish_postfit_sm_hh4b_result(
     strategy: str,
     strategy_dir: Path,
 ) -> dict[str, Any]:
-    """Write and print the single SM hh+4b post-training result."""
+    """Write the single SM hh+4b post-training result."""
 
     row = _aggregate_postfit_sm_hh4b_result(
         sample,
@@ -1699,12 +1699,21 @@ def _publish_postfit_sm_hh4b_result(
     result_dir = strategy_dir / "postfit_sm_hh4b"
     _write_rows(result_dir / "result.csv", [row])
     _write_json(result_dir / "result.json", row)
+    return row
+
+
+def _print_postfit_sm_hh4b_result(row: Mapping[str, Any]) -> None:
+    """Print the standalone SM hh+4b result as the final study output."""
 
     print()
     print("SM hh+4b post-training signal result")
-    print(f"  classifier strategy = {strategy}")
+    print(f"  classifier strategy = {row['classifier_strategy']}")
     print(f"  raw HEFT cross section = {row['xsec_fb']:.8g} fb")
     print(f"  rate factor = {row['rate_factor']:.8g}")
+    print(
+        "  effective inclusive cross section = "
+        f"{row['xsec_fb'] * row['rate_factor']:.8g} fb"
+    )
     print(
         "  effective cross section after feature selection = "
         f"{row['effective_feature_xsec_fb']:.8g} fb"
@@ -1715,12 +1724,17 @@ def _publish_postfit_sm_hh4b_result(
     )
     print(f"  analysis efficiency = {row['analysis_efficiency']:.8g}")
     print(f"  XGBoost efficiency = {row['xgboost_efficiency']:.8g}")
+    print(f"  final efficiency = {row['final_efficiency']:.8g}")
+    print(
+        "  nominal selected yield at study luminosity = "
+        f"{row['nominal_selected_signal_yield']:.8g} +- "
+        f"{row['nominal_selected_signal_staterror']:.8g}"
+    )
     print(
         "  selected MC count = "
         f"{row['selected_raw_entries']} / {row['entries']}"
     )
     print("  limits/background role = none (standalone SM signal diagnostic)")
-    return row
 
 
 def _coupling_holdout_assignments(
@@ -8154,6 +8168,10 @@ def _run_c3d4_study_impl(
         selected_profile=selected_profile,
         strategies=list(strategy_results),
     )
+    for result in strategy_results.values():
+        sm_hh4b_result = result.get("postfit_sm_hh4b")
+        if sm_hh4b_result is not None:
+            _print_postfit_sm_hh4b_result(sm_hh4b_result)
     return summary
 
 
