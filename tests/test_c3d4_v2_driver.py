@@ -20,6 +20,26 @@ exec(compile(SOURCE, str(MODULE_PATH), "exec"), DRIVER)
 
 
 class C3D4V2DriverTests(unittest.TestCase):
+    def test_sm_hh4b_option_is_rejected_by_legacy_limit_scan(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "--run-c3d4-limit-scan",
+                "--sm-hh4b-signal-dir",
+                "unused",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "supported only with --run-c3d4-xgboost-study",
+            result.stderr,
+        )
+
     def test_replot_is_mutually_exclusive_with_the_legacy_limit_scan(self):
         result = subprocess.run(
             [

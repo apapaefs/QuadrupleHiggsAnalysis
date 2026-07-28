@@ -2919,10 +2919,10 @@ def _run_c3d4_xgboost_study_cli_impl(args):
         )
 
     sm_hh4b_inputs = []
-    if args.hhbbbb_signal_root:
-        sm_hh4b_inputs.extend(args.hhbbbb_signal_root)
-    if args.hhbbbb_signal_dir:
-        sm_hh4b_inputs.extend(args.hhbbbb_signal_dir)
+    if args.sm_hh4b_signal_root:
+        sm_hh4b_inputs.extend(args.sm_hh4b_signal_root)
+    if args.sm_hh4b_signal_dir:
+        sm_hh4b_inputs.extend(args.sm_hh4b_signal_dir)
     sm_hh4b_files = []
     sm_hh4b_xsecs = []
     sm_hh4b_generated = []
@@ -2953,9 +2953,9 @@ def _run_c3d4_xgboost_study_cli_impl(args):
             sm_hh4b_normalisation,
         ) = _infer_scored_signal_metadata(
             sm_hh4b_files,
-            args.hhbbbb_signal_xsec_fb,
-            args.hhbbbb_signal_generated_events,
-            args.hhbbbb_default_generated_events,
+            args.sm_hh4b_signal_xsec_fb,
+            args.sm_hh4b_signal_generated_events,
+            args.sm_hh4b_default_generated_events,
             "post-fit SM hh+4b signal",
             "--sm-hh4b-signal-xsec-fb",
             metadata_resolver=_metadata_for_sm_hh4b_scored_signal_root,
@@ -2963,7 +2963,7 @@ def _run_c3d4_xgboost_study_cli_impl(args):
         path = sm_hh4b_files[0]
         exact_xsec_fb, exact_generated, source = (
             _metadata_for_sm_hh4b_scored_signal_root(
-                path, args.hhbbbb_default_generated_events
+                path, args.sm_hh4b_default_generated_events
             )
         )
         if (
@@ -3629,51 +3629,61 @@ def _run_local_xgboost_cli():
     )
     parser.add_argument(
         "--hhbbbb-signal-root",
-        "--sm-hh4b-signal-root",
-        dest="hhbbbb_signal_root",
         action="append",
         type=_Path,
-        help=(
-            "SM hh+4b HEFT _var.smear*.root or raw ROOT file. In v2 this "
-            "must resolve to one (c3,d4)=(0,0) sample and is reported only "
-            "as a post-training signal-efficiency diagnostic."
-        ),
+        help="hhbbbb forced-splitting signal _var.smear*.root or raw ROOT file. May be repeated.",
     )
     parser.add_argument(
         "--hhbbbb-signal-dir",
-        "--sm-hh4b-signal-dir",
-        dest="hhbbbb_signal_dir",
+        action="append",
+        type=_Path,
+        help="Directory searched recursively for c3-only hhbbbb ROOT files scored and added only to final c3/d4 limits.",
+    )
+    parser.add_argument("--hhbbbb-signal-xsec-fb", action="append", type=float, help="Cross section in fb for hhbbbb signal files.")
+    parser.add_argument("--hhbbbb-signal-generated-events", action="append", type=int, help="Generated event counts for hhbbbb signal files.")
+    parser.add_argument(
+        "--hhbbbb-default-generated-events",
+        type=int,
+        default=10000,
+        help="Fallback generated-event count for hhbbbb signal files.",
+    )
+    parser.add_argument(
+        "--sm-hh4b-signal-root",
         action="append",
         type=_Path,
         help=(
-            "Directory searched recursively for SM hh+4b ROOT files. In v2 "
-            "the single SM sample is excluded from training, backgrounds, "
-            "shape optimization, and limits."
+            "SM hh+4b HEFT _var.smear*.root or raw ROOT file. The v2 study "
+            "requires one (c3,d4)=(0,0) sample and reports it only as a "
+            "post-training signal-efficiency diagnostic."
         ),
     )
     parser.add_argument(
-        "--hhbbbb-signal-xsec-fb",
+        "--sm-hh4b-signal-dir",
+        action="append",
+        type=_Path,
+        help=(
+            "Directory searched recursively for the singleton SM hh+4b ROOT "
+            "sample. It is excluded from training, backgrounds, shape "
+            "optimization, and limits."
+        ),
+    )
+    parser.add_argument(
         "--sm-hh4b-signal-xsec-fb",
-        dest="hhbbbb_signal_xsec_fb",
         action="append",
         type=float,
-        help="Cross section in fb for the SM hh+4b signal file.",
+        help="Cross section in fb for the singleton SM hh+4b signal file.",
     )
     parser.add_argument(
-        "--hhbbbb-signal-generated-events",
         "--sm-hh4b-signal-generated-events",
-        dest="hhbbbb_signal_generated_events",
         action="append",
         type=int,
-        help="Generated-event count for the SM hh+4b signal file.",
+        help="Generated-event count for the singleton SM hh+4b signal file.",
     )
     parser.add_argument(
-        "--hhbbbb-default-generated-events",
         "--sm-hh4b-default-generated-events",
-        dest="hhbbbb_default_generated_events",
         type=int,
         default=10000,
-        help="Fallback generated-event count for the SM hh+4b signal file.",
+        help="Fallback generated-event count for the singleton SM hh+4b file.",
     )
     parser.add_argument("--no-c3d4-chebyshev-fit", action="store_true", help="Disable the Chebyshev-Lobatto sigma*eff fit and plot only scored points.")
     parser.add_argument("--c3d4-fit-k3-min", type=float, default=-29.0, help="Minimum k3=1+c3 used to scale the Chebyshev fit.")
@@ -3868,6 +3878,20 @@ def _run_local_xgboost_cli():
 
     if args.run_c3d4_xgboost_study:
         return _run_c3d4_xgboost_study_cli(args)
+
+    if any(
+        (
+            args.sm_hh4b_signal_root,
+            args.sm_hh4b_signal_dir,
+            args.sm_hh4b_signal_xsec_fb,
+            args.sm_hh4b_signal_generated_events,
+        )
+    ):
+        raise SystemExit(
+            "The --sm-hh4b-* options are supported only with "
+            "--run-c3d4-xgboost-study. The legacy limit scan must not include "
+            "this singleton before a c3 cross-section fit is available."
+        )
 
     # Keep the legacy XGBoost stack out of the v2 startup path.  In
     # particular, this lets --shape-jobs configure BLAS/OpenMP before NumPy,
