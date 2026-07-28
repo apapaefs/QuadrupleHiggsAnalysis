@@ -1087,6 +1087,36 @@ def _metadata_for_hhhbb_scored_signal_root(
     )
 
 
+def _metadata_for_sm_hh4b_scored_signal_root(
+    root_file, default_generated_events=None
+):
+    """Read the trusted normalized-LHE metadata for the SM hh+4b sample."""
+
+    root_file = _Path(root_file)
+    workdir = root_file.parent.parent
+    metadata_file = workdir / "sample_metadata.json"
+    if not metadata_file.is_file():
+        matches = sorted(workdir.rglob("sample_metadata.json"))
+        if matches:
+            metadata_file = matches[0]
+    if metadata_file.is_file():
+        try:
+            metadata = _json.loads(metadata_file.read_text())
+            xsec_fb = float(metadata["cross_section_pb"]) * 1.0e3
+            generated = int(metadata["event_count"])
+            if (
+                _math.isfinite(xsec_fb)
+                and xsec_fb > 0.0
+                and generated > 0
+            ):
+                return xsec_fb, generated, metadata_file
+        except (KeyError, TypeError, ValueError, _json.JSONDecodeError):
+            pass
+    return _metadata_for_scored_signal_root(
+        root_file, default_generated_events
+    )
+
+
 def _infer_scored_signal_metadata(
     files,
     xsec_values,
@@ -2888,6 +2918,112 @@ def _run_c3d4_xgboost_study_cli_impl(args):
             role="excluded from training and threshold optimization",
         )
 
+    sm_hh4b_inputs = []
+    if args.hhbbbb_signal_root:
+        sm_hh4b_inputs.extend(args.hhbbbb_signal_root)
+    if args.hhbbbb_signal_dir:
+        sm_hh4b_inputs.extend(args.hhbbbb_signal_dir)
+    sm_hh4b_files = []
+    sm_hh4b_xsecs = []
+    sm_hh4b_generated = []
+    sm_hh4b_normalisation = []
+    sm_hh4b_metadata = []
+    if sm_hh4b_inputs:
+        sm_hh4b_files = _ensure_analysis_var_roots(
+            sm_hh4b_inputs,
+            executable=args.analysis_exe,
+            source_file=args.analysis_source,
+            include_auxiliary=args.include_auxiliary_samples,
+            jobs=args.analysis_jobs,
+            max_events=args.analysis_max_events,
+            force=args.force_analysis,
+            run_missing=not args.no_run_missing_analysis,
+            analysis_tag=analysis_tag,
+            progress_callback=root_progress("post-fit SM hh+4b signal"),
+        )
+        if len(sm_hh4b_files) != 1:
+            raise SystemExit(
+                "The v2 SM hh+4b diagnostic requires exactly one completed "
+                f"SM variable ROOT file; found {len(sm_hh4b_files)}: "
+                f"{sm_hh4b_files}"
+            )
+        (
+            sm_hh4b_xsecs,
+            sm_hh4b_generated,
+            sm_hh4b_normalisation,
+        ) = _infer_scored_signal_metadata(
+            sm_hh4b_files,
+            args.hhbbbb_signal_xsec_fb,
+            args.hhbbbb_signal_generated_events,
+            args.hhbbbb_default_generated_events,
+            "post-fit SM hh+4b signal",
+            "--sm-hh4b-signal-xsec-fb",
+            metadata_resolver=_metadata_for_sm_hh4b_scored_signal_root,
+        )
+        path = sm_hh4b_files[0]
+        exact_xsec_fb, exact_generated, source = (
+            _metadata_for_sm_hh4b_scored_signal_root(
+                path, args.hhbbbb_default_generated_events
+            )
+        )
+        if (
+            source is None
+            or _Path(source).name != "sample_metadata.json"
+            or exact_xsec_fb is None
+            or exact_generated is None
+        ):
+            raise SystemExit(
+                "The v2 SM hh+4b diagnostic requires its trusted "
+                f"sample_metadata.json next to the Herwig campaign for {path}."
+            )
+        if not _math.isclose(
+            float(sm_hh4b_xsecs[0]),
+            float(exact_xsec_fb),
+            rel_tol=1.0e-12,
+            abs_tol=1.0e-15,
+        ):
+            raise SystemExit(
+                "The SM hh+4b cross section does not match its normalized-LHE "
+                f"metadata: {float(sm_hh4b_xsecs[0]):.16g} fb versus "
+                f"{float(exact_xsec_fb):.16g} fb."
+            )
+        if int(sm_hh4b_generated[0]) != int(exact_generated):
+            raise SystemExit(
+                "The SM hh+4b generated-event count does not match its "
+                f"normalized-LHE metadata: {sm_hh4b_generated[0]} versus "
+                f"{exact_generated}."
+            )
+        sm_hh4b_metadata.append(
+            {
+                "process_id": "sm_hh4b_heft",
+                "description": (
+                    "SM HEFT gg -> hh + b bbar b bbar with stable Higgs "
+                    "bosons forced to h -> b bbar in Herwig"
+                ),
+                "cross_section_source": str(source),
+                "cross_section_source_kind": "normalized-lhe-sample-metadata",
+                "cross_section_fb": float(exact_xsec_fb),
+                "generated_events": int(exact_generated),
+                "included_in_training": False,
+                "included_in_threshold_optimization": False,
+                "included_in_shape_binning_optimization": False,
+                "included_in_background": False,
+                "included_in_limits": False,
+                "cross_section_fit_applied": False,
+                "postfit_signal_component": "sm_hh4b",
+            }
+        )
+        input_progress.emit(
+            "input-discovery",
+            "Discovered the post-fit SM hh+4b variable ROOT input",
+            sample_kind="post-fit SM hh+4b signal",
+            discovered=1,
+            role=(
+                "single SM efficiency result, excluded from training, "
+                "backgrounds, shape optimization, and limits"
+            ),
+        )
+
     if args.background:
         _validate_explicit_background_composition(
             args.background,
@@ -2955,6 +3091,7 @@ def _run_c3d4_xgboost_study_cli_impl(args):
 
     signal_rate_factor = _signal_final_rate_factor_for_cli(args)
     hhhbb_rate_factor = _hhhbb_signal_rate_factor_for_cli(args)
+    sm_hh4b_rate_factor = _hhbbbb_signal_rate_factor_for_cli(args)
     background_rate_factors = _background_rate_factors_for_cli(background_metadata, args)
     sm_specs = _study_specs(
         sm_files,
@@ -2980,6 +3117,15 @@ def _run_c3d4_xgboost_study_cli_impl(args):
         hhhbb_normalisation,
         hhhbb_rate_factor,
         hhhbb_metadata,
+        require_complete_feature_sources=args.observable_set == "extended-91-v2",
+    )
+    sm_hh4b_specs = _study_specs(
+        sm_hh4b_files,
+        sm_hh4b_xsecs,
+        sm_hh4b_generated,
+        sm_hh4b_normalisation,
+        sm_hh4b_rate_factor,
+        sm_hh4b_metadata,
         require_complete_feature_sources=args.observable_set == "extended-91-v2",
     )
     background_specs = _study_specs(
@@ -3008,6 +3154,13 @@ def _run_c3d4_xgboost_study_cli_impl(args):
             "  post-fit hhhbb role: excluded from training/threshold/binning "
             "optimization; added only to the final cut and pyhf signal templates"
         )
+    print("  post-fit SM hh+4b samples:", len(sm_hh4b_specs))
+    if sm_hh4b_specs:
+        print(
+            "  post-fit SM hh+4b role: one SM efficiency result after the "
+            "classifier/threshold are frozen; excluded from training, "
+            "backgrounds, shape optimization, and limits"
+        )
     print("  background samples:", len(background_specs))
     print("  output:", args.study_outdir)
     print("  shape workers:", args.shape_jobs)
@@ -3018,12 +3171,14 @@ def _run_c3d4_xgboost_study_cli_impl(args):
         dedicated_sm_samples=len(sm_specs),
         c3d4_samples=len(grid_specs),
         postfit_hhhbb_samples=len(hhhbb_specs),
+        postfit_sm_hh4b_samples=len(sm_hh4b_specs),
         background_samples=len(background_specs),
     )
     summary = run_c3d4_study(
         sm_signal_specs=sm_specs,
         grid_signal_specs=grid_specs,
         hhhbb_signal_specs=hhhbb_specs,
+        sm_hh4b_signal_specs=sm_hh4b_specs,
         background_specs=background_specs,
         output_dir=args.study_outdir,
         observable_set=args.observable_set,
@@ -3474,23 +3629,51 @@ def _run_local_xgboost_cli():
     )
     parser.add_argument(
         "--hhbbbb-signal-root",
+        "--sm-hh4b-signal-root",
+        dest="hhbbbb_signal_root",
         action="append",
         type=_Path,
-        help="hhbbbb forced-splitting signal _var.smear*.root or raw ROOT file. May be repeated.",
+        help=(
+            "SM hh+4b HEFT _var.smear*.root or raw ROOT file. In v2 this "
+            "must resolve to one (c3,d4)=(0,0) sample and is reported only "
+            "as a post-training signal-efficiency diagnostic."
+        ),
     )
     parser.add_argument(
         "--hhbbbb-signal-dir",
+        "--sm-hh4b-signal-dir",
+        dest="hhbbbb_signal_dir",
         action="append",
         type=_Path,
-        help="Directory searched recursively for c3-only hhbbbb ROOT files scored and added only to final c3/d4 limits.",
+        help=(
+            "Directory searched recursively for SM hh+4b ROOT files. In v2 "
+            "the single SM sample is excluded from training, backgrounds, "
+            "shape optimization, and limits."
+        ),
     )
-    parser.add_argument("--hhbbbb-signal-xsec-fb", action="append", type=float, help="Cross section in fb for hhbbbb signal files.")
-    parser.add_argument("--hhbbbb-signal-generated-events", action="append", type=int, help="Generated event counts for hhbbbb signal files.")
+    parser.add_argument(
+        "--hhbbbb-signal-xsec-fb",
+        "--sm-hh4b-signal-xsec-fb",
+        dest="hhbbbb_signal_xsec_fb",
+        action="append",
+        type=float,
+        help="Cross section in fb for the SM hh+4b signal file.",
+    )
+    parser.add_argument(
+        "--hhbbbb-signal-generated-events",
+        "--sm-hh4b-signal-generated-events",
+        dest="hhbbbb_signal_generated_events",
+        action="append",
+        type=int,
+        help="Generated-event count for the SM hh+4b signal file.",
+    )
     parser.add_argument(
         "--hhbbbb-default-generated-events",
+        "--sm-hh4b-default-generated-events",
+        dest="hhbbbb_default_generated_events",
         type=int,
         default=10000,
-        help="Fallback generated-event count for hhbbbb signal files.",
+        help="Fallback generated-event count for the SM hh+4b signal file.",
     )
     parser.add_argument("--no-c3d4-chebyshev-fit", action="store_true", help="Disable the Chebyshev-Lobatto sigma*eff fit and plot only scored points.")
     parser.add_argument("--c3d4-fit-k3-min", type=float, default=-29.0, help="Minimum k3=1+c3 used to scale the Chebyshev fit.")

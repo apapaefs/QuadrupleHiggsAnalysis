@@ -497,6 +497,40 @@ class C3D4V2DriverTests(unittest.TestCase):
             self.assertEqual(generated, 10000)
             self.assertAlmostEqual(xsec_fb, 0.20191483113482072)
 
+    def test_sm_hh4b_metadata_uses_normalized_lhe_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            events = directory / "events"
+            events.mkdir()
+            tagged = (
+                events
+                / (
+                    "HW-run_gg_hhbbbb_heft_4_0.0_0.0-"
+                    f"{DRIVER['EXTENDED_V2_TAG']}_var.smearCMS.root"
+                )
+            )
+            tagged.touch()
+            metadata_file = directory / "sample_metadata.json"
+            metadata_file.write_text(
+                json.dumps(
+                    {
+                        "cross_section_pb": 9.62241e-06,
+                        "event_count": 9514,
+                    }
+                )
+            )
+            (directory / "HW-run_gg_hhbbbb_heft_4_0.0_0.0.out").write_text(
+                "Total: 9514 9514 1.0e-08\n"
+            )
+
+            xsec_fb, generated, source = DRIVER[
+                "_metadata_for_sm_hh4b_scored_signal_root"
+            ](tagged, 10000)
+
+            self.assertEqual(source, metadata_file)
+            self.assertEqual(generated, 9514)
+            self.assertAlmostEqual(xsec_fb, 0.00962241)
+
     def test_summary_lookup_keeps_extended_tag(self):
         tag = DRIVER["EXTENDED_V2_TAG"]
         tagged = Path(f"/tmp/HW-point-{tag}_var.smearCMS.root")

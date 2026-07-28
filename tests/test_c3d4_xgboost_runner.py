@@ -1182,6 +1182,39 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
                     )
             self.assertIn("postfit_hhhbb_signal", loaded_kinds)
 
+    def test_sm_hh4b_reaches_postfit_loading_in_every_active_c3d4_mode(self):
+        for mode in (
+            "fast-sm",
+            "fast-pooled",
+            "fast-parameterized",
+            "full",
+        ):
+            loaded_kinds = []
+
+            def stop_at_sm_hh4b(*args, kind, **kwargs):
+                del args, kwargs
+                loaded_kinds.append(kind)
+                if kind == "postfit_sm_hh4b_signal":
+                    raise RuntimeError("sm-hh4b-input-reached")
+                return []
+
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                with mock.patch.object(
+                    runner, "_load_samples", side_effect=stop_at_sm_hh4b
+                ), self.assertRaisesRegex(
+                    RuntimeError, "sm-hh4b-input-reached"
+                ):
+                    runner.run_c3d4_study(
+                        sm_signal_specs=[],
+                        grid_signal_specs=[],
+                        sm_hh4b_signal_specs=[{"path": "not-loaded.root"}],
+                        background_specs=[],
+                        output_dir=directory,
+                        study_mode=mode,
+                        run_shape=False,
+                    )
+            self.assertIn("postfit_sm_hh4b_signal", loaded_kinds)
+
     def test_study_output_directory_rejects_cross_mode_reuse(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
@@ -2348,6 +2381,97 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
         )
 
         self.assertEqual(point, (-7.5, 50.0))
+
+    def test_sm_hh4b_point_name_maps_to_the_sm_coordinate(self):
+        point = runner._parse_point(
+            "HW-run_gg_hhbbbb_heft_4_0.0_0.0"
+            "-extended-v2-uniform-smear-v1_var.smearCMS.root"
+        )
+
+        self.assertEqual(point, (0.0, 0.0))
+
+    def test_parameterized_sm_hh4b_uses_sm_coordinates(self):
+        sm_hh4b = sample(
+            "sm-hh4b",
+            "postfit_sm_hh4b_signal",
+            [1] * 5,
+            [0.2] * 5,
+            0.0,
+            0.0,
+        )
+        validation = {
+            "points": {
+                sm_hh4b.point_id: {
+                    "threshold": 0.5,
+                }
+            }
+        }
+        with mock.patch.object(
+            runner,
+            "_predict",
+            return_value=np.asarray([0.75]),
+        ) as predict:
+            result = runner._evaluate_postfit_signal_rotation(
+                object(),
+                validation,
+                [sm_hh4b],
+                rotation=0,
+                n_folds=5,
+                profile_indices=np.arange(91),
+                parameterized=True,
+            )
+
+        self.assertEqual(
+            result["points"][sm_hh4b.point_id]["signal_raw_entries"],
+            1,
+        )
+        self.assertEqual(predict.call_args.args[-1], (0.0, 0.0))
+
+    def test_sm_hh4b_aggregate_is_one_standalone_nonlimit_result(self):
+        sm_hh4b = sample(
+            "sm-hh4b",
+            "postfit_sm_hh4b_signal",
+            [1] * 5,
+            [0.02] * 5,
+            0.0,
+            0.0,
+        )
+        sm_hh4b.unit_xsec_weights = np.full(5, 2.0)
+        sm_hh4b.xsec_fb = 0.01
+        sm_hh4b.rate_factor = 10.0
+        rotations = []
+        for fold in range(5):
+            rotations.append(
+                {
+                    "points": {
+                        sm_hh4b.point_id: {
+                            "threshold": 0.4,
+                            "signal_unit_yield": 2.0,
+                            "signal_sumw2_unit": 4.0,
+                            "signal_physical_yield": 0.02,
+                            "signal_sumw2_physical": 0.0004,
+                            "signal_raw_entries": 1,
+                        }
+                    }
+                }
+            )
+
+        result = runner._aggregate_postfit_sm_hh4b_result(
+            sm_hh4b,
+            rotations,
+            luminosity=1.0,
+            strategy="fast-sm",
+        )
+
+        self.assertEqual(result["point_id"], "c3=0,d4=0")
+        self.assertEqual(result["selected_raw_entries"], 5)
+        self.assertAlmostEqual(result["xgboost_efficiency"], 1.0)
+        self.assertAlmostEqual(result["nominal_selected_signal_yield"], 0.1)
+        self.assertFalse(result["included_in_training"])
+        self.assertFalse(result["included_in_background"])
+        self.assertFalse(result["included_in_limits"])
+        self.assertFalse(result["cross_section_fit_applied"])
+        self.assertNotIn("cut_sigma95_fb", result)
 
     def test_parameterized_postfit_hhhbb_is_scored_at_its_true_coordinate(self):
         hhhbb = sample(

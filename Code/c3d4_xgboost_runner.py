@@ -69,7 +69,7 @@ from sample_report import (
 )
 
 
-METHOD_VERSION = "resolved-8b-c3d4-xgboost-v2.5"
+METHOD_VERSION = "resolved-8b-c3d4-xgboost-v2.6"
 CLASSIFIER_WEIGHT_SCALE_VERSION = "equal-class-mean-effective-row-weight-1-v1"
 BASE_SEED = 12345
 DEFAULT_PROFILES = ("corrected28", "core52", "full91")
@@ -126,7 +126,7 @@ FIXED_XGBOOST_PARAMS = {
 }
 
 _POINT_PATTERN = re.compile(
-    r"run_gg_(?:4h|hhhg)_[^_/]+_"
+    r"run_gg_(?:4h|hhhg|hhbbbb_heft)_[^_/]+_"
     r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)_"
     r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
 )
@@ -467,7 +467,11 @@ def _load_sample(
     source_ids = np.full(raw_weights.size, sample_id, dtype=object)
     folds = deterministic_folds(source_ids, event_indices, n_folds=n_folds, seed=seed)
     c3 = d4 = None
-    if kind in {"grid_signal", "postfit_hhhbb_signal"}:
+    if kind in {
+        "grid_signal",
+        "postfit_hhhbb_signal",
+        "postfit_sm_hh4b_signal",
+    }:
         c3, d4 = _parse_point(path)
 
     return EventSample(
@@ -1565,6 +1569,158 @@ def _evaluate_postfit_signal_rotation(
         "role": "postfit-signal-only",
         "parameterized": bool(parameterized),
     }
+
+
+def _aggregate_postfit_sm_hh4b_result(
+    sample: EventSample,
+    rotations: Sequence[Mapping[str, Any]],
+    *,
+    luminosity: float,
+    strategy: str,
+) -> dict[str, Any]:
+    """Build one SM-only efficiency row without changing any limit template."""
+
+    if (
+        sample.point_id is None
+        or sample.c3 is None
+        or sample.d4 is None
+        or abs(float(sample.c3)) > 1.0e-12
+        or abs(float(sample.d4)) > 1.0e-12
+    ):
+        raise ValueError("The SM hh+4b diagnostic must have (c3,d4)=(0,0)")
+    if not rotations:
+        raise ValueError("The SM hh+4b diagnostic requires cross-fit rotations")
+
+    folds = []
+    for rotation in rotations:
+        try:
+            folds.append(dict(rotation["points"][sample.point_id]))
+        except (KeyError, TypeError) as exc:
+            raise ValueError(
+                "Every SM hh+4b rotation must contain the SM point"
+            ) from exc
+
+    selected_unit_yield = float(
+        sum(float(row["signal_unit_yield"]) for row in folds)
+    )
+    selected_unit_sumw2 = float(
+        sum(float(row["signal_sumw2_unit"]) for row in folds)
+    )
+    selected_physical_yield = float(
+        sum(float(row["signal_physical_yield"]) for row in folds)
+    )
+    selected_physical_sumw2 = float(
+        sum(float(row["signal_sumw2_physical"]) for row in folds)
+    )
+    selected_entries = int(
+        sum(int(row["signal_raw_entries"]) for row in folds)
+    )
+    feature_unit_yield = float(np.sum(sample.unit_xsec_weights))
+    feature_physical_yield = float(np.sum(sample.physical_weights))
+    analysis_efficiency = float(
+        np.sum(sample.raw_weights) / sample.normalisation_weight
+    )
+    xgboost_efficiency = (
+        selected_unit_yield / feature_unit_yield
+        if feature_unit_yield != 0.0
+        else 0.0
+    )
+    luminosity = _finite_float(luminosity, "luminosity")
+    if luminosity <= 0.0:
+        raise ValueError("luminosity must be positive")
+
+    return {
+        "component": "sm_hh4b",
+        "description": "SM HEFT gg -> hh + b bbar b bbar",
+        "classifier_strategy": str(strategy),
+        "point_id": sample.point_id,
+        "c3": float(sample.c3),
+        "d4": float(sample.d4),
+        "file": str(sample.path),
+        "process_id": (sample.metadata or {}).get(
+            "process_id", sample.sample_id
+        ),
+        "xsec_fb": float(sample.xsec_fb),
+        "rate_factor": float(sample.rate_factor),
+        "generated_events": sample.generated_events,
+        "normalisation_weight": float(sample.normalisation_weight),
+        "normalisation_source": sample.normalisation_source,
+        "entries": sample.entries,
+        "analysis_efficiency": analysis_efficiency,
+        "feature_tree_efficiency": analysis_efficiency,
+        "xgboost_efficiency": xgboost_efficiency,
+        "final_efficiency": analysis_efficiency * xgboost_efficiency,
+        "feature_signal_yield_per_fb": feature_unit_yield,
+        "selected_signal_yield_per_fb": selected_unit_yield,
+        "selected_signal_staterror_per_fb": math.sqrt(
+            max(0.0, selected_unit_sumw2)
+        ),
+        "nominal_feature_signal_yield": feature_physical_yield,
+        "nominal_selected_signal_yield": selected_physical_yield,
+        "nominal_selected_signal_staterror": math.sqrt(
+            max(0.0, selected_physical_sumw2)
+        ),
+        "effective_feature_xsec_fb": feature_physical_yield / luminosity,
+        "effective_selected_xsec_fb": selected_physical_yield / luminosity,
+        "selected_raw_entries": selected_entries,
+        "threshold_mean": float(
+            np.mean([float(row["threshold"]) for row in folds])
+        ),
+        "threshold_std": float(
+            np.std([float(row["threshold"]) for row in folds])
+        ),
+        "folds": folds,
+        "role": "post-training-sm-signal-diagnostic",
+        "included_in_training": False,
+        "included_in_threshold_optimization": False,
+        "included_in_shape_binning_optimization": False,
+        "included_in_background": False,
+        "included_in_limits": False,
+        "cross_section_fit_applied": False,
+    }
+
+
+def _publish_postfit_sm_hh4b_result(
+    sample: EventSample,
+    rotations: Sequence[Mapping[str, Any]],
+    *,
+    luminosity: float,
+    strategy: str,
+    strategy_dir: Path,
+) -> dict[str, Any]:
+    """Write and print the single SM hh+4b post-training result."""
+
+    row = _aggregate_postfit_sm_hh4b_result(
+        sample,
+        rotations,
+        luminosity=luminosity,
+        strategy=strategy,
+    )
+    result_dir = strategy_dir / "postfit_sm_hh4b"
+    _write_rows(result_dir / "result.csv", [row])
+    _write_json(result_dir / "result.json", row)
+
+    print()
+    print("SM hh+4b post-training signal result")
+    print(f"  classifier strategy = {strategy}")
+    print(f"  raw HEFT cross section = {row['xsec_fb']:.8g} fb")
+    print(f"  rate factor = {row['rate_factor']:.8g}")
+    print(
+        "  effective cross section after feature selection = "
+        f"{row['effective_feature_xsec_fb']:.8g} fb"
+    )
+    print(
+        "  effective cross section after XGBoost = "
+        f"{row['effective_selected_xsec_fb']:.8g} fb"
+    )
+    print(f"  analysis efficiency = {row['analysis_efficiency']:.8g}")
+    print(f"  XGBoost efficiency = {row['xgboost_efficiency']:.8g}")
+    print(
+        "  selected MC count = "
+        f"{row['selected_raw_entries']} / {row['entries']}"
+    )
+    print("  limits/background role = none (standalone SM signal diagnostic)")
+    return row
 
 
 def _coupling_holdout_assignments(
@@ -5797,6 +5953,7 @@ def _run_c3d4_study_impl(
     xsec_overlay: bool = True,
     write_input_report: bool = False,
     hhhbb_signal_specs: Sequence[Mapping[str, Any]] = (),
+    sm_hh4b_signal_specs: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Run the complete versioned study and return its machine-readable summary."""
 
@@ -5863,6 +6020,9 @@ def _run_c3d4_study_impl(
             None if reuse_sm_optuna_from is None else str(reuse_sm_optuna_from)
         ),
         "postfit_hhhbb_signal_point_count": len(hhhbb_signal_specs or ()),
+        "postfit_sm_hh4b_signal_point_count": len(
+            sm_hh4b_signal_specs or ()
+        ),
     }
     mode_policy = _resolve_study_mode(
         study_mode=study_mode,
@@ -5883,6 +6043,7 @@ def _run_c3d4_study_impl(
     run_shape = mode_policy.run_shape
     hash_inputs = mode_policy.hash_inputs
     hhhbb_signal_specs = tuple(hhhbb_signal_specs or ())
+    sm_hh4b_signal_specs = tuple(sm_hh4b_signal_specs or ())
     if hhhbb_signal_specs and mode_policy.run_parameterized_gate:
         raise ValueError(
             "Post-fit hhhbb is not yet supported for the full parameterized-gate "
@@ -5950,6 +6111,16 @@ def _run_c3d4_study_impl(
         if hhhbb_signal_specs
         else []
     )
+    sm_hh4b_samples = (
+        _load_samples(
+            sm_hh4b_signal_specs,
+            kind="postfit_sm_hh4b_signal",
+            progress=load_progress("post-fit SM hh+4b signal"),
+            **common,
+        )
+        if sm_hh4b_signal_specs
+        else []
+    )
     background_samples = _load_samples(
         background_specs,
         kind="background",
@@ -5991,6 +6162,26 @@ def _run_c3d4_study_impl(
                 "Post-fit hhhbb coordinates must exactly match the c3/d4 grid; "
                 f"missing={missing_hhhbb}, extra={extra_hhhbb}"
             )
+    if sm_hh4b_samples:
+        if len(sm_hh4b_samples) != 1:
+            raise ValueError(
+                "The post-fit SM hh+4b diagnostic requires exactly one sample"
+            )
+        sm_hh4b = sm_hh4b_samples[0]
+        if (
+            sm_hh4b.c3 is None
+            or sm_hh4b.d4 is None
+            or abs(float(sm_hh4b.c3)) > 1.0e-12
+            or abs(float(sm_hh4b.d4)) > 1.0e-12
+        ):
+            raise ValueError(
+                "The post-fit SM hh+4b sample must encode (c3,d4)=(0,0)"
+            )
+        if sm_hh4b.point_id not in set(point_ids):
+            raise ValueError(
+                "The c3/d4 grid must contain (c3,d4)=(0,0) so the frozen "
+                "SM threshold can be applied to SM hh+4b"
+            )
     if not background_samples:
         raise ValueError("The study requires at least one background source")
     all_loaded_samples = [
@@ -5998,6 +6189,7 @@ def _run_c3d4_study_impl(
         *grid_samples,
         *background_samples,
         *hhhbb_samples,
+        *sm_hh4b_samples,
     ]
     completion_records = [
         sample.metadata.get("feature_source_completion")
@@ -6037,7 +6229,7 @@ def _run_c3d4_study_impl(
         sm_samples,
         grid_samples,
         background_samples,
-        hhhbb_samples,
+        [*hhhbb_samples, *sm_hh4b_samples],
     )
     fold_digest = _fold_assignment_digest(all_loaded_samples)
     input_hashes = {}
@@ -6137,7 +6329,21 @@ def _run_c3d4_study_impl(
                 "limit_parameter": (
                     "common-signal-strength" if hhhbb_samples else None
                 ),
-            }
+            },
+            "sm_hh4b": {
+                "enabled": bool(sm_hh4b_samples),
+                "point_count": len(sm_hh4b_samples),
+                "role": (
+                    "single SM efficiency diagnostic scored only after the "
+                    "classifier and SM validation thresholds are fixed"
+                ),
+                "included_in_training": False,
+                "included_in_threshold_optimization": False,
+                "included_in_shape_binning_optimization": False,
+                "included_in_background": False,
+                "included_in_limits": False,
+                "cross_section_fit_applied": False,
+            },
         },
         "fold_assignment_sha256": fold_digest,
         "inputs": [
@@ -6758,6 +6964,19 @@ def _run_c3d4_study_impl(
                 if hhhbb_samples
                 else None
             )
+            postfit_sm_hh4b_test = (
+                _evaluate_postfit_signal_rotation(
+                    model,
+                    validation,
+                    sm_hh4b_samples,
+                    rotation=rotation,
+                    n_folds=cv_folds,
+                    profile_indices=indices,
+                    parameterized=parameterized_strategy,
+                )
+                if sm_hh4b_samples
+                else None
+            )
             record = {
                 "rotation": rotation,
                 "model": str(model_path),
@@ -6767,6 +6986,7 @@ def _run_c3d4_study_impl(
                 "validation": validation,
                 "test": test,
                 "postfit_hhhbb_test": postfit_hhhbb_test,
+                "postfit_sm_hh4b_test": postfit_sm_hh4b_test,
             }
             if parameterized_strategy:
                 record.update(
@@ -6813,6 +7033,27 @@ def _run_c3d4_study_impl(
                         "result_metadata": fold_result_metadata,
                     },
                 )
+            if postfit_sm_hh4b_test is not None:
+                _write_json(
+                    strategy_dir
+                    / "postfit_sm_hh4b"
+                    / "test"
+                    / f"fold_{rotation}.json",
+                    {
+                        "rotation": rotation,
+                        "role": "post-training-sm-signal-diagnostic",
+                        "parameterized": bool(
+                            postfit_sm_hh4b_test.get("parameterized")
+                        ),
+                        "included_in_training": False,
+                        "included_in_threshold_optimization": False,
+                        "included_in_shape_binning_optimization": False,
+                        "included_in_background": False,
+                        "included_in_limits": False,
+                        "points": postfit_sm_hh4b_test["points"],
+                        "result_metadata": fold_result_metadata,
+                    },
+                )
             progress.emit(
                 "strategy",
                 "Completed strategy fold",
@@ -6842,6 +7083,22 @@ def _run_c3d4_study_impl(
                 grid_samples,
                 hhhbb_samples,
                 [record["postfit_hhhbb_test"] for record in records],
+            )
+        sm_hh4b_result = None
+        if sm_hh4b_samples:
+            progress.emit(
+                "postfit-signal",
+                "Publishing the standalone SM hh+4b efficiency diagnostic",
+                strategy=strategy,
+                component="sm_hh4b",
+                point_count=1,
+            )
+            sm_hh4b_result = _publish_postfit_sm_hh4b_result(
+                sm_hh4b_samples[0],
+                [record["postfit_sm_hh4b_test"] for record in records],
+                luminosity=luminosity,
+                strategy=strategy,
+                strategy_dir=strategy_dir,
             )
         validation_aggregate, rotation_validation_limits = _aggregate_validation_crossfit(
             grid_samples, records
@@ -7060,6 +7317,7 @@ def _run_c3d4_study_impl(
             "sm_background_only_cutflow": sm_background_only_cutflow,
             "sm_signal_cutflow": sm_signal_cutflow,
             "sm_thresholds": sm_thresholds,
+            "postfit_sm_hh4b": sm_hh4b_result,
             "coupling_holdout": coupling_holdout,
         }
         _write_rows(
@@ -7361,6 +7619,19 @@ def _run_c3d4_study_impl(
                 profile_indices=indices,
                 parameterized=True,
             )
+            postfit_sm_hh4b_test = (
+                _evaluate_postfit_signal_rotation(
+                    model,
+                    validation,
+                    sm_hh4b_samples,
+                    rotation=rotation,
+                    n_folds=cv_folds,
+                    profile_indices=indices,
+                    parameterized=True,
+                )
+                if sm_hh4b_samples
+                else None
+            )
             record = {
                 "rotation": rotation,
                 "model": str(model_path),
@@ -7369,6 +7640,7 @@ def _run_c3d4_study_impl(
                 "tuning": tuning,
                 "validation": validation,
                 "test": test,
+                "postfit_sm_hh4b_test": postfit_sm_hh4b_test,
                 # In-memory-only objects used to rescore background test and
                 # validation events at each evaluated parameter point.
                 "_model_object": model,
@@ -7392,6 +7664,25 @@ def _run_c3d4_study_impl(
                     "result_metadata": fold_result_metadata,
                 },
             )
+            if postfit_sm_hh4b_test is not None:
+                _write_json(
+                    strategy_dir
+                    / "postfit_sm_hh4b"
+                    / "test"
+                    / f"fold_{rotation}.json",
+                    {
+                        "rotation": rotation,
+                        "role": "post-training-sm-signal-diagnostic",
+                        "parameterized": True,
+                        "included_in_training": False,
+                        "included_in_threshold_optimization": False,
+                        "included_in_shape_binning_optimization": False,
+                        "included_in_background": False,
+                        "included_in_limits": False,
+                        "points": postfit_sm_hh4b_test["points"],
+                        "result_metadata": fold_result_metadata,
+                    },
+                )
             progress.emit(
                 "strategy",
                 "Completed parameterized strategy fold",
@@ -7411,6 +7702,15 @@ def _run_c3d4_study_impl(
         aggregate = _aggregate_cut_results(
             grid_samples, [record["test"] for record in records]
         )
+        sm_hh4b_result = None
+        if sm_hh4b_samples:
+            sm_hh4b_result = _publish_postfit_sm_hh4b_result(
+                sm_hh4b_samples[0],
+                [record["postfit_sm_hh4b_test"] for record in records],
+                luminosity=luminosity,
+                strategy=strategy,
+                strategy_dir=strategy_dir,
+            )
         validation_aggregate, rotation_validation_limits = _aggregate_validation_crossfit(
             grid_samples, records
         )
@@ -7524,6 +7824,7 @@ def _run_c3d4_study_impl(
             "validation_aggregate": validation_aggregate,
             "rotation_validation_limits": rotation_validation_limits,
             "shape": shape,
+            "postfit_sm_hh4b": sm_hh4b_result,
         }
         _write_rows(
             strategy_dir / "per_fold_validation.csv",
@@ -7668,13 +7969,20 @@ def _run_c3d4_study_impl(
         *grid_samples,
         *background_samples,
         *hhhbb_samples,
+        *sm_hh4b_samples,
     ]:
         item = _sample_manifest(sample, input_hash=input_hashes[str(sample.path)])
         sample_manifests.append(item)
     fold_assignment_file = output_dir / "fold_assignments.csv"
     _write_fold_assignments(
         fold_assignment_file,
-        [*sm_samples, *grid_samples, *background_samples, *hhhbb_samples],
+        [
+            *sm_samples,
+            *grid_samples,
+            *background_samples,
+            *hhhbb_samples,
+            *sm_hh4b_samples,
+        ],
     )
     output_manifest = {
         "feature_profile_selection": str(output_dir / "feature_profile_selection.json"),
@@ -7701,6 +8009,26 @@ def _run_c3d4_study_impl(
                     / "postfit_hhhbb"
                     / "contribution_results.json"
                 ),
+            }
+            for strategy in strategy_results
+        }
+    if sm_hh4b_samples:
+        output_manifest["postfit_sm_hh4b"] = {
+            strategy: {
+                "csv": str(
+                    output_dir
+                    / strategy
+                    / "postfit_sm_hh4b"
+                    / "result.csv"
+                ),
+                "json": str(
+                    output_dir
+                    / strategy
+                    / "postfit_sm_hh4b"
+                    / "result.json"
+                ),
+                "point_count": 1,
+                "included_in_limits": False,
             }
             for strategy in strategy_results
         }
@@ -7808,6 +8136,7 @@ def _run_c3d4_study_impl(
                 ),
                 "sm_signal_cutflow": result.get("sm_signal_cutflow"),
                 "sm_thresholds": result.get("sm_thresholds"),
+                "postfit_sm_hh4b": result.get("postfit_sm_hh4b"),
                 "coupling_holdout": result.get("coupling_holdout"),
             }
             for strategy, result in strategy_results.items()
@@ -8683,6 +9012,7 @@ def run_c3d4_study(
     xsec_overlay: bool = True,
     write_input_report: bool = False,
     hhhbb_signal_specs: Sequence[Mapping[str, Any]] = (),
+    sm_hh4b_signal_specs: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Run the v2 study and always leave truthful terminal restart metadata."""
 
@@ -8719,6 +9049,7 @@ def run_c3d4_study(
         "xsec_overlay": xsec_overlay,
         "write_input_report": write_input_report,
         "hhhbb_signal_specs": hhhbb_signal_specs,
+        "sm_hh4b_signal_specs": sm_hh4b_signal_specs,
     }
     try:
         return _run_c3d4_study_impl(**arguments)
