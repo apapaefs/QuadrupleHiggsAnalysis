@@ -69,12 +69,14 @@ from sample_report import (
 )
 
 
-METHOD_VERSION = "resolved-8b-c3d4-xgboost-v2.3"
+METHOD_VERSION = "resolved-8b-c3d4-xgboost-v2.5"
 CLASSIFIER_WEIGHT_SCALE_VERSION = "equal-class-mean-effective-row-weight-1-v1"
 BASE_SEED = 12345
 DEFAULT_PROFILES = ("corrected28", "core52", "full91")
-SHAPE_CHECKPOINT_VERSION = 1
-SHAPE_ORCHESTRATION_VERSION = "parallel-checkpoint-v1"
+SHAPE_CHECKPOINT_VERSION = 2
+SHAPE_ORCHESTRATION_VERSION = "parallel-checkpoint-postfit-signal-v2"
+PYHF_POI_BRACKET_MULTIPLIER = 10.0
+COUPLING_HOLDOUT_VERSION = "balanced-hash-fivefold-v1"
 LEGACY_CONTOUR_STYLE_VERSION = "legacy-c3d4-overlay-v1"
 DEFAULT_CONTOUR_C3_RANGE = (-20.0, 20.0)
 DEFAULT_CONTOUR_D4_RANGE = (-500.0, 500.0)
@@ -124,7 +126,7 @@ FIXED_XGBOOST_PARAMS = {
 }
 
 _POINT_PATTERN = re.compile(
-    r"run_gg_4h_[^_/]+_"
+    r"run_gg_(?:4h|hhhg)_[^_/]+_"
     r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)_"
     r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
 )
@@ -170,6 +172,7 @@ class ShapePoint:
     point_id: str
     c3: float
     d4: float
+    xsec_fb: float = 1.0
 
 
 class ShapeEvaluationIncompleteError(RuntimeError):
@@ -188,6 +191,7 @@ class StudyModePolicy:
     run_shape: bool
     run_profile_ablation: bool
     run_parameterized_gate: bool
+    run_coupling_holdout: bool
     hash_inputs: bool
     result_level: str
     physics_result_valid: bool
@@ -214,24 +218,46 @@ def _resolve_study_mode(
     """Resolve mode defaults and reject combinations with ambiguous physics status."""
 
     mode = str(study_mode).strip().lower()
-    if mode not in {"smoke", "preview", "fast-sm", "full"}:
+    if mode not in {
+        "smoke",
+        "preview",
+        "fast-sm",
+        "fast-pooled",
+        "fast-parameterized",
+        "full",
+    }:
         raise ValueError(f"Unknown study mode {study_mode!r}")
-    strategy = training_strategy or (
-        "sm-crossfit-v2" if mode in {"smoke", "fast-sm"} else "pooled-crossfit-v2"
-    )
+    default_strategy = {
+        "smoke": "sm-crossfit-v2",
+        "preview": "pooled-crossfit-v2",
+        "fast-sm": "sm-crossfit-v2",
+        "fast-pooled": "pooled-crossfit-v2",
+        "fast-parameterized": "parameterized-crossfit-v1",
+        "full": "pooled-crossfit-v2",
+    }[mode]
+    strategy = training_strategy or default_strategy
     if strategy not in {
         "sm-crossfit-v2",
         "pooled-crossfit-v2",
         "parameterized-crossfit-v1",
     }:
         raise ValueError(f"Unknown training strategy {strategy!r}")
-    if mode != "full" and strategy == "parameterized-crossfit-v1":
+    if (
+        mode not in {"full", "fast-parameterized"}
+        and strategy == "parameterized-crossfit-v1"
+    ):
         raise ValueError(
             f"{mode} mode supports only sm-crossfit-v2 or pooled-crossfit-v2; "
-            "parameterized training is a full-mode stage"
+            "parameterized training requires full or fast-parameterized mode"
         )
     if mode == "fast-sm" and strategy != "sm-crossfit-v2":
         raise ValueError("fast-sm mode requires sm-crossfit-v2 training")
+    if mode == "fast-pooled" and strategy != "pooled-crossfit-v2":
+        raise ValueError("fast-pooled mode requires pooled-crossfit-v2 training")
+    if mode == "fast-parameterized" and strategy != "parameterized-crossfit-v1":
+        raise ValueError(
+            "fast-parameterized mode requires parameterized-crossfit-v1 training"
+        )
 
     if mode == "full":
         if max_events is not None:
@@ -253,6 +279,7 @@ def _resolve_study_mode(
             run_shape=shape,
             run_profile_ablation=True,
             run_parameterized_gate=True,
+            run_coupling_holdout=False,
             hash_inputs=bool(hash_inputs),
             result_level=result_level,
             physics_result_valid=True,
@@ -262,14 +289,16 @@ def _resolve_study_mode(
             ),
         )
 
-    if mode == "fast-sm":
+    if mode in {"fast-sm", "fast-pooled", "fast-parameterized"}:
         if max_events is not None:
             raise ValueError(
-                "fast-sm mode requires complete event samples; use smoke mode for --max-events"
+                f"{mode} mode requires complete event samples; "
+                "use smoke mode for --max-events"
             )
         if optuna_trials not in (None, 0):
             raise ValueError(
-                "fast-sm mode uses fixed XGBoost parameters; omit --optuna-trials or set it to 0"
+                f"{mode} mode uses fixed XGBoost parameters; "
+                "omit --optuna-trials or set it to 0"
             )
         shape = True if run_shape is None else bool(run_shape)
         profile = feature_profile or (
@@ -278,12 +307,21 @@ def _resolve_study_mode(
         return StudyModePolicy(
             name=mode,
             feature_profile=profile,
-            training_strategy="sm-crossfit-v2",
+            training_strategy=(
+                "sm-crossfit-v2"
+                if mode == "fast-sm"
+                else (
+                    "pooled-crossfit-v2"
+                    if mode == "fast-pooled"
+                    else "parameterized-crossfit-v1"
+                )
+            ),
             optuna_trials=0,
             max_events=None,
             run_shape=shape,
             run_profile_ablation=False,
             run_parameterized_gate=False,
+            run_coupling_holdout=mode == "fast-parameterized",
             hash_inputs=bool(hash_inputs),
             result_level=("fixed-parameter-full" if shape else "preliminary-cut-only"),
             physics_result_valid=True,
@@ -316,6 +354,7 @@ def _resolve_study_mode(
             run_shape=False,
             run_profile_ablation=False,
             run_parameterized_gate=False,
+            run_coupling_holdout=False,
             hash_inputs=bool(hash_inputs),
             result_level="preliminary-cut-only",
             physics_result_valid=True,
@@ -336,6 +375,7 @@ def _resolve_study_mode(
         run_shape=False,
         run_profile_ablation=False,
         run_parameterized_gate=False,
+        run_coupling_holdout=False,
         hash_inputs=False,
         result_level="non-physics-smoke",
         physics_result_valid=False,
@@ -427,7 +467,7 @@ def _load_sample(
     source_ids = np.full(raw_weights.size, sample_id, dtype=object)
     folds = deterministic_folds(source_ids, event_indices, n_folds=n_folds, seed=seed)
     c3 = d4 = None
-    if kind == "grid_signal":
+    if kind in {"grid_signal", "postfit_hhhbb_signal"}:
         c3, d4 = _parse_point(path)
 
     return EventSample(
@@ -1468,6 +1508,518 @@ def _aggregate_cut_results(
     return sorted(output, key=lambda row: (float(row["c3"]), float(row["d4"])))
 
 
+def _evaluate_postfit_signal_rotation(
+    model: Any,
+    validation: Mapping[str, Any],
+    component_samples: Sequence[EventSample],
+    *,
+    rotation: int,
+    n_folds: int,
+    profile_indices: np.ndarray,
+    parameterized: bool = False,
+) -> dict[str, Any]:
+    """Score a signal component after the model and thresholds are fixed."""
+
+    signal_rows = _score_partition(
+        model,
+        component_samples,
+        rotation=rotation,
+        split="test",
+        n_folds=n_folds,
+        profile_indices=profile_indices,
+        scale_validation_to_full=False,
+        parameterized=parameterized,
+    )
+    point_rows: dict[str, dict[str, Any]] = {}
+    for sample in component_samples:
+        threshold = float(validation["points"][sample.point_id]["threshold"])
+        signal = signal_rows[sample.sample_id]
+        selected = signal["scores"] >= threshold
+        selected_unit = signal["unit_xsec_weights"][selected]
+        selected_physical = signal["physical_weights"][selected]
+        feature_unit_yield = float(np.sum(signal["unit_xsec_weights"]))
+        feature_physical_yield = float(np.sum(signal["physical_weights"]))
+        point_rows[sample.point_id] = {
+            "rotation": int(rotation),
+            "sample_id": sample.sample_id,
+            "c3": sample.c3,
+            "d4": sample.d4,
+            "threshold": threshold,
+            "signal_unit_yield": float(np.sum(selected_unit)),
+            "signal_sumw2_unit": float(np.sum(selected_unit ** 2)),
+            "signal_physical_yield": float(np.sum(selected_physical)),
+            "signal_sumw2_physical": float(np.sum(selected_physical ** 2)),
+            "signal_raw_entries": int(np.sum(selected)),
+            "signal_feature_unit_yield": feature_unit_yield,
+            "signal_feature_physical_yield": feature_physical_yield,
+            "xgboost_efficiency": (
+                float(np.sum(selected_unit)) / feature_unit_yield
+                if feature_unit_yield != 0.0
+                else 0.0
+            ),
+        }
+    return {
+        "rotation": int(rotation),
+        "points": point_rows,
+        "signal_rows": signal_rows,
+        "role": "postfit-signal-only",
+        "parameterized": bool(parameterized),
+    }
+
+
+def _coupling_holdout_assignments(
+    grid_samples: Sequence[EventSample],
+    *,
+    n_folds: int = 5,
+    seed: int = BASE_SEED,
+) -> dict[str, int]:
+    """Assign every coupling point once to a balanced deterministic holdout."""
+
+    n_folds = int(n_folds)
+    if n_folds < 2:
+        raise ValueError("coupling holdout requires at least two folds")
+    point_ids = [str(sample.point_id) for sample in grid_samples]
+    if not point_ids or any(sample.point_id is None for sample in grid_samples):
+        raise ValueError("coupling holdout requires named c3/d4 signal points")
+    if len(set(point_ids)) != len(point_ids):
+        raise ValueError("coupling holdout signal points must be unique")
+
+    ordered = sorted(
+        point_ids,
+        key=lambda point_id: hashlib.sha256(
+            f"{int(seed)}\0{point_id}".encode("utf-8")
+        ).hexdigest(),
+    )
+    return {
+        point_id: index % n_folds
+        for index, point_id in enumerate(ordered)
+    }
+
+
+def _parameterized_coupling_holdout_diagnostic(
+    sm_samples: Sequence[EventSample],
+    grid_samples: Sequence[EventSample],
+    background_samples: Sequence[EventSample],
+    reference_records: Sequence[Mapping[str, Any]],
+    *,
+    observable_set: str,
+    profile: str,
+    n_folds: int,
+    seed: int,
+    source_commit: str,
+    progress: StudyProgress | None = None,
+) -> dict[str, Any]:
+    """Test parameter interpolation with each coupling coordinate held out once.
+
+    One balanced, hash-defined subset of coupling points is removed from signal
+    training in each fold.  The same event-level rotation is then used to choose
+    thresholds on validation events and evaluate disjoint test events for those
+    unseen coordinates.  No post-fit signal component enters this diagnostic.
+    """
+
+    n_folds = int(n_folds)
+    if len(grid_samples) < 3:
+        raise ValueError("coupling holdout requires at least three signal points")
+    assignments = _coupling_holdout_assignments(
+        grid_samples,
+        n_folds=n_folds,
+        seed=seed,
+    )
+    records_by_rotation = {
+        int(record["rotation"]): record for record in reference_records
+    }
+    if set(records_by_rotation) != set(range(n_folds)):
+        raise ValueError(
+            "coupling holdout requires one reference event-crossfit record per fold"
+        )
+
+    profile_indices = _profile_indices(observable_set, profile)
+    rows: list[dict[str, Any]] = []
+    fold_summaries: list[dict[str, Any]] = []
+    for fold in range(n_folds):
+        heldout = [
+            sample
+            for sample in grid_samples
+            if assignments[str(sample.point_id)] == fold
+        ]
+        if not heldout:
+            continue
+        training = [
+            sample
+            for sample in grid_samples
+            if assignments[str(sample.point_id)] != fold
+        ]
+        if not training:
+            raise ValueError(
+                f"coupling holdout fold {fold} has no remaining training points"
+            )
+        if progress is not None:
+            progress.emit(
+                "coupling-holdout",
+                "Training parameterized coupling-point holdout fold",
+                fold=fold + 1,
+                total_folds=n_folds,
+                training_points=len(training),
+                heldout_points=len(heldout),
+            )
+
+        X, y, weights = _training_arrays(
+            sm_samples,
+            training,
+            background_samples,
+            strategy="parameterized-crossfit-v1",
+            profile_indices=profile_indices,
+            rotation=fold,
+            n_folds=n_folds,
+        )
+        model, model_metadata, _ = _train_model(
+            X,
+            y,
+            weights,
+            params=FIXED_XGBOOST_PARAMS,
+            seed=int(seed) + fold,
+            observable_set=observable_set,
+            profile=profile,
+            strategy="parameterized-crossfit-v1",
+            rotation=fold,
+            source_commit=source_commit,
+        )
+        validation = _validation_limits(
+            model,
+            heldout,
+            background_samples,
+            rotation=fold,
+            n_folds=n_folds,
+            profile_indices=profile_indices,
+            parameterized=True,
+        )
+        test = _evaluate_test_rotation(
+            model,
+            validation,
+            heldout,
+            background_samples,
+            rotation=fold,
+            n_folds=n_folds,
+            profile_indices=profile_indices,
+            parameterized=True,
+        )
+        reference_points = records_by_rotation[fold]["test"]["points"]
+        for sample in heldout:
+            point_id = str(sample.point_id)
+            holdout_validation = validation["points"][point_id]
+            holdout_test = test["points"][point_id]
+            if point_id not in reference_points:
+                raise ValueError(
+                    f"coupling holdout reference is missing point {point_id}"
+                )
+            reference = reference_points[point_id]
+            holdout_limit = float(holdout_test["cut_sigma95_fb"])
+            reference_limit = float(reference["cut_sigma95_fb"])
+            ratio = (
+                holdout_limit / reference_limit
+                if (
+                    math.isfinite(holdout_limit)
+                    and math.isfinite(reference_limit)
+                    and reference_limit > 0.0
+                )
+                else None
+            )
+            rows.append(
+                {
+                    "point_id": point_id,
+                    "c3": float(sample.c3),
+                    "d4": float(sample.d4),
+                    "coupling_holdout_fold": fold,
+                    "training_point_count": len(training),
+                    "heldout_point_count": len(heldout),
+                    "holdout_validation_threshold": float(
+                        holdout_validation["threshold"]
+                    ),
+                    "holdout_validation_cut_sigma95_fb": float(
+                        holdout_validation["sigma95_fb"]
+                    ),
+                    "holdout_test_cut_sigma95_fb": holdout_limit,
+                    "event_crossfit_threshold": float(reference["threshold"]),
+                    "event_crossfit_test_cut_sigma95_fb": reference_limit,
+                    "holdout_to_event_crossfit_ratio": ratio,
+                    "classifier_training_role": (
+                        "entire-coupling-coordinate-held-out"
+                    ),
+                    "postfit_hhhbb_included": False,
+                }
+            )
+        fold_summaries.append(
+            {
+                "fold": fold,
+                "training_point_count": len(training),
+                "heldout_point_count": len(heldout),
+                "training_rows": int(X.shape[0]),
+                "validation_objective": float(validation["objective"]),
+                "xgboost_split_nodes": model_metadata.get(
+                    "xgboost_split_nodes"
+                ),
+            }
+        )
+
+    rows.sort(key=lambda row: (float(row["c3"]), float(row["d4"])))
+    if len(rows) != len(grid_samples):
+        raise RuntimeError(
+            "coupling holdout did not evaluate every c3/d4 point exactly once"
+        )
+    ratios = np.asarray(
+        [
+            float(row["holdout_to_event_crossfit_ratio"])
+            for row in rows
+            if row["holdout_to_event_crossfit_ratio"] is not None
+        ],
+        dtype=float,
+    )
+    assignment_payload = json.dumps(
+        sorted(assignments.items()),
+        separators=(",", ":"),
+    )
+    summary = {
+        "status": "complete",
+        "version": COUPLING_HOLDOUT_VERSION,
+        "point_count": len(rows),
+        "finite_ratio_count": int(len(ratios)),
+        "fold_count": n_folds,
+        "assignment_sha256": hashlib.sha256(
+            assignment_payload.encode("utf-8")
+        ).hexdigest(),
+        "assignment_rule": (
+            "sha256(seed,point_id) ordering followed by balanced round-robin folds"
+        ),
+        "event_split_rule": (
+            "holdout fold k uses event rotation k: train on three event folds, "
+            "threshold on validation=(k+1)%5, evaluate test=k"
+        ),
+        "heldout_coordinates_absent_from_signal_training": True,
+        "heldout_coordinates_absent_from_background_parameter_replicas": True,
+        "postfit_hhhbb_included": False,
+        "median_holdout_to_event_crossfit_ratio": (
+            float(np.median(ratios)) if len(ratios) else None
+        ),
+        "q90_holdout_to_event_crossfit_ratio": (
+            float(np.quantile(ratios, 0.90)) if len(ratios) else None
+        ),
+        "points_favoring_holdout_model": int(np.sum(ratios < 1.0)),
+        "folds": fold_summaries,
+    }
+    return {"summary": summary, "rows": rows}
+
+
+def _add_postfit_hhhbb_cut_contribution(
+    aggregate: list[dict[str, Any]],
+    grid_samples: Sequence[EventSample],
+    hhhbb_samples: Sequence[EventSample],
+    rotations: Sequence[Mapping[str, Any]],
+) -> None:
+    """Add hhhbb to the nominal signal only after cut optimization.
+
+    The classifier, validation thresholds, and background yields are unchanged.
+    Limits remain expressed as an equivalent hhhh cross section by scaling the
+    fixed hhhh and hhhbb theory predictions with one common signal strength.
+    """
+
+    if not hhhbb_samples:
+        return
+    grid_by_point = {sample.point_id: sample for sample in grid_samples}
+    hhhbb_by_point = {sample.point_id: sample for sample in hhhbb_samples}
+    if set(grid_by_point) != set(hhhbb_by_point):
+        raise ValueError(
+            "Post-fit hhhbb signal coordinates must exactly match the c3/d4 grid"
+        )
+    if len(rotations) == 0:
+        raise ValueError("Post-fit hhhbb scoring requires cross-fit rotations")
+
+    for row in aggregate:
+        point_id = str(row["point_id"])
+        hhhh_sample = grid_by_point[point_id]
+        hhhbb_sample = hhhbb_by_point[point_id]
+        component_folds = [
+            rotation["points"][point_id] for rotation in rotations
+        ]
+        if len(component_folds) != len(row["folds"]):
+            raise ValueError(
+                f"{point_id}: hhhh and hhhbb fold counts do not match"
+            )
+
+        hhhh_xsec_fb = float(hhhh_sample.xsec_fb)
+        hhhbb_xsec_fb = float(hhhbb_sample.xsec_fb)
+        if hhhh_xsec_fb <= 0.0 or hhhbb_xsec_fb < 0.0:
+            raise ValueError(
+                f"{point_id}: post-fit signal cross sections must be nonnegative "
+                "with a positive hhhh reference"
+            )
+
+        hhhh_unit_yield = float(row["selected_signal_yield_per_fb"])
+        hhhh_staterror_unit = float(row["selected_signal_staterror_per_fb"])
+        hhhh_nominal_yield = hhhh_xsec_fb * hhhh_unit_yield
+        hhhh_nominal_sumw2 = (hhhh_xsec_fb * hhhh_staterror_unit) ** 2
+        hhhbb_unit_yield = float(
+            sum(fold["signal_unit_yield"] for fold in component_folds)
+        )
+        hhhbb_sumw2_unit = float(
+            sum(fold["signal_sumw2_unit"] for fold in component_folds)
+        )
+        hhhbb_nominal_yield = float(
+            sum(fold["signal_physical_yield"] for fold in component_folds)
+        )
+        hhhbb_nominal_sumw2 = float(
+            sum(fold["signal_sumw2_physical"] for fold in component_folds)
+        )
+        combined_nominal_yield = hhhh_nominal_yield + hhhbb_nominal_yield
+        combined_nominal_sumw2 = hhhh_nominal_sumw2 + hhhbb_nominal_sumw2
+        equivalent_unit_yield = combined_nominal_yield / hhhh_xsec_fb
+        equivalent_sumw2_unit = combined_nominal_sumw2 / (hhhh_xsec_fb ** 2)
+
+        row.update(
+            {
+                "signal_components": "hhhh,hhhbb",
+                "limit_parameter": "common-signal-strength",
+                "limit_cross_section_basis": "equivalent-hhhh-fb",
+                "hhhh_xsec_fb": hhhh_xsec_fb,
+                "hhhh_selected_signal_yield_per_fb": hhhh_unit_yield,
+                "hhhh_selected_signal_staterror_per_fb": hhhh_staterror_unit,
+                "hhhh_nominal_selected_signal_yield": hhhh_nominal_yield,
+                "hhhbb_file": str(hhhbb_sample.path),
+                "hhhbb_xsec_fb": hhhbb_xsec_fb,
+                "hhhbb_rate_factor": float(hhhbb_sample.rate_factor),
+                "hhhbb_generated_events": hhhbb_sample.generated_events,
+                "hhhbb_normalisation_weight": float(
+                    hhhbb_sample.normalisation_weight
+                ),
+                "hhhbb_feature_tree_efficiency": float(
+                    np.sum(hhhbb_sample.raw_weights)
+                    / hhhbb_sample.normalisation_weight
+                ),
+                "hhhbb_xgboost_efficiency": (
+                    hhhbb_unit_yield / float(np.sum(hhhbb_sample.unit_xsec_weights))
+                    if float(np.sum(hhhbb_sample.unit_xsec_weights)) != 0.0
+                    else 0.0
+                ),
+                "hhhbb_selected_signal_yield_per_fb": hhhbb_unit_yield,
+                "hhhbb_selected_signal_staterror_per_fb": math.sqrt(
+                    hhhbb_sumw2_unit
+                ),
+                "hhhbb_nominal_selected_signal_yield": hhhbb_nominal_yield,
+                "hhhbb_nominal_selected_signal_staterror": math.sqrt(
+                    hhhbb_nominal_sumw2
+                ),
+                "hhhbb_selected_raw_entries": int(
+                    sum(fold["signal_raw_entries"] for fold in component_folds)
+                ),
+                "combined_nominal_selected_signal_yield": combined_nominal_yield,
+                "combined_nominal_selected_signal_staterror": math.sqrt(
+                    combined_nominal_sumw2
+                ),
+                "selected_signal_yield_per_fb": equivalent_unit_yield,
+                "selected_signal_staterror_per_fb": math.sqrt(
+                    equivalent_sumw2_unit
+                ),
+            }
+        )
+
+        for hhhh_fold, hhhbb_fold in zip(row["folds"], component_folds):
+            hhhh_fold_unit = float(hhhh_fold["signal_unit_yield"])
+            hhhh_fold_sumw2 = float(hhhh_fold["signal_sumw2_unit"])
+            hhhh_fold_nominal = hhhh_xsec_fb * hhhh_fold_unit
+            combined_fold_nominal = (
+                hhhh_fold_nominal + float(hhhbb_fold["signal_physical_yield"])
+            )
+            combined_fold_sumw2 = (
+                (hhhh_xsec_fb ** 2) * hhhh_fold_sumw2
+                + float(hhhbb_fold["signal_sumw2_physical"])
+            )
+            combined_fold_unit = combined_fold_nominal / hhhh_xsec_fb
+            hhhh_fold.update(
+                {
+                    "hhhh_signal_unit_yield": hhhh_fold_unit,
+                    "hhhh_signal_sumw2_unit": hhhh_fold_sumw2,
+                    "hhhbb_signal_unit_yield": float(
+                        hhhbb_fold["signal_unit_yield"]
+                    ),
+                    "hhhbb_signal_sumw2_unit": float(
+                        hhhbb_fold["signal_sumw2_unit"]
+                    ),
+                    "hhhbb_signal_physical_yield": float(
+                        hhhbb_fold["signal_physical_yield"]
+                    ),
+                    "hhhbb_signal_sumw2_physical": float(
+                        hhhbb_fold["signal_sumw2_physical"]
+                    ),
+                    "hhhbb_signal_raw_entries": int(
+                        hhhbb_fold["signal_raw_entries"]
+                    ),
+                    "combined_signal_nominal_yield": combined_fold_nominal,
+                    "signal_unit_yield": combined_fold_unit,
+                    "signal_sumw2_unit": (
+                        combined_fold_sumw2 / (hhhh_xsec_fb ** 2)
+                    ),
+                    "cut_sigma95_fb": (
+                        float(hhhh_fold["s95_exact_events"])
+                        / combined_fold_unit
+                        if combined_fold_unit > 0.0
+                        else math.inf
+                    ),
+                }
+            )
+
+        background_yield = float(row["background_yield"])
+        s95 = exact_cls_signal_upper_limit(background_yield)
+        s95_down = exact_cls_signal_upper_limit(background_yield * 0.25)
+        s95_up = exact_cls_signal_upper_limit(background_yield * 4.0)
+        row.update(
+            {
+                "s95_exact_events": s95,
+                "cut_signal_strength95": (
+                    s95 / combined_nominal_yield
+                    if combined_nominal_yield > 0.0
+                    else math.inf
+                ),
+                "cut_signal_strength95_background_x0p25": (
+                    s95_down / combined_nominal_yield
+                    if combined_nominal_yield > 0.0
+                    else math.inf
+                ),
+                "cut_signal_strength95_background_x4": (
+                    s95_up / combined_nominal_yield
+                    if combined_nominal_yield > 0.0
+                    else math.inf
+                ),
+                "cut_sigma95_fb": (
+                    s95 / equivalent_unit_yield
+                    if equivalent_unit_yield > 0.0
+                    else math.inf
+                ),
+                "cut_sigma95_background_x0p25_fb": (
+                    s95_down / equivalent_unit_yield
+                    if equivalent_unit_yield > 0.0
+                    else math.inf
+                ),
+                "cut_sigma95_background_x4_fb": (
+                    s95_up / equivalent_unit_yield
+                    if equivalent_unit_yield > 0.0
+                    else math.inf
+                ),
+                "excluded_cut": bool(
+                    combined_nominal_yield >= s95
+                    if combined_nominal_yield > 0.0
+                    else False
+                ),
+                "fold_signal_yield_std": float(
+                    np.std(
+                        [fold["signal_unit_yield"] for fold in row["folds"]]
+                    )
+                ),
+                "fold_cut_sigma95_std": float(
+                    np.std([fold["cut_sigma95_fb"] for fold in row["folds"]])
+                ),
+            }
+        )
+
+
 def _sm_background_cutflow_rows(
     background_samples: Sequence[EventSample],
     records: Sequence[Mapping[str, Any]],
@@ -1488,6 +2040,7 @@ def _sm_background_cutflow_rows(
         raise ValueError("SM background cutflow requires cross-fit records")
 
     thresholds: list[float] = []
+    point_ids: list[str] = []
     for record in records:
         point_rows = record["test"]["points"]
         matches = [
@@ -1501,10 +2054,11 @@ def _sm_background_cutflow_rows(
                 "SM background cutflow requires exactly one (c3,d4)=(0,0) "
                 f"test point per fold; found {len(matches)}"
             )
-        _point_id, point_row = matches[0]
+        point_id, point_row = matches[0]
         threshold = float(point_row["threshold"])
         if not math.isfinite(threshold):
             raise ValueError("SM background cutflow encountered a non-finite threshold")
+        point_ids.append(point_id)
         thresholds.append(threshold)
 
     rows: list[dict[str, Any]] = []
@@ -1512,8 +2066,24 @@ def _sm_background_cutflow_rows(
         selected_weights: list[np.ndarray] = []
         held_out_indices: list[np.ndarray] = []
         selected_entries = 0
-        for record, threshold in zip(records, thresholds):
-            background_rows = record["test"]["background_rows"]
+        for record, threshold, point_id in zip(records, thresholds, point_ids):
+            if record["test"].get("parameterized"):
+                cache = record.setdefault("_test_parameter_cache", {})
+                if point_id not in cache:
+                    cache[point_id] = _score_partition(
+                        _shape_model_for_record(record),
+                        record["_background_samples"],
+                        rotation=int(record["rotation"]),
+                        split="test",
+                        n_folds=int(record["_n_folds"]),
+                        profile_indices=record["_profile_indices"],
+                        scale_validation_to_full=False,
+                        parameterized=True,
+                        parameter_point=(0.0, 0.0),
+                    )
+                background_rows = cache[point_id]
+            else:
+                background_rows = record["test"]["background_rows"]
             if sample.sample_id not in background_rows:
                 raise ValueError(
                     f"SM background cutflow is missing {sample.sample_id!r} in a test fold"
@@ -1555,10 +2125,29 @@ def _sm_background_cutflow_rows(
         rows.append(
             {
                 "sample_id": sample.sample_id,
+                "sample_role": "background",
+                "is_signal": False,
+                "signal_component": None,
+                "file": str(sample.path),
                 "process_id": metadata.get("process_id", sample.sample_id),
                 "description": metadata.get("description", sample.sample_id),
+                "production_xsec_fb": float(sample.xsec_fb),
+                "rate_factor": float(sample.rate_factor),
+                "effective_inclusive_xsec_fb": (
+                    float(sample.xsec_fb) * float(sample.rate_factor)
+                ),
                 "input_xsec_fb": input_events / luminosity,
                 "input_events": input_events,
+                "feature_tree_efficiency": (
+                    input_events
+                    / (
+                        luminosity
+                        * float(sample.xsec_fb)
+                        * float(sample.rate_factor)
+                    )
+                    if float(sample.xsec_fb) * float(sample.rate_factor) != 0.0
+                    else 0.0
+                ),
                 "xgboost_xsec_fb": xgboost_events / luminosity,
                 "xgboost_events": xgboost_events,
                 "xgboost_events_error": xgboost_error,
@@ -1568,10 +2157,399 @@ def _sm_background_cutflow_rows(
                 ),
                 "entries": sample.entries,
                 "selected_entries": selected_entries,
+                "generated_events": sample.generated_events,
+                "normalisation_weight": float(sample.normalisation_weight),
+                "c3": sample.c3,
+                "d4": sample.d4,
             }
         )
 
     return rows, thresholds
+
+
+def _cut_signal_strength95(row: Mapping[str, Any]) -> float:
+    """Return the common signal-strength limit for one cut-result row."""
+
+    if row.get("cut_signal_strength95") is not None:
+        value = float(row["cut_signal_strength95"])
+    else:
+        theory_xsec = float(row["xsec_fb"])
+        value = (
+            float(row["cut_sigma95_fb"]) / theory_xsec
+            if theory_xsec > 0.0
+            else math.inf
+        )
+    return value if math.isfinite(value) and value > 0.0 else math.inf
+
+
+def _select_limit_representative_points(
+    aggregate: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Select eight grid points nearest mu95=1 in fixed geometric regions."""
+
+    tolerance = 1.0e-12
+    regions = (
+        (
+            "c3~0, d4<0",
+            lambda c3, d4: abs(c3) < tolerance and d4 < -tolerance,
+        ),
+        (
+            "c3~0, d4>0",
+            lambda c3, d4: abs(c3) < tolerance and d4 > tolerance,
+        ),
+        (
+            "d4~0, c3<0",
+            lambda c3, d4: abs(d4) < tolerance and c3 < -tolerance,
+        ),
+        (
+            "d4~0, c3>0",
+            lambda c3, d4: abs(d4) < tolerance and c3 > tolerance,
+        ),
+        (
+            "diagonal Q1",
+            lambda c3, d4: c3 > tolerance and d4 > tolerance,
+        ),
+        (
+            "diagonal Q2",
+            lambda c3, d4: c3 < -tolerance and d4 > tolerance,
+        ),
+        (
+            "diagonal Q3",
+            lambda c3, d4: c3 < -tolerance and d4 < -tolerance,
+        ),
+        (
+            "diagonal Q4",
+            lambda c3, d4: c3 > tolerance and d4 < -tolerance,
+        ),
+    )
+    selected: list[dict[str, Any]] = []
+    for category, predicate in regions:
+        candidates = []
+        for row in aggregate:
+            c3 = float(row["c3"])
+            d4 = float(row["d4"])
+            mu95 = _cut_signal_strength95(row)
+            if predicate(c3, d4) and math.isfinite(mu95):
+                candidates.append(
+                    (
+                        abs(math.log(mu95)),
+                        c3,
+                        d4,
+                        row,
+                        mu95,
+                    )
+                )
+        if not candidates:
+            raise ValueError(
+                "Cannot select a 95% CL representative point for region "
+                f"{category!r}"
+            )
+        distance, _c3, _d4, result, mu95 = min(
+            candidates,
+            key=lambda item: (item[0], item[1], item[2]),
+        )
+        selected.append(
+            {
+                "representative_category": category,
+                "result": result,
+                "cut_signal_strength95": mu95,
+                "limit_proximity_log_mu95": float(distance),
+            }
+        )
+
+    point_ids = [str(item["result"]["point_id"]) for item in selected]
+    if len(set(point_ids)) != len(regions):
+        raise ValueError("The 95% CL representative regions selected duplicate points")
+    return selected
+
+
+def _sm_signal_cutflow_rows(
+    grid_samples: Sequence[EventSample],
+    hhhbb_samples: Sequence[EventSample],
+    aggregate: Sequence[Mapping[str, Any]],
+    *,
+    luminosity: float,
+    include_limit_representatives: bool = False,
+) -> list[dict[str, Any]]:
+    """Build role-labelled SM and representative-point signal cutflow rows."""
+
+    luminosity = float(luminosity)
+    if not math.isfinite(luminosity) or luminosity <= 0.0:
+        raise ValueError("luminosity must be finite and positive")
+
+    grid_by_point = {str(sample.point_id): sample for sample in grid_samples}
+    if len(grid_by_point) != len(grid_samples):
+        raise ValueError("Signal cutflow grid contains duplicate coupling points")
+    hhhbb_by_point = {str(sample.point_id): sample for sample in hhhbb_samples}
+    if len(hhhbb_by_point) != len(hhhbb_samples):
+        raise ValueError("Signal cutflow hhhbb grid contains duplicate coupling points")
+
+    sm_results = [
+        row
+        for row in aggregate
+        if abs(float(row["c3"])) < 1.0e-12
+        and abs(float(row["d4"])) < 1.0e-12
+    ]
+    if len(sm_results) != 1:
+        raise ValueError(
+            "SM signal cutflow requires exactly one result at (c3,d4)=(0,0)"
+        )
+    sm_result = sm_results[0]
+    selected_points = [
+        {
+            "representative_category": "SM reference",
+            "result": sm_result,
+            "cut_signal_strength95": _cut_signal_strength95(sm_result),
+            "limit_proximity_log_mu95": None,
+            "is_limit_representative": False,
+        }
+    ]
+    if include_limit_representatives:
+        selected_points.extend(
+            {
+                **item,
+                "is_limit_representative": True,
+            }
+            for item in _select_limit_representative_points(aggregate)
+        )
+
+    def make_row(
+        sample: EventSample,
+        *,
+        result: Mapping[str, Any],
+        category: str,
+        is_limit_representative: bool,
+        component: str,
+        process_id: str,
+        description: str,
+        selected_events: float,
+        selected_error: float,
+        selected_entries: int,
+    ) -> dict[str, Any]:
+        input_events = float(np.sum(sample.physical_weights))
+        effective_inclusive_xsec = (
+            float(sample.xsec_fb) * float(sample.rate_factor)
+        )
+        mu95 = _cut_signal_strength95(result)
+        return {
+            "sample_id": sample.sample_id,
+            "sample_role": "signal",
+            "is_signal": True,
+            "signal_component": component,
+            "point_id": sample.point_id,
+            "point_class": (
+                "limit-representative"
+                if is_limit_representative
+                else "standard-model-reference"
+            ),
+            "representative_category": category,
+            "is_limit_representative": bool(is_limit_representative),
+            "representative_selection": (
+                "minimum-abs-log-mu95-in-region"
+                if is_limit_representative
+                else None
+            ),
+            "cut_signal_strength95": mu95,
+            "theory_to_limit_ratio": (
+                1.0 / mu95 if math.isfinite(mu95) and mu95 > 0.0 else 0.0
+            ),
+            "limit_proximity_log_mu95": (
+                abs(math.log(mu95))
+                if is_limit_representative
+                and math.isfinite(mu95)
+                and mu95 > 0.0
+                else None
+            ),
+            "excluded_cut": bool(result.get("excluded_cut", False)),
+            "file": str(sample.path),
+            "process_id": process_id,
+            "description": description,
+            "production_xsec_fb": float(sample.xsec_fb),
+            "rate_factor": float(sample.rate_factor),
+            "effective_inclusive_xsec_fb": effective_inclusive_xsec,
+            "input_xsec_fb": input_events / luminosity,
+            "input_events": input_events,
+            "xgboost_xsec_fb": selected_events / luminosity,
+            "xgboost_events": selected_events,
+            "xgboost_events_error": selected_error,
+            "xgboost_xsec_error_fb": selected_error / luminosity,
+            "xgboost_efficiency": (
+                selected_events / input_events if input_events != 0.0 else 0.0
+            ),
+            "feature_tree_efficiency": (
+                input_events / (luminosity * effective_inclusive_xsec)
+                if effective_inclusive_xsec != 0.0
+                else 0.0
+            ),
+            "entries": sample.entries,
+            "selected_entries": int(selected_entries),
+            "generated_events": sample.generated_events,
+            "normalisation_weight": float(sample.normalisation_weight),
+            "c3": sample.c3,
+            "d4": sample.d4,
+        }
+
+    rows: list[dict[str, Any]] = []
+    for point in selected_points:
+        result = point["result"]
+        point_id = str(result["point_id"])
+        if point_id not in grid_by_point:
+            raise ValueError(
+                f"Signal cutflow result {point_id!r} has no matching hhhh sample"
+            )
+        hhhh_sample = grid_by_point[point_id]
+        is_representative = bool(point["is_limit_representative"])
+        category = str(point["representative_category"])
+        hhhh_xsec_fb = float(hhhh_sample.xsec_fb)
+        hhhh_unit_yield = float(
+            result["hhhh_selected_signal_yield_per_fb"]
+            if "hhhh_selected_signal_yield_per_fb" in result
+            else result["selected_signal_yield_per_fb"]
+        )
+        hhhh_unit_error = float(
+            result["hhhh_selected_signal_staterror_per_fb"]
+            if "hhhh_selected_signal_staterror_per_fb" in result
+            else result["selected_signal_staterror_per_fb"]
+        )
+        hhhh_selected_entries = sum(
+            int(
+                fold.get(
+                    "hhhh_signal_raw_entries",
+                    fold.get("signal_raw_entries", 0),
+                )
+            )
+            for fold in result["folds"]
+        )
+        rows.append(
+            make_row(
+                hhhh_sample,
+                result=result,
+                category=category,
+                is_limit_representative=is_representative,
+                component="hhhh",
+                process_id="hhhh" if is_representative else "sm_hhhh",
+                description=(
+                    f"hhhh [{category}]"
+                    if is_representative
+                    else "SM gg -> hhhh -> 8b"
+                ),
+                selected_events=hhhh_xsec_fb * hhhh_unit_yield,
+                selected_error=hhhh_xsec_fb * hhhh_unit_error,
+                selected_entries=hhhh_selected_entries,
+            )
+        )
+
+        if hhhbb_samples:
+            if point_id not in hhhbb_by_point:
+                raise ValueError(
+                    f"Signal cutflow result {point_id!r} has no matching hhhbb sample"
+                )
+            required = (
+                "hhhbb_nominal_selected_signal_yield",
+                "hhhbb_nominal_selected_signal_staterror",
+                "hhhbb_selected_raw_entries",
+            )
+            missing = [key for key in required if key not in result]
+            if missing:
+                raise ValueError(
+                    f"{point_id}: post-fit hhhbb cutflow fields are missing: "
+                    + ", ".join(missing)
+                )
+            rows.append(
+                make_row(
+                    hhhbb_by_point[point_id],
+                    result=result,
+                    category=category,
+                    is_limit_representative=is_representative,
+                    component="hhhbb",
+                    process_id="hhhbb" if is_representative else "sm_hhhbb",
+                    description=(
+                        f"hhh+bb [{category}]"
+                        if is_representative
+                        else (
+                            "SM gg -> hhhg, forced g -> b bbar "
+                            "(hhh + bb -> 8b)"
+                        )
+                    ),
+                    selected_events=float(
+                        result["hhhbb_nominal_selected_signal_yield"]
+                    ),
+                    selected_error=float(
+                        result["hhhbb_nominal_selected_signal_staterror"]
+                    ),
+                    selected_entries=int(result["hhhbb_selected_raw_entries"]),
+                )
+            )
+    return rows
+
+
+def _cutflow_role_totals(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, float | int]:
+    """Return additive cutflow totals for one non-overlapping sample role."""
+
+    rows = list(rows)
+    return {
+        "samples": len(rows),
+        "entries": int(sum(int(row.get("entries", 0)) for row in rows)),
+        "selected_entries": int(
+            sum(int(row.get("selected_entries", 0)) for row in rows)
+        ),
+        "input_xsec_fb": float(
+            sum(float(row.get("input_xsec_fb", 0.0)) for row in rows)
+        ),
+        "input_events": float(
+            sum(float(row.get("input_events", 0.0)) for row in rows)
+        ),
+        "xgboost_xsec_fb": float(
+            sum(float(row.get("xgboost_xsec_fb", 0.0)) for row in rows)
+        ),
+        "xgboost_events": float(
+            sum(float(row.get("xgboost_events", 0.0)) for row in rows)
+        ),
+        "xgboost_events_error": float(
+            math.sqrt(
+                sum(
+                    float(row.get("xgboost_events_error", 0.0)) ** 2
+                    for row in rows
+                )
+            )
+        ),
+    }
+
+
+def _cutflow_signal_totals_by_point(
+    rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Add signal components only within, never across, coupling hypotheses."""
+
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        point_id = str(row["point_id"])
+        grouped.setdefault(point_id, []).append(row)
+
+    totals = []
+    for point_rows in grouped.values():
+        first = point_rows[0]
+        total = _cutflow_role_totals(point_rows)
+        total.update(
+            {
+                "point_id": first["point_id"],
+                "c3": first["c3"],
+                "d4": first["d4"],
+                "point_class": first["point_class"],
+                "representative_category": first["representative_category"],
+                "is_limit_representative": first["is_limit_representative"],
+                "cut_signal_strength95": first["cut_signal_strength95"],
+                "theory_to_limit_ratio": first["theory_to_limit_ratio"],
+                "excluded_cut": first["excluded_cut"],
+                "signal_components": [
+                    str(row["signal_component"]) for row in point_rows
+                ],
+            }
+        )
+        totals.append(total)
+    return totals
 
 
 def _aggregate_validation_crossfit(
@@ -1823,6 +2801,7 @@ def _normalization_metadata(
     sm_samples: Sequence[EventSample],
     grid_samples: Sequence[EventSample],
     background_samples: Sequence[EventSample],
+    postfit_signal_samples: Sequence[EventSample] = (),
 ) -> dict[str, Any]:
     return {
         "luminosity_fb_inverse": float(luminosity),
@@ -1837,7 +2816,12 @@ def _normalization_metadata(
                 "normalisation_source": sample.normalisation_source,
                 "generated_events": sample.generated_events,
             }
-            for sample in [*sm_samples, *grid_samples, *background_samples]
+            for sample in [
+                *sm_samples,
+                *grid_samples,
+                *background_samples,
+                *postfit_signal_samples,
+            ]
         ],
     }
 
@@ -2627,6 +3611,7 @@ def _draw_legacy_style_exclusion_plot(
     include_xsec: bool,
     include_atlas: bool,
     limit_label: str,
+    process_title: str,
     luminosity: float,
     c3_range: tuple[float, float],
     d4_range: tuple[float, float],
@@ -2809,7 +3794,8 @@ def _draw_legacy_style_exclusion_plot(
         r"$d_4$", fontsize=legacy_style.DEFAULT_C3D4_OVERLAY_AXIS_LABEL_FONTSIZE
     )
     axis.set_title(
-        r"$gg \to hhhh$ at 14 TeV, "
+        process_title
+        + " at 14 TeV, "
         + rf"$L={float(luminosity):g}\,\mathrm{{fb}}^{{-1}}$",
         fontsize=20,
     )
@@ -2834,6 +3820,8 @@ def _draw_legacy_style_exclusion_plot(
         "background_boundary_count": band_boundary_count,
         "perturbativity_contour_drawn": perturbativity_drawn,
         "atlas_reference_curve": atlas_metadata,
+        "process_title": process_title,
+        "limit_label": limit_label,
         "watermark": watermark,
     }
 
@@ -2938,11 +3926,28 @@ def _write_legacy_style_exclusion_contours(
     if perturbativity is None:
         perturbativity = legacy_style._hhhh_perturbativity_grid(c3_grid, d4_grid)
         _LEGACY_PERTURBATIVITY_CACHE[perturbativity_key] = perturbativity
-    label = (
-        r"$gg \rightarrow hhhh \rightarrow 8b$, exact $\mathrm{CL}_{s}$ 95% (cut)"
-        if limit_kind == "cut"
-        else r"$gg \rightarrow hhhh \rightarrow 8b$, pyhf $\mathrm{CL}_{s}$ 95% (shape)"
+    includes_postfit_hhhbb = any(
+        "hhhbb" in str(row.get("signal_components", "")).split(",")
+        for row in rows
     )
+    if includes_postfit_hhhbb:
+        process_title = r"$hhhh + hhhg\,(g\to b\bar b)$ signal"
+        label = (
+            r"$hhhh + hhhg\,(g\to b\bar b)$, exact "
+            r"$\mathrm{CL}_{s}$ 95% (cut)"
+            if limit_kind == "cut"
+            else r"$hhhh + hhhg\,(g\to b\bar b)$, pyhf "
+            r"$\mathrm{CL}_{s}$ 95% (shape)"
+        )
+    else:
+        process_title = r"$gg \to hhhh$"
+        label = (
+            r"$gg \rightarrow hhhh \rightarrow 8b$, exact "
+            r"$\mathrm{CL}_{s}$ 95% (cut)"
+            if limit_kind == "cut"
+            else r"$gg \rightarrow hhhh \rightarrow 8b$, pyhf "
+            r"$\mathrm{CL}_{s}$ 95% (shape)"
+        )
     variants = {
         "xsec": {"include_xsec": True, "include_atlas": False},
         "xsec_atlas": {"include_xsec": True, "include_atlas": True},
@@ -2967,6 +3972,7 @@ def _write_legacy_style_exclusion_contours(
                 include_xsec=settings["include_xsec"],
                 include_atlas=settings["include_atlas"],
                 limit_label=label,
+                process_title=process_title,
                 luminosity=luminosity,
                 c3_range=c3_range,
                 d4_range=d4_range,
@@ -3273,7 +4279,12 @@ def _publish_cut_preview(
     status_file = preview_dir / "status.json"
     preview_level = (
         "preliminary-cut-only"
-        if policy.name in {"full", "fast-sm"}
+        if policy.name in {
+            "full",
+            "fast-sm",
+            "fast-pooled",
+            "fast-parameterized",
+        }
         else policy.result_level
     )
     preview_rows = []
@@ -3453,6 +4464,39 @@ def _test_fold_arrays(
 ) -> dict[str, np.ndarray]:
     test = record["test"]
     signal = test["signal_rows"][sample.sample_id]
+    signal_scores = np.asarray(signal["scores"], dtype=float)
+    signal_weights = np.asarray(signal["unit_xsec_weights"], dtype=float)
+    postfit = record.get("postfit_hhhbb_test")
+    if postfit is not None:
+        point = postfit.get("points", {}).get(sample.point_id)
+        if point is None:
+            raise ValueError(
+                f"{sample.point_id}: post-fit hhhbb test template is missing"
+            )
+        sample_id = str(point["sample_id"])
+        try:
+            postfit_signal = postfit["signal_rows"][sample_id]
+        except KeyError as error:
+            raise ValueError(
+                f"{sample.point_id}: post-fit hhhbb score row {sample_id!r} is missing"
+            ) from error
+        hhhh_xsec_fb = float(sample.xsec_fb)
+        if not math.isfinite(hhhh_xsec_fb) or hhhh_xsec_fb <= 0.0:
+            raise ValueError(
+                f"{sample.point_id}: a positive finite hhhh cross section is required "
+                "to express the post-fit hhhbb shape on the equivalent-hhhh-fb basis"
+            )
+        postfit_scores = np.asarray(postfit_signal["scores"], dtype=float)
+        postfit_weights = (
+            np.asarray(postfit_signal["physical_weights"], dtype=float)
+            / hhhh_xsec_fb
+        )
+        if postfit_scores.shape != postfit_weights.shape:
+            raise ValueError(
+                f"{sample.point_id}: post-fit hhhbb scores and weights do not match"
+            )
+        signal_scores = np.concatenate((signal_scores, postfit_scores))
+        signal_weights = np.concatenate((signal_weights, postfit_weights))
     if test.get("parameterized"):
         cache = record.setdefault("_test_parameter_cache", {})
         if sample.point_id not in cache:
@@ -3471,8 +4515,8 @@ def _test_fold_arrays(
     else:
         background_rows = test["background_rows"]
     return {
-        "signal_scores": np.asarray(signal["scores"], dtype=float),
-        "signal_weights": np.asarray(signal["unit_xsec_weights"], dtype=float),
+        "signal_scores": signal_scores,
+        "signal_weights": signal_weights,
         "background_scores": _concatenate_partition(background_rows, "scores"),
         "background_weights": _concatenate_partition(
             background_rows, "physical_weights"
@@ -3537,6 +4581,18 @@ def _compact_shape_records(
                 ),
             },
         }
+        postfit = record.get("postfit_hhhbb_test")
+        if postfit is not None:
+            item["postfit_hhhbb_test"] = {
+                "points": {
+                    str(point_id): {"sample_id": str(point["sample_id"])}
+                    for point_id, point in postfit["points"].items()
+                },
+                "signal_rows": _compact_shape_partition_rows(
+                    postfit["signal_rows"], signal=False
+                ),
+                "role": "postfit-signal-only",
+            }
         if parameterized:
             model_path = record.get("model")
             if not model_path:
@@ -3610,7 +4666,23 @@ def _poi_bounds_for_channels(channels: Sequence[Mapping[str, Any]]) -> tuple[flo
     if signal <= 0.0 or background < 0.0:
         return (0.0, 1.0e4)
     estimate = exact_cls_signal_upper_limit(background) / signal
-    return (0.0, max(100.0, 100.0 * estimate))
+    return _poi_bounds_from_estimate(estimate)
+
+
+def _poi_bounds_from_estimate(estimate: float) -> tuple[float, float]:
+    """Return a pyhf search bracket tied to the expected limit scale.
+
+    ``upper_limit`` probes the configured POI upper bound before starting its
+    root search.  A large absolute floor therefore forces fits at physically
+    irrelevant signal strengths and can make SLSQP drive MC-stat nuisance
+    parameters to their bounds.  Ten times the analytic one-bin estimate
+    safely brackets the expected bands while avoiding that numerical regime.
+    """
+
+    value = float(estimate)
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError("the pyhf POI estimate must be finite and positive")
+    return (0.0, PYHF_POI_BRACKET_MULTIPLIER * value)
 
 
 def _select_shape_candidate(
@@ -3822,7 +4894,7 @@ def _evaluate_shape_point(
     ]
     | None,
 ) -> dict[str, Any]:
-    """Evaluate the unchanged pyhf prescription for exactly one grid point."""
+    """Evaluate the frozen-validation pyhf prescription for one grid point."""
 
     parameterized = any(record["validation"].get("parameterized") for record in records)
     _clear_parameter_caches(records)
@@ -3881,13 +4953,16 @@ def _evaluate_shape_point(
                 one_bin_signal,
                 one_bin_background,
                 include_staterror=False,
-                poi_bounds=(0.0, max(100.0, 100.0 * one_bin_estimate)),
+                poi_bounds=_poi_bounds_from_estimate(one_bin_estimate),
             )
         selection = _select_shape_candidate(
             records,
             sample,
             candidate_maps,
             common_candidates,
+        )
+        includes_postfit_hhhbb = any(
+            record.get("postfit_hhhbb_test") is not None for record in records
         )
         base = {
             "point_id": sample.point_id,
@@ -3900,6 +4975,21 @@ def _evaluate_shape_point(
             "one_bin_signal_sumw2": one_bin_signal_sumw2,
             "one_bin_background_sumw2": one_bin_background_sumw2,
         }
+        if includes_postfit_hhhbb:
+            base.update(
+                {
+                    "signal_components": "hhhh,hhhbb",
+                    "limit_parameter": "common-signal-strength",
+                    "limit_cross_section_basis": "equivalent-hhhh-fb",
+                    "hhhh_xsec_fb": float(sample.xsec_fb),
+                    "postfit_hhhbb_in_training": False,
+                    "postfit_hhhbb_in_threshold_optimization": False,
+                    "postfit_hhhbb_in_shape_binning_optimization": False,
+                    "postfit_hhhbb_role": (
+                        "held-out-test-template-after-frozen-hhhh-validation-binning"
+                    ),
+                }
+            )
         if one_bin.get("status") == "invalid_signal":
             return {
                 **base,
@@ -4103,6 +5193,25 @@ def _shape_worker(point_index: int) -> dict[str, Any]:
     )
 
 
+def _shutdown_shape_executor(
+    executor: ProcessPoolExecutor,
+    *,
+    wait_for_workers: bool,
+    cancel_futures: bool,
+) -> None:
+    """Shut down an executor on Python versions with or without cancel_futures."""
+
+    try:
+        executor.shutdown(
+            wait=wait_for_workers,
+            cancel_futures=cancel_futures,
+        )
+    except TypeError as error:
+        if "cancel_futures" not in str(error):
+            raise
+        executor.shutdown(wait=wait_for_workers)
+
+
 def _terminate_shape_executor(executor: ProcessPoolExecutor) -> None:
     """Stop active fork workers promptly after an interrupted shape stage."""
 
@@ -4120,7 +5229,11 @@ def _terminate_shape_executor(executor: ProcessPoolExecutor) -> None:
                 process.terminate()
         except (OSError, ValueError):
             pass
-    executor.shutdown(wait=False, cancel_futures=True)
+    _shutdown_shape_executor(
+        executor,
+        wait_for_workers=False,
+        cancel_futures=True,
+    )
     for process in processes:
         try:
             process.join(timeout=5.0)
@@ -4142,6 +5255,7 @@ def _shape_point_descriptors(grid_samples: Sequence[EventSample]) -> list[ShapeP
                 point_id=sample.point_id,
                 c3=float(sample.c3),
                 d4=float(sample.d4),
+                xsec_fb=float(sample.xsec_fb),
             )
         )
     return points
@@ -4190,6 +5304,12 @@ def _shape_fingerprint(
             "min_background_neff": 10.0,
             "include_staterror": True,
             "background_envelope": [0.25, 4.0],
+            "postfit_signal_policy": (
+                "hhhbb-held-out-test-template-after-frozen-hhhh-validation-binning"
+            ),
+            "postfit_signal_weight_basis": (
+                "physical-hhhbb-weight-divided-by-point-hhhh-xsec-fb"
+            ),
         },
         "strategy": str(strategy),
         "profile": str(profile),
@@ -4307,6 +5427,9 @@ def _quarantine_strategy_outputs(
         strategy_dir / "cut_results_status.json",
         strategy_dir / "sm_background_cutflow.csv",
         strategy_dir / "sm_background_cutflow.json",
+        strategy_dir / "sm_background_only_cutflow.csv",
+        strategy_dir / "sm_signal_cutflow.csv",
+        strategy_dir / "coupling_holdout",
         strategy_dir / "shape_results.csv",
         strategy_dir / "shape_results.json",
         strategy_dir / "shape_results_status.json",
@@ -4620,7 +5743,11 @@ def _shape_results(
             raise
         finally:
             if executor is not None:
-                executor.shutdown(wait=True, cancel_futures=False)
+                _shutdown_shape_executor(
+                    executor,
+                    wait_for_workers=True,
+                    cancel_futures=False,
+                )
             _SHAPE_WORKER_STATE = None
 
     rows.sort(key=lambda row: (float(row["c3"]), float(row["d4"])))
@@ -4669,6 +5796,7 @@ def _run_c3d4_study_impl(
     xsec_source_dir: str | Path | None = DEFAULT_HHHH_XSEC_SOURCE_DIR,
     xsec_overlay: bool = True,
     write_input_report: bool = False,
+    hhhbb_signal_specs: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Run the complete versioned study and return its machine-readable summary."""
 
@@ -4734,6 +5862,7 @@ def _run_c3d4_study_impl(
         "reuse_sm_optuna_from": (
             None if reuse_sm_optuna_from is None else str(reuse_sm_optuna_from)
         ),
+        "postfit_hhhbb_signal_point_count": len(hhhbb_signal_specs or ()),
     }
     mode_policy = _resolve_study_mode(
         study_mode=study_mode,
@@ -4753,6 +5882,12 @@ def _run_c3d4_study_impl(
     max_events = mode_policy.max_events
     run_shape = mode_policy.run_shape
     hash_inputs = mode_policy.hash_inputs
+    hhhbb_signal_specs = tuple(hhhbb_signal_specs or ())
+    if hhhbb_signal_specs and mode_policy.run_parameterized_gate:
+        raise ValueError(
+            "Post-fit hhhbb is not yet supported for the full parameterized-gate "
+            "workflow; use fast-sm, fast-pooled, fast-parameterized, or preview mode"
+        )
     if reuse_sm_optuna_from is not None and mode_policy.name != "fast-sm":
         raise ValueError("--reuse-sm-optuna-from is supported only in fast-sm mode")
     if reuse_sm_optuna_from is not None and reuse_sm_optuna_from == output_dir.resolve():
@@ -4805,6 +5940,16 @@ def _run_c3d4_study_impl(
         progress=load_progress("c3/d4 signal"),
         **common,
     )
+    hhhbb_samples = (
+        _load_samples(
+            hhhbb_signal_specs,
+            kind="postfit_hhhbb_signal",
+            progress=load_progress("post-fit hhhbb signal"),
+            **common,
+        )
+        if hhhbb_signal_specs
+        else []
+    )
     background_samples = _load_samples(
         background_specs,
         kind="background",
@@ -4833,9 +5978,27 @@ def _run_c3d4_study_impl(
         raise ValueError(
             "The c3/d4 signal coordinates must be finite"
         )
+    if hhhbb_samples:
+        hhhbb_point_ids = [sample.point_id for sample in hhhbb_samples]
+        if len(set(hhhbb_point_ids)) != len(hhhbb_point_ids):
+            raise ValueError(
+                "The post-fit hhhbb inputs contain duplicate coupling coordinates"
+            )
+        missing_hhhbb = sorted(set(point_ids) - set(hhhbb_point_ids))
+        extra_hhhbb = sorted(set(hhhbb_point_ids) - set(point_ids))
+        if missing_hhhbb or extra_hhhbb:
+            raise ValueError(
+                "Post-fit hhhbb coordinates must exactly match the c3/d4 grid; "
+                f"missing={missing_hhhbb}, extra={extra_hhhbb}"
+            )
     if not background_samples:
         raise ValueError("The study requires at least one background source")
-    all_loaded_samples = [*sm_samples, *grid_samples, *background_samples]
+    all_loaded_samples = [
+        *sm_samples,
+        *grid_samples,
+        *background_samples,
+        *hhhbb_samples,
+    ]
     completion_records = [
         sample.metadata.get("feature_source_completion")
         for sample in all_loaded_samples
@@ -4852,7 +6015,14 @@ def _run_c3d4_study_impl(
     )
     if (
         observable_set == EXTENDED_SCHEMA_ID
-        and mode_policy.name in {"preview", "fast-sm", "full"}
+        and mode_policy.name
+        in {
+            "preview",
+            "fast-sm",
+            "fast-pooled",
+            "fast-parameterized",
+            "full",
+        }
         and not feature_source_completion_verified
     ):
         raise ValueError(
@@ -4867,10 +6037,9 @@ def _run_c3d4_study_impl(
         sm_samples,
         grid_samples,
         background_samples,
+        hhhbb_samples,
     )
-    fold_digest = _fold_assignment_digest(
-        [*sm_samples, *grid_samples, *background_samples]
-    )
+    fold_digest = _fold_assignment_digest(all_loaded_samples)
     input_hashes = {}
     all_samples = all_loaded_samples
     progress.emit("input-hashing", "Hashing study inputs", completed=0, total=len(all_samples))
@@ -4905,11 +6074,14 @@ def _run_c3d4_study_impl(
         if training_strategy == "sm-crossfit-v2"
         else "pooled-crossfit-v2"
     )
-    strategies = (
-        ["sm-crossfit-v2"]
-        if training_strategy == "sm-crossfit-v2"
-        else ["sm-crossfit-v2", "pooled-crossfit-v2"]
-    )
+    if mode_policy.name == "fast-pooled":
+        strategies = ["pooled-crossfit-v2"]
+    elif mode_policy.name == "fast-parameterized":
+        strategies = ["parameterized-crossfit-v1"]
+    elif training_strategy == "sm-crossfit-v2":
+        strategies = ["sm-crossfit-v2"]
+    else:
+        strategies = ["sm-crossfit-v2", "pooled-crossfit-v2"]
     legacy = _load_legacy_baseline(None if legacy_scan_csv is None else Path(legacy_scan_csv))
     runtime_versions = _package_versions()
     shape_thread_environment = {
@@ -4933,9 +6105,11 @@ def _run_c3d4_study_impl(
             "profile_ablation_enabled": mode_policy.run_profile_ablation,
             "score_shape_enabled": mode_policy.run_shape,
             "parameterized_gate_enabled": mode_policy.run_parameterized_gate,
+            "coupling_holdout_enabled": mode_policy.run_coupling_holdout,
             "input_hashing_enabled": mode_policy.hash_inputs,
             "plot_watermark": mode_policy.plot_watermark,
         },
+        "strategies_requested": list(strategies),
         "classifier_weight_scale_version": CLASSIFIER_WEIGHT_SCALE_VERSION,
         "classifier_weight_normalization": (
             "equal signal/background totals; combined total equals the number of "
@@ -4953,6 +6127,18 @@ def _run_c3d4_study_impl(
         "luminosity_fb_inverse": float(luminosity),
         "normalization_inputs": normalization_inputs,
         "grid_signal_point_count": len(grid_samples),
+        "postfit_signal_components": {
+            "hhhbb": {
+                "enabled": bool(hhhbb_samples),
+                "point_count": len(hhhbb_samples),
+                "role": "scored only after classifier and validation thresholds are fixed",
+                "included_in_training": False,
+                "included_in_threshold_optimization": False,
+                "limit_parameter": (
+                    "common-signal-strength" if hhhbb_samples else None
+                ),
+            }
+        },
         "fold_assignment_sha256": fold_digest,
         "inputs": [
             _sample_manifest(sample, input_hash=input_hashes[str(sample.path)])
@@ -5439,6 +6625,7 @@ def _run_c3d4_study_impl(
     sm_cut_preview_reference: dict[tuple[float, float], float] | None = None
     indices = _profile_indices(observable_set, selected_profile)
     for strategy in strategies:
+        parameterized_strategy = strategy == "parameterized-crossfit-v1"
         strategy_dir = output_dir / strategy
         archived_before_training_text = manifest.get(
             "previous_output_archives", {}
@@ -5556,6 +6743,20 @@ def _run_c3d4_study_impl(
                 rotation=rotation,
                 n_folds=cv_folds,
                 profile_indices=indices,
+                parameterized=parameterized_strategy,
+            )
+            postfit_hhhbb_test = (
+                _evaluate_postfit_signal_rotation(
+                    model,
+                    validation,
+                    hhhbb_samples,
+                    rotation=rotation,
+                    n_folds=cv_folds,
+                    profile_indices=indices,
+                    parameterized=parameterized_strategy,
+                )
+                if hhhbb_samples
+                else None
             )
             record = {
                 "rotation": rotation,
@@ -5565,7 +6766,19 @@ def _run_c3d4_study_impl(
                 "tuning": tuning,
                 "validation": validation,
                 "test": test,
+                "postfit_hhhbb_test": postfit_hhhbb_test,
             }
+            if parameterized_strategy:
+                record.update(
+                    {
+                        # Point-dependent background scoring is intentionally
+                        # delayed and cached for cutflow/shape construction.
+                        "_model_object": model,
+                        "_background_samples": background_samples,
+                        "_profile_indices": indices,
+                        "_n_folds": cv_folds,
+                    }
+                )
             records.append(record)
             _write_json(strategy_dir / "optuna" / f"fold_{rotation}_history.json", tuning)
             _write_json(
@@ -5582,6 +6795,24 @@ def _run_c3d4_study_impl(
                     "result_metadata": fold_result_metadata,
                 },
             )
+            if postfit_hhhbb_test is not None:
+                _write_json(
+                    strategy_dir
+                    / "postfit_hhhbb"
+                    / "test"
+                    / f"fold_{rotation}.json",
+                    {
+                        "rotation": rotation,
+                        "role": "postfit-signal-only",
+                        "parameterized": bool(
+                            postfit_hhhbb_test.get("parameterized")
+                        ),
+                        "included_in_training": False,
+                        "included_in_threshold_optimization": False,
+                        "points": postfit_hhhbb_test["points"],
+                        "result_metadata": fold_result_metadata,
+                    },
+                )
             progress.emit(
                 "strategy",
                 "Completed strategy fold",
@@ -5598,17 +6829,52 @@ def _run_c3d4_study_impl(
             completed_folds=cv_folds,
         )
         aggregate = _aggregate_cut_results(grid_samples, [record["test"] for record in records])
+        if hhhbb_samples:
+            progress.emit(
+                "postfit-signal",
+                "Adding hhhbb only after classifier and threshold optimization",
+                strategy=strategy,
+                component="hhhbb",
+                point_count=len(hhhbb_samples),
+            )
+            _add_postfit_hhhbb_cut_contribution(
+                aggregate,
+                grid_samples,
+                hhhbb_samples,
+                [record["postfit_hhhbb_test"] for record in records],
+            )
         validation_aggregate, rotation_validation_limits = _aggregate_validation_crossfit(
             grid_samples, records
         )
+        sm_background_only_cutflow = None
+        sm_signal_cutflow = None
         sm_background_cutflow = None
         sm_thresholds = None
-        if strategy == "sm-crossfit-v2":
-            sm_background_cutflow, sm_thresholds = _sm_background_cutflow_rows(
+        publish_sm_point_cutflow = (
+            strategy == "sm-crossfit-v2"
+            or (
+                mode_policy.name in {"fast-pooled", "fast-parameterized"}
+                and strategy
+                in {"pooled-crossfit-v2", "parameterized-crossfit-v1"}
+            )
+        )
+        if publish_sm_point_cutflow:
+            sm_background_only_cutflow, sm_thresholds = _sm_background_cutflow_rows(
                 background_samples,
                 records,
                 luminosity=luminosity,
             )
+            sm_signal_cutflow = _sm_signal_cutflow_rows(
+                grid_samples,
+                hhhbb_samples,
+                aggregate,
+                luminosity=luminosity,
+                include_limit_representatives=bool(hhhbb_samples),
+            )
+            sm_background_cutflow = [
+                *sm_signal_cutflow,
+                *sm_background_only_cutflow,
+            ]
             sm_aggregate_rows = [
                 row
                 for row in aggregate
@@ -5621,7 +6887,7 @@ def _run_c3d4_study_impl(
                     "(c3,d4)=(0,0) result"
                 )
             table_background_yield = float(
-                sum(row["xgboost_events"] for row in sm_background_cutflow)
+                sum(row["xgboost_events"] for row in sm_background_only_cutflow)
             )
             canonical_background_yield = float(
                 sm_aggregate_rows[0]["background_yield"]
@@ -5638,6 +6904,7 @@ def _run_c3d4_study_impl(
                     f"{table_background_yield} versus {canonical_background_yield}"
                 )
             print()
+            print(f"Classifier strategy: {strategy}")
             print(
                 terminal_sm_background_cutflow_table(
                     sm_background_cutflow,
@@ -5740,6 +7007,49 @@ def _run_c3d4_study_impl(
                 if shape_limit is not None and one_bin is not None and float(one_bin) > 0.0
                 else None
             )
+        coupling_holdout = None
+        if mode_policy.run_coupling_holdout and parameterized_strategy:
+            progress.emit(
+                "coupling-holdout",
+                "Starting coupling-point holdout interpolation diagnostic",
+                strategy=strategy,
+                point_count=len(grid_samples),
+                folds=cv_folds,
+            )
+            coupling_holdout = _parameterized_coupling_holdout_diagnostic(
+                sm_samples,
+                grid_samples,
+                background_samples,
+                records,
+                observable_set=observable_set,
+                profile=selected_profile,
+                n_folds=cv_folds,
+                seed=seed,
+                source_commit=source_commit,
+                progress=progress,
+            )
+            coupling_holdout_dir = strategy_dir / "coupling_holdout"
+            _write_rows(
+                coupling_holdout_dir / "point_results.csv",
+                coupling_holdout["rows"],
+            )
+            _write_json(
+                coupling_holdout_dir / "point_results.json",
+                coupling_holdout["rows"],
+            )
+            _write_json_atomic(
+                coupling_holdout_dir / "summary.json",
+                coupling_holdout["summary"],
+            )
+            progress.emit(
+                "coupling-holdout",
+                "Completed coupling-point holdout interpolation diagnostic",
+                strategy=strategy,
+                point_count=len(coupling_holdout["rows"]),
+                median_ratio=coupling_holdout["summary"].get(
+                    "median_holdout_to_event_crossfit_ratio"
+                ),
+            )
         strategy_results[strategy] = {
             "records": records,
             "aggregate": aggregate,
@@ -5747,7 +7057,10 @@ def _run_c3d4_study_impl(
             "rotation_validation_limits": rotation_validation_limits,
             "shape": shape,
             "sm_background_cutflow": sm_background_cutflow,
+            "sm_background_only_cutflow": sm_background_only_cutflow,
+            "sm_signal_cutflow": sm_signal_cutflow,
             "sm_thresholds": sm_thresholds,
+            "coupling_holdout": coupling_holdout,
         }
         _write_rows(
             strategy_dir / "per_fold_validation.csv",
@@ -5767,6 +7080,45 @@ def _run_c3d4_study_impl(
         )
         _write_rows(strategy_dir / "cut_results.csv", aggregate)
         _write_json(strategy_dir / "cut_results.json", aggregate)
+        if hhhbb_samples:
+            hhhbb_contribution_rows = [
+                {
+                    key: row.get(key)
+                    for key in (
+                        "point_id",
+                        "c3",
+                        "d4",
+                        "hhhh_xsec_fb",
+                        "hhhh_nominal_selected_signal_yield",
+                        "hhhbb_file",
+                        "hhhbb_xsec_fb",
+                        "hhhbb_rate_factor",
+                        "hhhbb_generated_events",
+                        "hhhbb_normalisation_weight",
+                        "hhhbb_feature_tree_efficiency",
+                        "hhhbb_xgboost_efficiency",
+                        "hhhbb_selected_signal_yield_per_fb",
+                        "hhhbb_selected_signal_staterror_per_fb",
+                        "hhhbb_nominal_selected_signal_yield",
+                        "hhhbb_nominal_selected_signal_staterror",
+                        "hhhbb_selected_raw_entries",
+                        "combined_nominal_selected_signal_yield",
+                        "combined_nominal_selected_signal_staterror",
+                        "cut_signal_strength95",
+                        "cut_sigma95_fb",
+                        "excluded_cut",
+                    )
+                }
+                for row in aggregate
+            ]
+            _write_rows(
+                strategy_dir / "postfit_hhhbb" / "contribution_results.csv",
+                hhhbb_contribution_rows,
+            )
+            _write_json(
+                strategy_dir / "postfit_hhhbb" / "contribution_results.json",
+                hhhbb_contribution_rows,
+            )
         _write_rows(strategy_dir / "shape_results.csv", shape)
         _write_json(strategy_dir / "shape_results.json", shape)
         if sm_background_cutflow is not None:
@@ -5774,12 +7126,43 @@ def _run_c3d4_study_impl(
                 strategy_dir / "sm_background_cutflow.csv",
                 sm_background_cutflow,
             )
+            _write_rows(
+                strategy_dir / "sm_background_only_cutflow.csv",
+                sm_background_only_cutflow,
+            )
+            _write_rows(
+                strategy_dir / "sm_signal_cutflow.csv",
+                sm_signal_cutflow,
+            )
             _write_json(
                 strategy_dir / "sm_background_cutflow.json",
                 {
+                    "classifier_strategy": strategy,
                     "luminosity_fb_inverse": float(luminosity),
                     "thresholds_by_fold": sm_thresholds,
+                    "signal_rows_are_excluded_from_background_total": True,
+                    "signal_rows_are_alternative_coupling_hypotheses": True,
                     "rows": sm_background_cutflow,
+                    "signal_rows": sm_signal_cutflow,
+                    "background_rows": sm_background_only_cutflow,
+                    "signal_totals_by_point": _cutflow_signal_totals_by_point(
+                        sm_signal_cutflow
+                    ),
+                    "totals_by_role": {
+                        "signal": {
+                            "rows": len(sm_signal_cutflow),
+                            "coupling_points": len(
+                                {
+                                    str(row["point_id"])
+                                    for row in sm_signal_cutflow
+                                }
+                            ),
+                            "additive_across_coupling_points": False,
+                        },
+                        "background": _cutflow_role_totals(
+                            sm_background_only_cutflow
+                        ),
+                    },
                 },
             )
         if run_shape:
@@ -5791,15 +7174,26 @@ def _run_c3d4_study_impl(
             completed_folds=cv_folds,
         )
 
-    sm_reference = {
-        (float(row["c3"]), float(row["d4"])): float(row["cut_sigma95_fb"])
-        for row in strategy_results["sm-crossfit-v2"]["aggregate"]
-    }
+    sm_result = strategy_results.get("sm-crossfit-v2")
+    sm_reference = (
+        {
+            (float(row["c3"]), float(row["d4"])): float(
+                row["cut_sigma95_fb"]
+            )
+            for row in sm_result["aggregate"]
+        }
+        if sm_result is not None
+        else None
+    )
     for strategy, result in strategy_results.items():
         _add_baseline_ratios(
             result["aggregate"],
             legacy,
-            None if strategy == "sm-crossfit-v2" else sm_reference,
+            (
+                None
+                if strategy == "sm-crossfit-v2" or sm_reference is None
+                else sm_reference
+            ),
         )
         strategy_dir = output_dir / strategy
         _write_rows(strategy_dir / "cut_results.csv", result["aggregate"])
@@ -6215,6 +7609,47 @@ def _run_c3d4_study_impl(
             "Parameterized classifier was not run",
             gate_status=manifest["parameterized_classifier"]["status"],
         )
+    elif (
+        mode_policy.run_coupling_holdout
+        and "parameterized-crossfit-v1" in strategy_results
+    ):
+        coupling_holdout = strategy_results["parameterized-crossfit-v1"].get(
+            "coupling_holdout"
+        )
+        manifest["parameterized_classifier"] = {
+            "status": "complete",
+            "paper_ready": mode_policy.paper_ready,
+            "execution": "direct-fixed-parameter-crossfit",
+            "gate": None,
+            "gate_applied": False,
+            "optuna_trials_per_fold": 0,
+            "background_replicas_per_event": 3,
+            "parameter_features": [
+                {"name": name, "unit": unit}
+                for name, unit in PARAMETERIZED_ML_FEATURES
+            ],
+            "coupling_holdout": (
+                None
+                if coupling_holdout is None
+                else coupling_holdout["summary"]
+            ),
+            "postfit_hhhbb_role": (
+                "held-out signal contribution after classifier, threshold, "
+                "and shape-binning optimization"
+                if hhhbb_samples
+                else "not supplied"
+            ),
+        }
+        progress.emit(
+            "parameterized-gate",
+            "Completed direct fixed-parameter parameterized classifier",
+            study_mode=mode_policy.name,
+            coupling_holdout_status=(
+                None
+                if coupling_holdout is None
+                else coupling_holdout["summary"].get("status")
+            ),
+        )
     elif not mode_policy.run_parameterized_gate:
         manifest["parameterized_classifier"] = {
             "status": "skipped_by_study_mode",
@@ -6228,13 +7663,18 @@ def _run_c3d4_study_impl(
         )
 
     sample_manifests = []
-    for sample in [*sm_samples, *grid_samples, *background_samples]:
+    for sample in [
+        *sm_samples,
+        *grid_samples,
+        *background_samples,
+        *hhhbb_samples,
+    ]:
         item = _sample_manifest(sample, input_hash=input_hashes[str(sample.path)])
         sample_manifests.append(item)
     fold_assignment_file = output_dir / "fold_assignments.csv"
     _write_fold_assignments(
         fold_assignment_file,
-        [*sm_samples, *grid_samples, *background_samples],
+        [*sm_samples, *grid_samples, *background_samples, *hhhbb_samples],
     )
     output_manifest = {
         "feature_profile_selection": str(output_dir / "feature_profile_selection.json"),
@@ -6246,13 +7686,86 @@ def _run_c3d4_study_impl(
             for strategy, result in strategy_results.items()
         },
     }
+    if hhhbb_samples:
+        output_manifest["postfit_hhhbb"] = {
+            strategy: {
+                "csv": str(
+                    output_dir
+                    / strategy
+                    / "postfit_hhhbb"
+                    / "contribution_results.csv"
+                ),
+                "json": str(
+                    output_dir
+                    / strategy
+                    / "postfit_hhhbb"
+                    / "contribution_results.json"
+                ),
+            }
+            for strategy in strategy_results
+        }
     if input_observable_report is not None:
         output_manifest["input_observable_report"] = input_observable_report
-    if "sm-crossfit-v2" in strategy_results:
-        sm_strategy_dir = output_dir / "sm-crossfit-v2"
+    coupling_holdout_strategies = {
+        strategy: result["coupling_holdout"]
+        for strategy, result in strategy_results.items()
+        if result.get("coupling_holdout") is not None
+    }
+    if coupling_holdout_strategies:
+        output_manifest["coupling_holdout"] = {
+            strategy: {
+                "csv": str(
+                    output_dir
+                    / strategy
+                    / "coupling_holdout"
+                    / "point_results.csv"
+                ),
+                "json": str(
+                    output_dir
+                    / strategy
+                    / "coupling_holdout"
+                    / "point_results.json"
+                ),
+                "summary": str(
+                    output_dir
+                    / strategy
+                    / "coupling_holdout"
+                    / "summary.json"
+                ),
+            }
+            for strategy in coupling_holdout_strategies
+        }
+    cutflow_strategy = next(
+        (
+            strategy
+            for strategy, result in strategy_results.items()
+            if result.get("sm_background_cutflow") is not None
+        ),
+        None,
+    )
+    if cutflow_strategy is not None:
+        cutflow_result = strategy_results[cutflow_strategy]
+        sm_strategy_dir = output_dir / cutflow_strategy
         output_manifest["sm_background_cutflow"] = {
             "csv": str(sm_strategy_dir / "sm_background_cutflow.csv"),
             "json": str(sm_strategy_dir / "sm_background_cutflow.json"),
+            "classifier_strategy": cutflow_strategy,
+            "contents": "role-labelled-signal-and-background",
+            "background_only_csv": str(
+                sm_strategy_dir / "sm_background_only_cutflow.csv"
+            ),
+            "signal_only_csv": str(sm_strategy_dir / "sm_signal_cutflow.csv"),
+            "signal_rows_are_excluded_from_background_total": True,
+            "signal_rows_are_alternative_coupling_hypotheses": True,
+            "limit_representative_point_count": len(
+                {
+                    str(row["point_id"])
+                    for row in cutflow_result.get(
+                        "sm_signal_cutflow", []
+                    )
+                    if row.get("is_limit_representative")
+                }
+            ),
         }
     if gate is not None:
         output_manifest["parameterized_gate"] = str(
@@ -6290,7 +7803,12 @@ def _run_c3d4_study_impl(
                 "cut_results": result["aggregate"],
                 "validation_results": result["validation_aggregate"],
                 "sm_background_cutflow": result.get("sm_background_cutflow"),
+                "sm_background_only_cutflow": result.get(
+                    "sm_background_only_cutflow"
+                ),
+                "sm_signal_cutflow": result.get("sm_signal_cutflow"),
                 "sm_thresholds": result.get("sm_thresholds"),
+                "coupling_holdout": result.get("coupling_holdout"),
             }
             for strategy, result in strategy_results.items()
         },
@@ -6560,6 +8078,36 @@ def _manifest_grid_point_xsecs(
 
 
 def _manifest_expected_strategies(manifest: Mapping[str, Any]) -> list[str]:
+    requested = manifest.get("strategies_requested")
+    if (
+        isinstance(requested, Sequence)
+        and not isinstance(requested, (str, bytes))
+        and requested
+    ):
+        expected = [
+            str(strategy)
+            for strategy in requested
+            if str(strategy)
+            in {
+                "sm-crossfit-v2",
+                "pooled-crossfit-v2",
+                "parameterized-crossfit-v1",
+            }
+        ]
+        if len(expected) != len(requested):
+            expected = []
+    else:
+        expected = []
+    if expected:
+        parameterized = manifest.get("parameterized_classifier", {})
+        if (
+            isinstance(parameterized, Mapping)
+            and parameterized.get("status") == "complete"
+        ):
+            if "parameterized-crossfit-v1" not in expected:
+                expected.append("parameterized-crossfit-v1")
+        return expected
+
     policy = manifest.get("mode_policy", {})
     strategy = (
         policy.get("training_strategy")
@@ -6567,7 +8115,9 @@ def _manifest_expected_strategies(manifest: Mapping[str, Any]) -> list[str]:
         else None
     )
     strategy = strategy or manifest.get("requested_training_strategy")
-    if strategy in (None, "sm-crossfit-v2"):
+    if strategy == "parameterized-crossfit-v1":
+        expected = ["parameterized-crossfit-v1"]
+    elif strategy in (None, "sm-crossfit-v2"):
         expected = ["sm-crossfit-v2"]
     else:
         expected = ["sm-crossfit-v2", "pooled-crossfit-v2"]
@@ -6576,7 +8126,8 @@ def _manifest_expected_strategies(manifest: Mapping[str, Any]) -> list[str]:
         isinstance(parameterized, Mapping)
         and parameterized.get("status") == "complete"
     ):
-        expected.append("parameterized-crossfit-v1")
+        if "parameterized-crossfit-v1" not in expected:
+            expected.append("parameterized-crossfit-v1")
     return expected
 
 
@@ -7131,6 +8682,7 @@ def run_c3d4_study(
     xsec_source_dir: str | Path | None = DEFAULT_HHHH_XSEC_SOURCE_DIR,
     xsec_overlay: bool = True,
     write_input_report: bool = False,
+    hhhbb_signal_specs: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Run the v2 study and always leave truthful terminal restart metadata."""
 
@@ -7166,6 +8718,7 @@ def run_c3d4_study(
         "xsec_source_dir": xsec_source_dir,
         "xsec_overlay": xsec_overlay,
         "write_input_report": write_input_report,
+        "hhhbb_signal_specs": hhhbb_signal_specs,
     }
     try:
         return _run_c3d4_study_impl(**arguments)

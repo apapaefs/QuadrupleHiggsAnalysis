@@ -39,7 +39,14 @@ class C3D4V2DriverTests(unittest.TestCase):
 
     def test_v2_mode_defaults_use_distinct_output_directories_and_strategies(self):
         configured = {}
-        for mode in ("smoke", "preview", "fast-sm", "full"):
+        for mode in (
+            "smoke",
+            "preview",
+            "fast-sm",
+            "fast-pooled",
+            "fast-parameterized",
+            "full",
+        ):
             args = types.SimpleNamespace(
                 study_mode=mode,
                 study_outdir=None,
@@ -63,11 +70,21 @@ class C3D4V2DriverTests(unittest.TestCase):
             / "xgboost_c3d4_study_v2_uniform-smear-v1_fast-sm",
         )
         self.assertEqual(
+            configured["fast-pooled"].study_outdir,
+            DRIVER["_REPO_DIR"]
+            / "xgboost_c3d4_study_v2_uniform-smear-v1_fast-pooled",
+        )
+        self.assertEqual(
+            configured["fast-parameterized"].study_outdir,
+            DRIVER["_REPO_DIR"]
+            / "xgboost_c3d4_study_v2_uniform-smear-v1_fast-parameterized",
+        )
+        self.assertEqual(
             configured["full"].study_outdir,
             DRIVER["_REPO_DIR"] / "xgboost_c3d4_study_v2_uniform-smear-v1",
         )
         self.assertEqual(
-            len({args.study_outdir for args in configured.values()}), 4
+            len({args.study_outdir for args in configured.values()}), 6
         )
         self.assertEqual(
             configured["smoke"].training_strategy, "sm-crossfit-v2"
@@ -79,8 +96,101 @@ class C3D4V2DriverTests(unittest.TestCase):
             configured["preview"].training_strategy, "pooled-crossfit-v2"
         )
         self.assertEqual(
+            configured["fast-pooled"].training_strategy,
+            "pooled-crossfit-v2",
+        )
+        self.assertEqual(
+            configured["fast-parameterized"].training_strategy,
+            "parameterized-crossfit-v1",
+        )
+        self.assertEqual(
             configured["full"].training_strategy, "pooled-crossfit-v2"
         )
+
+    def test_no_pyhf_uses_a_distinct_fast_sm_output_directory(self):
+        args = types.SimpleNamespace(
+            study_mode="fast-sm",
+            study_outdir=None,
+            training_strategy=None,
+            no_pyhf=True,
+        )
+
+        configured = DRIVER["_configure_v2_mode_defaults"](args)
+
+        self.assertEqual(
+            configured.study_outdir,
+            DRIVER["_REPO_DIR"]
+            / "xgboost_c3d4_study_v2_uniform-smear-v1_fast-sm_cut-only",
+        )
+        self.assertEqual(configured.training_strategy, "sm-crossfit-v2")
+
+    def test_no_pyhf_uses_a_distinct_fast_parameterized_output_directory(self):
+        args = types.SimpleNamespace(
+            study_mode="fast-parameterized",
+            study_outdir=None,
+            training_strategy=None,
+            no_pyhf=True,
+        )
+
+        configured = DRIVER["_configure_v2_mode_defaults"](args)
+
+        self.assertEqual(
+            configured.study_outdir,
+            DRIVER["_REPO_DIR"]
+            / (
+                "xgboost_c3d4_study_v2_uniform-smear-v1_"
+                "fast-parameterized_cut-only"
+            ),
+        )
+        self.assertEqual(
+            configured.training_strategy,
+            "parameterized-crossfit-v1",
+        )
+
+    def test_no_pyhf_is_forwarded_as_a_cut_only_mode_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            args = types.SimpleNamespace(
+                shape_jobs=1,
+                progress_interval=30.0,
+                analysis_max_events=None,
+                reuse_sm_optuna_from=None,
+                study_mode="fast-sm",
+                observable_set="extended-91-v2",
+                feature_profile="full91",
+                training_strategy="sm-crossfit-v2",
+                optuna_trials=0,
+                max_events=None,
+                smoke_max_events=2000,
+                no_pyhf=True,
+                study_outdir=directory / "cut-only",
+                c3d4_scan_outdir=directory / "legacy",
+            )
+            policy = types.SimpleNamespace(name="fast-sm")
+            with mock.patch(
+                "c3d4_xgboost_runner._resolve_study_mode",
+                return_value=policy,
+            ) as resolve_mode, mock.patch(
+                "c3d4_xgboost_runner._validate_study_output_mode",
+                side_effect=ValueError("stop after mode resolution"),
+            ):
+                with self.assertRaisesRegex(SystemExit, "stop after mode resolution"):
+                    DRIVER["_run_c3d4_xgboost_study_cli_impl"](args)
+
+        self.assertIs(resolve_mode.call_args.kwargs["run_shape"], False)
+
+    def test_cli_help_exposes_no_pyhf_cut_only_switch(self):
+        result = subprocess.run(
+            [sys.executable, str(MODULE_PATH), "--help"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--no-pyhf", result.stdout)
+        self.assertIn("--no-shape-limits", result.stdout)
+        self.assertIn("fast-parameterized", result.stdout)
 
     def test_analysis_max_events_is_rejected_before_root_discovery(self):
         args = types.SimpleNamespace(
@@ -350,6 +460,42 @@ class C3D4V2DriverTests(unittest.TestCase):
             self.assertEqual(source, out_file)
             self.assertEqual(generated, 10000)
             self.assertAlmostEqual(xsec_fb, 1.25e-3)
+
+    def test_hhhbb_metadata_prefers_exact_merged_lhe_cross_section(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            events = directory / "events"
+            point = directory / "run_gg_hhhg_4_-7.5_50.0"
+            events.mkdir()
+            point.mkdir()
+            tagged = (
+                events
+                / (
+                    "run_gg_hhhg_4_-7.5_50.0_hhhbb_stage2-"
+                    f"{DRIVER['EXTENDED_V2_TAG']}_var.smearCMS.root"
+                )
+            )
+            tagged.touch()
+            summary = point / "merge_summary.json"
+            summary.write_text(
+                json.dumps(
+                    {
+                        "merged_xsec_pb": 0.00020191483113482072,
+                        "total_events": 10000,
+                    }
+                )
+            )
+            (point / "run_gg_hhhg_4_-7.5_50.0_hhhbb_stage2.out").write_text(
+                "Total: 10000 10002 0.202(2)e-06\n"
+            )
+
+            xsec_fb, generated, source = DRIVER[
+                "_metadata_for_hhhbb_scored_signal_root"
+            ](tagged, 10000)
+
+            self.assertEqual(source, summary)
+            self.assertEqual(generated, 10000)
+            self.assertAlmostEqual(xsec_fb, 0.20191483113482072)
 
     def test_summary_lookup_keeps_extended_tag(self):
         tag = DRIVER["EXTENDED_V2_TAG"]

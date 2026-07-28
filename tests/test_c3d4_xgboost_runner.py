@@ -4,6 +4,7 @@ import csv
 import importlib.util
 import io
 import json
+import math
 import os
 import subprocess
 import sys
@@ -397,6 +398,30 @@ def mocked_mode_study_pipeline(*, shape_error=None, point_count=57):
         }
         return (rows, metadata) if kwargs.get("return_metadata") else rows
 
+    def fake_coupling_holdout(*args, **kwargs):
+        del args, kwargs
+        rows = [
+            {
+                "point_id": point.point_id,
+                "c3": point.c3,
+                "d4": point.d4,
+                "coupling_holdout_fold": index % 5,
+                "holdout_to_event_crossfit_ratio": 1.0,
+                "postfit_hhhbb_included": False,
+            }
+            for index, point in enumerate(grid_samples)
+        ]
+        return {
+            "summary": {
+                "status": "complete",
+                "version": runner.COUPLING_HOLDOUT_VERSION,
+                "point_count": len(rows),
+                "median_holdout_to_event_crossfit_ratio": 1.0,
+                "postfit_hhhbb_included": False,
+            },
+            "rows": rows,
+        }
+
     with ExitStack() as stack:
         stack.enter_context(mock.patch.object(runner, "_load_samples", fake_load_samples))
         stack.enter_context(mock.patch.object(runner, "_source_commit", return_value="commit"))
@@ -425,6 +450,8 @@ def mocked_mode_study_pipeline(*, shape_error=None, point_count=57):
                     [
                         {
                             "sample_id": "background",
+                            "sample_role": "background",
+                            "is_signal": False,
                             "process_id": "background",
                             "description": "background",
                             "input_xsec_fb": 1.0,
@@ -440,11 +467,50 @@ def mocked_mode_study_pipeline(*, shape_error=None, point_count=57):
                 ),
             )
         )
+        stack.enter_context(
+            mock.patch.object(
+                runner,
+                "_sm_signal_cutflow_rows",
+                return_value=[
+                    {
+                        "sample_id": "grid-0",
+                        "sample_role": "signal",
+                        "is_signal": True,
+                        "signal_component": "hhhh",
+                        "point_id": "c3=0,d4=0",
+                        "point_class": "standard-model-reference",
+                        "representative_category": "SM reference",
+                        "is_limit_representative": False,
+                        "cut_signal_strength95": 10.0,
+                        "theory_to_limit_ratio": 0.1,
+                        "excluded_cut": False,
+                        "c3": 0.0,
+                        "d4": 0.0,
+                        "process_id": "sm_hhhh",
+                        "description": "SM gg -> hhhh -> 8b",
+                        "input_xsec_fb": 1.0,
+                        "input_events": 5.0,
+                        "xgboost_xsec_fb": 0.1,
+                        "xgboost_events": 0.5,
+                        "xgboost_events_error": 0.25,
+                        "entries": 5,
+                        "selected_entries": 1,
+                    }
+                ],
+            )
+        )
         stack.enter_context(mock.patch.object(runner, "_write_standard_maps", fake_maps))
         stack.enter_context(
             mock.patch.object(runner, "_shape_fingerprint", return_value="fingerprint")
         )
         stack.enter_context(mock.patch.object(runner, "_shape_results", fake_shape_results))
+        stack.enter_context(
+            mock.patch.object(
+                runner,
+                "_parameterized_coupling_holdout_diagnostic",
+                fake_coupling_holdout,
+            )
+        )
         yield grid_samples
 
 
@@ -505,6 +571,7 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
         self.assertFalse(policy.run_shape)
         self.assertFalse(policy.run_profile_ablation)
         self.assertFalse(policy.run_parameterized_gate)
+        self.assertFalse(policy.run_coupling_holdout)
         self.assertTrue(policy.hash_inputs)
         self.assertEqual(policy.result_level, "preliminary-cut-only")
         self.assertTrue(policy.physics_result_valid)
@@ -524,6 +591,7 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
         self.assertFalse(policy.run_shape)
         self.assertFalse(policy.run_profile_ablation)
         self.assertFalse(policy.run_parameterized_gate)
+        self.assertFalse(policy.run_coupling_holdout)
         self.assertFalse(policy.hash_inputs)
         self.assertEqual(policy.result_level, "non-physics-smoke")
         self.assertFalse(policy.physics_result_valid)
@@ -541,6 +609,7 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
         self.assertTrue(policy.run_shape)
         self.assertFalse(policy.run_profile_ablation)
         self.assertFalse(policy.run_parameterized_gate)
+        self.assertFalse(policy.run_coupling_holdout)
         self.assertTrue(policy.hash_inputs)
         self.assertEqual(policy.result_level, "fixed-parameter-full")
         self.assertTrue(policy.physics_result_valid)
@@ -554,6 +623,62 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fixed XGBoost parameters"):
             resolve_study_mode("fast-sm", optuna_trials=1)
 
+    def test_fast_pooled_mode_uses_only_fixed_full91_pooled_crossfit(self):
+        policy = resolve_study_mode("fast-pooled")
+
+        self.assertEqual(policy.name, "fast-pooled")
+        self.assertEqual(policy.feature_profile, "full91")
+        self.assertEqual(policy.training_strategy, "pooled-crossfit-v2")
+        self.assertEqual(policy.optuna_trials, 0)
+        self.assertIsNone(policy.max_events)
+        self.assertTrue(policy.run_shape)
+        self.assertFalse(policy.run_profile_ablation)
+        self.assertFalse(policy.run_parameterized_gate)
+        self.assertFalse(policy.run_coupling_holdout)
+        self.assertTrue(policy.hash_inputs)
+        self.assertEqual(policy.result_level, "fixed-parameter-full")
+        self.assertTrue(policy.physics_result_valid)
+        self.assertTrue(policy.paper_ready)
+        self.assertIsNone(policy.plot_watermark)
+
+        with self.assertRaisesRegex(ValueError, "requires pooled-crossfit-v2"):
+            resolve_study_mode(
+                "fast-pooled", training_strategy="sm-crossfit-v2"
+            )
+        with self.assertRaisesRegex(ValueError, "fixed XGBoost parameters"):
+            resolve_study_mode("fast-pooled", optuna_trials=1)
+
+    def test_fast_parameterized_uses_fixed_full91_and_coupling_holdout(self):
+        policy = resolve_study_mode("fast-parameterized")
+
+        self.assertEqual(policy.name, "fast-parameterized")
+        self.assertEqual(policy.feature_profile, "full91")
+        self.assertEqual(
+            policy.training_strategy,
+            "parameterized-crossfit-v1",
+        )
+        self.assertEqual(policy.optuna_trials, 0)
+        self.assertIsNone(policy.max_events)
+        self.assertTrue(policy.run_shape)
+        self.assertFalse(policy.run_profile_ablation)
+        self.assertFalse(policy.run_parameterized_gate)
+        self.assertTrue(policy.run_coupling_holdout)
+        self.assertTrue(policy.hash_inputs)
+        self.assertEqual(policy.result_level, "fixed-parameter-full")
+        self.assertTrue(policy.physics_result_valid)
+        self.assertTrue(policy.paper_ready)
+        self.assertIsNone(policy.plot_watermark)
+
+        with self.assertRaisesRegex(
+            ValueError, "requires parameterized-crossfit-v1"
+        ):
+            resolve_study_mode(
+                "fast-parameterized",
+                training_strategy="pooled-crossfit-v2",
+            )
+        with self.assertRaisesRegex(ValueError, "fixed XGBoost parameters"):
+            resolve_study_mode("fast-parameterized", optuna_trials=1)
+
     def test_full_mode_retains_the_current_complete_study_defaults(self):
         policy = resolve_study_mode("full")
 
@@ -565,6 +690,7 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
         self.assertTrue(policy.run_shape)
         self.assertTrue(policy.run_profile_ablation)
         self.assertTrue(policy.run_parameterized_gate)
+        self.assertFalse(policy.run_coupling_holdout)
         self.assertTrue(policy.hash_inputs)
         self.assertEqual(policy.result_level, "full")
         self.assertTrue(policy.physics_result_valid)
@@ -621,17 +747,167 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
             self.assertIn("SM XGBoost background cutflow / rates", terminal.getvalue())
             cutflow_dir = output / "sm-crossfit-v2"
             self.assertTrue((cutflow_dir / "sm_background_cutflow.csv").exists())
+            self.assertTrue(
+                (cutflow_dir / "sm_background_only_cutflow.csv").exists()
+            )
+            self.assertTrue((cutflow_dir / "sm_signal_cutflow.csv").exists())
             cutflow = json.loads(
                 (cutflow_dir / "sm_background_cutflow.json").read_text()
             )
             self.assertEqual(cutflow["thresholds_by_fold"], [0.5] * 5)
             self.assertEqual(cutflow["rows"][0]["input_events"], 5.0)
+            self.assertEqual(cutflow["rows"][0]["sample_role"], "signal")
+            self.assertEqual(len(cutflow["signal_rows"]), 1)
+            self.assertEqual(len(cutflow["background_rows"]), 1)
+            self.assertTrue(
+                cutflow["signal_rows_are_excluded_from_background_total"]
+            )
+            self.assertTrue(
+                cutflow["signal_rows_are_alternative_coupling_hypotheses"]
+            )
+            self.assertEqual(len(cutflow["signal_totals_by_point"]), 1)
+            self.assertFalse(
+                cutflow["totals_by_role"]["signal"][
+                    "additive_across_coupling_points"
+                ]
+            )
+            self.assertAlmostEqual(
+                cutflow["totals_by_role"]["background"]["xgboost_events"],
+                1.0,
+            )
             self.assertEqual(
                 manifest["mode_policy"]["training_strategy"], "sm-crossfit-v2"
             )
             self.assertTrue(manifest["score_shape_enabled"])
             self.assertTrue((output / "sm-crossfit-v2").is_dir())
             self.assertFalse((output / "pooled-crossfit-v2").exists())
+
+    def test_fast_pooled_run_builds_only_pooled_strategy_and_cutflow(self):
+        with tempfile.TemporaryDirectory() as directory, mocked_mode_study_pipeline(
+            point_count=4
+        ):
+            output = Path(directory)
+            terminal = io.StringIO()
+            with redirect_stdout(terminal):
+                summary = runner.run_c3d4_study(
+                    sm_signal_specs=[{}],
+                    grid_signal_specs=[{}] * 4,
+                    background_specs=[{}],
+                    output_dir=output,
+                    study_mode="fast-pooled",
+                )
+
+            manifest = json.loads((output / "method_manifest.json").read_text())
+            self.assertEqual(manifest["status"], "complete")
+            self.assertEqual(manifest["study_mode"], "fast-pooled")
+            self.assertEqual(
+                manifest["mode_policy"]["training_strategy"],
+                "pooled-crossfit-v2",
+            )
+            self.assertEqual(
+                manifest["strategies_requested"], ["pooled-crossfit-v2"]
+            )
+            self.assertEqual(
+                manifest["strategies_completed"], ["pooled-crossfit-v2"]
+            )
+            self.assertEqual(
+                list(summary["strategy_results"]), ["pooled-crossfit-v2"]
+            )
+            self.assertEqual(
+                runner._manifest_expected_strategies(manifest),
+                ["pooled-crossfit-v2"],
+            )
+            self.assertFalse((output / "sm-crossfit-v2").exists())
+            pooled_dir = output / "pooled-crossfit-v2"
+            self.assertTrue((pooled_dir / "shape_results.json").exists())
+            self.assertTrue((pooled_dir / "cut_results.json").exists())
+            self.assertTrue((pooled_dir / "sm_background_cutflow.csv").exists())
+            cutflow = json.loads(
+                (pooled_dir / "sm_background_cutflow.json").read_text()
+            )
+            self.assertEqual(
+                cutflow["classifier_strategy"], "pooled-crossfit-v2"
+            )
+            self.assertEqual(
+                manifest["outputs"]["sm_background_cutflow"][
+                    "classifier_strategy"
+                ],
+                "pooled-crossfit-v2",
+            )
+            self.assertIn(
+                "Classifier strategy: pooled-crossfit-v2",
+                terminal.getvalue(),
+            )
+
+    def test_fast_parameterized_runs_directly_with_holdout_and_no_gate(self):
+        with tempfile.TemporaryDirectory() as directory, mocked_mode_study_pipeline(
+            point_count=7
+        ):
+            output = Path(directory)
+            terminal = io.StringIO()
+            with redirect_stdout(terminal):
+                summary = runner.run_c3d4_study(
+                    sm_signal_specs=[{}],
+                    grid_signal_specs=[{}] * 7,
+                    background_specs=[{}],
+                    output_dir=output,
+                    study_mode="fast-parameterized",
+                )
+
+            manifest = json.loads((output / "method_manifest.json").read_text())
+            self.assertEqual(manifest["status"], "complete")
+            self.assertEqual(manifest["study_mode"], "fast-parameterized")
+            self.assertEqual(
+                manifest["mode_policy"]["training_strategy"],
+                "parameterized-crossfit-v1",
+            )
+            self.assertTrue(
+                manifest["mode_policy"]["coupling_holdout_enabled"]
+            )
+            self.assertFalse(
+                manifest["mode_policy"]["parameterized_gate_enabled"]
+            )
+            self.assertEqual(
+                manifest["strategies_requested"],
+                ["parameterized-crossfit-v1"],
+            )
+            self.assertEqual(
+                manifest["strategies_completed"],
+                ["parameterized-crossfit-v1"],
+            )
+            self.assertEqual(
+                list(summary["strategy_results"]),
+                ["parameterized-crossfit-v1"],
+            )
+            self.assertEqual(
+                runner._manifest_expected_strategies(manifest),
+                ["parameterized-crossfit-v1"],
+            )
+            parameterized = manifest["parameterized_classifier"]
+            self.assertEqual(parameterized["status"], "complete")
+            self.assertFalse(parameterized["gate_applied"])
+            self.assertEqual(parameterized["optuna_trials_per_fold"], 0)
+            self.assertEqual(
+                parameterized["coupling_holdout"]["point_count"],
+                7,
+            )
+            strategy_dir = output / "parameterized-crossfit-v1"
+            self.assertTrue((strategy_dir / "shape_results.json").exists())
+            self.assertTrue((strategy_dir / "cut_results.json").exists())
+            self.assertTrue(
+                (strategy_dir / "coupling_holdout" / "point_results.csv").exists()
+            )
+            self.assertTrue(
+                (strategy_dir / "coupling_holdout" / "summary.json").exists()
+            )
+            self.assertTrue(
+                (strategy_dir / "sm_background_cutflow.csv").exists()
+            )
+            self.assertFalse((output / "parameterized_classifier_gate.json").exists())
+            self.assertIn(
+                "Classifier strategy: parameterized-crossfit-v1",
+                terminal.getvalue(),
+            )
 
     def test_fast_sm_reuses_completed_fold_specific_optuna_parameters(self):
         with tempfile.TemporaryDirectory() as directory, mocked_mode_study_pipeline(
@@ -695,7 +971,13 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
                 )
 
     def test_physics_modes_reject_unverified_extended_feature_sources(self):
-        for mode in ("preview", "fast-sm", "full"):
+        for mode in (
+            "preview",
+            "fast-sm",
+            "fast-pooled",
+            "fast-parameterized",
+            "full",
+        ):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory, mocked_mode_study_pipeline() as grid_samples:
                 grid_samples[0].metadata = {}
                 with redirect_stdout(io.StringIO()):
@@ -708,7 +990,15 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
                             background_specs=[{}],
                             output_dir=directory,
                             feature_profile="corrected28",
-                            training_strategy="sm-crossfit-v2",
+                            training_strategy=(
+                                "parameterized-crossfit-v1"
+                                if mode == "fast-parameterized"
+                                else (
+                                    "pooled-crossfit-v2"
+                                    if mode == "fast-pooled"
+                                    else "sm-crossfit-v2"
+                                )
+                            ),
                             optuna_trials=0,
                             study_mode=mode,
                         )
@@ -863,6 +1153,34 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
                     resolve_study_mode(
                         mode, training_strategy="parameterized-crossfit-v1"
                     )
+
+    def test_postfit_hhhbb_shape_modes_reach_postfit_input_loading(self):
+        for mode in ("fast-sm", "fast-pooled", "fast-parameterized"):
+            loaded_kinds = []
+
+            def stop_at_postfit(*args, kind, **kwargs):
+                del args, kwargs
+                loaded_kinds.append(kind)
+                if kind == "postfit_hhhbb_signal":
+                    raise RuntimeError("postfit-shape-input-reached")
+                return []
+
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                with mock.patch.object(
+                    runner, "_load_samples", side_effect=stop_at_postfit
+                ), self.assertRaisesRegex(
+                    RuntimeError, "postfit-shape-input-reached"
+                ):
+                    runner.run_c3d4_study(
+                        sm_signal_specs=[],
+                        grid_signal_specs=[],
+                        hhhbb_signal_specs=[{"path": "not-loaded.root"}],
+                        background_specs=[],
+                        output_dir=directory,
+                        study_mode=mode,
+                        run_shape=True,
+                    )
+            self.assertIn("postfit_hhhbb_signal", loaded_kinds)
 
     def test_study_output_directory_rejects_cross_mode_reuse(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1167,6 +1485,25 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
             self.assertTrue(plot["include_atlas"])
             self.assertGreater(Path(plot["png"]).stat().st_size, 0)
             self.assertGreater(Path(plot["pdf"]).stat().st_size, 0)
+
+    def test_legacy_style_contour_labels_postfit_hhhbb_as_signal(self):
+        rows = legacy_contour_rows()
+        for row in rows:
+            row["signal_components"] = "hhhh,hhhbb"
+        with tempfile.TemporaryDirectory() as directory:
+            metadata = runner._write_legacy_style_exclusion_contours(
+                rows,
+                Path(directory),
+                "combined",
+                limit_kind="cut",
+                grid_bins=21,
+                xsec_overlay=False,
+            )
+
+            plot = metadata["outputs"]["no_xsec_atlas"]
+            self.assertEqual(plot["status"], "ok")
+            self.assertIn("hhhg", plot["process_title"])
+            self.assertIn("hhhg", plot["limit_label"])
 
     def test_legacy_style_contour_writes_both_cross_section_variants(self):
         def constant_surface(spec, c3_grid, d4_grid, **kwargs):
@@ -1739,6 +2076,180 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
         self.assertEqual(metadata["classifier_background_weight_total"], 4.0)
         self.assertEqual(metadata["classifier_effective_row_count"], 8)
 
+    def test_coupling_holdout_assignment_is_deterministic_and_balanced(self):
+        grid = [
+            sample(
+                f"p{index}",
+                "grid_signal",
+                [1] * 5,
+                [1] * 5,
+                index,
+                10 * index,
+            )
+            for index in range(13)
+        ]
+
+        first = runner._coupling_holdout_assignments(
+            grid,
+            n_folds=5,
+            seed=12345,
+        )
+        second = runner._coupling_holdout_assignments(
+            list(reversed(grid)),
+            n_folds=5,
+            seed=12345,
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(set(first), {point.point_id for point in grid})
+        counts = [sum(fold == index for fold in first.values()) for index in range(5)]
+        self.assertLessEqual(max(counts) - min(counts), 1)
+
+    def test_parameterized_coupling_holdout_excludes_each_coordinate_once(self):
+        grid = [
+            sample(
+                f"p{index}",
+                "grid_signal",
+                [1] * 5,
+                [1] * 5,
+                index,
+                10 * index,
+            )
+            for index in range(7)
+        ]
+        assignments = {
+            point.point_id: index % 5
+            for index, point in enumerate(grid)
+        }
+        reference_records = [
+            {
+                "rotation": fold,
+                "test": {
+                    "points": {
+                        point.point_id: {
+                            "threshold": 0.4,
+                            "cut_sigma95_fb": 5.0,
+                        }
+                        for point in grid
+                    }
+                },
+            }
+            for fold in range(5)
+        ]
+        training_sets = {}
+
+        def fake_training_arrays(
+            sm_samples,
+            training_points,
+            background_samples,
+            *,
+            rotation,
+            **kwargs,
+        ):
+            del sm_samples, background_samples, kwargs
+            training_sets[rotation] = {
+                point.point_id for point in training_points
+            }
+            return (
+                np.zeros((4, 93), dtype=float),
+                np.asarray([1, 1, 0, 0], dtype=np.int8),
+                np.ones(4, dtype=float),
+            )
+
+        def fake_validation(
+            model,
+            heldout,
+            background_samples,
+            *,
+            rotation,
+            **kwargs,
+        ):
+            del model, background_samples, kwargs
+            return {
+                "rotation": rotation,
+                "objective": 0.0,
+                "parameterized": True,
+                "points": {
+                    point.point_id: {
+                        "threshold": 0.5,
+                        "sigma95_fb": 6.0,
+                    }
+                    for point in heldout
+                },
+            }
+
+        def fake_test(
+            model,
+            validation,
+            heldout,
+            background_samples,
+            *,
+            rotation,
+            **kwargs,
+        ):
+            del model, validation, background_samples, kwargs
+            return {
+                "rotation": rotation,
+                "parameterized": True,
+                "points": {
+                    point.point_id: {
+                        "threshold": 0.5,
+                        "cut_sigma95_fb": 6.0,
+                    }
+                    for point in heldout
+                },
+            }
+
+        with mock.patch.object(
+            runner,
+            "_coupling_holdout_assignments",
+            return_value=assignments,
+        ), mock.patch.object(
+            runner,
+            "_training_arrays",
+            side_effect=fake_training_arrays,
+        ), mock.patch.object(
+            runner,
+            "_train_model",
+            return_value=(object(), {"xgboost_split_nodes": 3}, {}),
+        ), mock.patch.object(
+            runner,
+            "_validation_limits",
+            side_effect=fake_validation,
+        ), mock.patch.object(
+            runner,
+            "_evaluate_test_rotation",
+            side_effect=fake_test,
+        ):
+            result = runner._parameterized_coupling_holdout_diagnostic(
+                [],
+                grid,
+                [],
+                reference_records,
+                observable_set="extended-91-v2",
+                profile="full91",
+                n_folds=5,
+                seed=12345,
+                source_commit="test",
+            )
+
+        self.assertEqual(len(result["rows"]), len(grid))
+        self.assertEqual(
+            result["summary"]["median_holdout_to_event_crossfit_ratio"],
+            1.2,
+        )
+        self.assertFalse(result["summary"]["postfit_hhhbb_included"])
+        for point in grid:
+            fold = assignments[point.point_id]
+            self.assertNotIn(point.point_id, training_sets[fold])
+            row = next(
+                item
+                for item in result["rows"]
+                if item["point_id"] == point.point_id
+            )
+            self.assertEqual(row["coupling_holdout_fold"], fold)
+            self.assertFalse(row["postfit_hhhbb_included"])
+
     def test_prefit_guard_rejects_the_old_unit_class_totals(self):
         labels = np.asarray([1, 1, 0, 0])
         old_unit_class_weights = np.asarray([0.5, 0.5, 0.5, 0.5])
@@ -1830,6 +2341,158 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
             runner.exact_cls_signal_upper_limit(2.0),
         )
 
+    def test_hhhg_point_name_maps_to_the_same_c3d4_coordinate(self):
+        point = runner._parse_point(
+            "run_gg_hhhg_4_-7.5_50.0_hhhbb_stage2"
+            "-extended-v2-uniform-smear-v1_var.smearCMS.root"
+        )
+
+        self.assertEqual(point, (-7.5, 50.0))
+
+    def test_parameterized_postfit_hhhbb_is_scored_at_its_true_coordinate(self):
+        hhhbb = sample(
+            "hhhbb",
+            "postfit_hhhbb_signal",
+            [1] * 5,
+            [0.2] * 5,
+            -7.5,
+            50.0,
+        )
+        validation = {
+            "points": {
+                hhhbb.point_id: {
+                    "threshold": 0.5,
+                }
+            }
+        }
+        with mock.patch.object(
+            runner,
+            "_predict",
+            return_value=np.asarray([0.75]),
+        ) as predict:
+            result = runner._evaluate_postfit_signal_rotation(
+                object(),
+                validation,
+                [hhhbb],
+                rotation=0,
+                n_folds=5,
+                profile_indices=np.arange(91),
+                parameterized=True,
+            )
+
+        self.assertTrue(result["parameterized"])
+        self.assertEqual(
+            result["points"][hhhbb.point_id]["signal_raw_entries"],
+            1,
+        )
+        self.assertEqual(
+            predict.call_args.args[-1],
+            (-7.5, 50.0),
+        )
+
+    def test_postfit_hhhbb_changes_only_the_final_signal_limit(self):
+        hhhh = sample("hhhh", "grid_signal", [1] * 5, [1] * 5, 0, 0)
+        hhhh.xsec_fb = 2.0
+        hhhbb = sample(
+            "hhhbb", "postfit_hhhbb_signal", [1] * 5, [0.5] * 5, 0, 0
+        )
+        hhhbb.xsec_fb = 0.5
+        hhhbb.rate_factor = 0.4
+        hhhh_rotations = []
+        hhhbb_rotations = []
+        for fold in range(5):
+            hhhh_rotations.append(
+                {
+                    "points": {
+                        hhhh.point_id: {
+                            "threshold": 0.4,
+                            "signal_unit_yield": 0.2,
+                            "signal_sumw2_unit": 0.04,
+                            "signal_raw_entries": 1,
+                            "signal_feature_unit_yield": 0.2,
+                            "background_yield": 0.4,
+                            "background_sumw2": 0.16,
+                            "background_raw_entries": 1,
+                            "background_effective_entries": 1.0,
+                            "s95_exact_events": runner.exact_cls_signal_upper_limit(
+                                0.4
+                            ),
+                            "cut_sigma95_fb": (
+                                runner.exact_cls_signal_upper_limit(0.4) / 0.2
+                            ),
+                        }
+                    }
+                }
+            )
+            hhhbb_rotations.append(
+                {
+                    "points": {
+                        hhhbb.point_id: {
+                            "threshold": 0.4,
+                            "signal_unit_yield": 0.2,
+                            "signal_sumw2_unit": 0.04,
+                            "signal_physical_yield": 0.1,
+                            "signal_sumw2_physical": 0.01,
+                            "signal_raw_entries": 1,
+                            "signal_feature_unit_yield": 0.2,
+                            "signal_feature_physical_yield": 0.1,
+                            "xgboost_efficiency": 1.0,
+                        }
+                    }
+                }
+            )
+
+        aggregate = runner._aggregate_cut_results(
+            [hhhh], hhhh_rotations
+        )
+        original_background = aggregate[0]["background_yield"]
+        original_threshold = aggregate[0]["threshold_mean"]
+        runner._add_postfit_hhhbb_cut_contribution(
+            aggregate,
+            [hhhh],
+            [hhhbb],
+            hhhbb_rotations,
+        )
+        result = aggregate[0]
+        s95 = runner.exact_cls_signal_upper_limit(2.0)
+
+        self.assertEqual(result["signal_components"], "hhhh,hhhbb")
+        self.assertEqual(result["limit_parameter"], "common-signal-strength")
+        self.assertAlmostEqual(result["hhhh_nominal_selected_signal_yield"], 2.0)
+        self.assertAlmostEqual(result["hhhbb_nominal_selected_signal_yield"], 0.5)
+        self.assertAlmostEqual(
+            result["combined_nominal_selected_signal_yield"], 2.5
+        )
+        self.assertAlmostEqual(result["selected_signal_yield_per_fb"], 1.25)
+        self.assertAlmostEqual(result["cut_sigma95_fb"], s95 / 1.25)
+        self.assertAlmostEqual(result["cut_signal_strength95"], s95 / 2.5)
+        self.assertAlmostEqual(
+            result["cut_sigma95_fb"] / result["hhhh_xsec_fb"],
+            result["cut_signal_strength95"],
+        )
+        self.assertEqual(result["background_yield"], original_background)
+        self.assertEqual(result["threshold_mean"], original_threshold)
+        self.assertTrue(
+            all(
+                math.isclose(fold["signal_unit_yield"], 0.25)
+                for fold in result["folds"]
+            )
+        )
+
+    def test_postfit_hhhbb_requires_an_exact_point_match(self):
+        hhhh = sample("hhhh", "grid_signal", [1] * 5, [1] * 5, 0, 0)
+        hhhbb = sample(
+            "hhhbb", "postfit_hhhbb_signal", [1] * 5, [1] * 5, 1, 0
+        )
+
+        with self.assertRaisesRegex(ValueError, "exactly match"):
+            runner._add_postfit_hhhbb_cut_contribution(
+                [],
+                [hhhh],
+                [hhhbb],
+                [],
+            )
+
     def test_sm_background_cutflow_uses_exact_held_out_union_and_fold_thresholds(self):
         background = sample(
             "background",
@@ -1885,6 +2548,69 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
         self.assertEqual(row["selected_entries"], 3)
         self.assertEqual(row["entries"], 5)
 
+    def test_parameterized_sm_background_cutflow_rescores_at_sm_point(self):
+        background = sample(
+            "background",
+            "background",
+            [1.0] * 5,
+            [1.0] * 5,
+        )
+        records = [
+            {
+                "rotation": fold,
+                "_model_object": object(),
+                "_background_samples": [background],
+                "_profile_indices": np.arange(91),
+                "_n_folds": 5,
+                "test": {
+                    "parameterized": True,
+                    "points": {
+                        "c3=0,d4=0": {
+                            "c3": 0.0,
+                            "d4": 0.0,
+                            "threshold": 0.5,
+                        }
+                    },
+                    "background_rows": {},
+                },
+            }
+            for fold in range(5)
+        ]
+
+        def score_background(
+            model,
+            samples,
+            *,
+            rotation,
+            parameter_point,
+            **kwargs,
+        ):
+            del model, samples, kwargs
+            self.assertEqual(parameter_point, (0.0, 0.0))
+            return {
+                background.sample_id: {
+                    "scores": np.asarray([0.75]),
+                    "physical_weights": np.asarray([1.0]),
+                    "event_indices": np.asarray([rotation]),
+                }
+            }
+
+        with mock.patch.object(
+            runner,
+            "_score_partition",
+            side_effect=score_background,
+        ) as scoring:
+            rows, thresholds = runner._sm_background_cutflow_rows(
+                [background],
+                records,
+                luminosity=10.0,
+            )
+
+        self.assertEqual(scoring.call_count, 5)
+        self.assertEqual(thresholds, [0.5] * 5)
+        self.assertEqual(rows[0]["selected_entries"], 5)
+        self.assertEqual(rows[0]["xgboost_events"], 5.0)
+
     def test_sm_background_cutflow_rejects_overlapping_test_folds(self):
         background = sample("background", "background", [1.0] * 5, [1.0] * 5)
         records = []
@@ -1914,6 +2640,227 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
             runner._sm_background_cutflow_rows(
                 [background], records, luminosity=3000.0
             )
+
+    def test_sm_signal_cutflow_reports_hhhh_and_hhhbb_as_separate_signals(self):
+        hhhh = sample(
+            "run_gg_4h_test_0_0",
+            "grid_signal",
+            [1.0] * 5,
+            [2.0] * 5,
+            0,
+            0,
+        )
+        hhhh.xsec_fb = 2.0
+        hhhh.rate_factor = 0.5
+        hhhbb = sample(
+            "run_gg_hhhg_test_0_0",
+            "postfit_hhhbb_signal",
+            [1.0] * 5,
+            [0.2] * 5,
+            0,
+            0,
+        )
+        hhhbb.xsec_fb = 0.4
+        hhhbb.rate_factor = 0.25
+        aggregate = [
+            {
+                "point_id": hhhh.point_id,
+                "c3": 0.0,
+                "d4": 0.0,
+                "cut_signal_strength95": 10.0,
+                "excluded_cut": False,
+                "hhhh_selected_signal_yield_per_fb": 1.5,
+                "hhhh_selected_signal_staterror_per_fb": 0.4,
+                "hhhbb_nominal_selected_signal_yield": 0.6,
+                "hhhbb_nominal_selected_signal_staterror": 0.2,
+                "hhhbb_selected_raw_entries": 2,
+                "folds": [
+                    {"signal_raw_entries": selected}
+                    for selected in (1, 0, 1, 0, 1)
+                ],
+            }
+        ]
+
+        rows = runner._sm_signal_cutflow_rows(
+            [hhhh],
+            [hhhbb],
+            aggregate,
+            luminosity=10.0,
+        )
+
+        self.assertEqual([row["signal_component"] for row in rows], ["hhhh", "hhhbb"])
+        self.assertTrue(all(row["sample_role"] == "signal" for row in rows))
+        self.assertTrue(all(row["is_signal"] for row in rows))
+        self.assertAlmostEqual(rows[0]["effective_inclusive_xsec_fb"], 1.0)
+        self.assertAlmostEqual(rows[0]["input_events"], 10.0)
+        self.assertAlmostEqual(rows[0]["xgboost_events"], 3.0)
+        self.assertAlmostEqual(rows[0]["xgboost_events_error"], 0.8)
+        self.assertEqual(rows[0]["selected_entries"], 3)
+        self.assertAlmostEqual(rows[1]["effective_inclusive_xsec_fb"], 0.1)
+        self.assertAlmostEqual(rows[1]["input_events"], 1.0)
+        self.assertAlmostEqual(rows[1]["xgboost_events"], 0.6)
+        self.assertAlmostEqual(rows[1]["xgboost_events_error"], 0.2)
+        self.assertEqual(rows[1]["selected_entries"], 2)
+
+        background = {
+            "sample_id": "background",
+            "sample_role": "background",
+            "is_signal": False,
+            "description": "QCD background",
+            "input_xsec_fb": 4.0,
+            "input_events": 40.0,
+            "xgboost_xsec_fb": 0.2,
+            "xgboost_events": 2.0,
+            "xgboost_events_error": 0.5,
+            "entries": 20,
+            "selected_entries": 2,
+        }
+        rendered = runner.terminal_sm_background_cutflow_table(
+            [background, *rows],
+            luminosity=10.0,
+            thresholds=[0.5] * 5,
+        )
+        self.assertIn("signal references", rendered)
+        self.assertLess(rendered.index("SM gg->hhhh->8b"), rendered.index("QCD background"))
+        self.assertIn("do not enter the background total", rendered)
+
+    def test_limit_representatives_cover_axes_and_four_diagonal_quadrants(self):
+        coordinates = [
+            (0.0, -200.0, 1.05),
+            (0.0, -250.0, 0.50),
+            (0.0, 250.0, 0.82),
+            (-9.0, 0.0, 1.09),
+            (-12.0, 0.0, 0.20),
+            (12.0, 0.0, 0.63),
+            (7.5, 50.0, 1.14),
+            (-1.5, 150.0, 1.52),
+            (-6.0, -100.0, 1.01),
+            (1.5, -150.0, 1.35),
+        ]
+        aggregate = [
+            {
+                "point_id": f"c3={c3:.12g},d4={d4:.12g}",
+                "c3": c3,
+                "d4": d4,
+                "cut_signal_strength95": mu95,
+            }
+            for c3, d4, mu95 in coordinates
+        ]
+
+        selected = runner._select_limit_representative_points(aggregate)
+
+        self.assertEqual(
+            [
+                (
+                    row["representative_category"],
+                    row["result"]["c3"],
+                    row["result"]["d4"],
+                )
+                for row in selected
+            ],
+            [
+                ("c3~0, d4<0", 0.0, -200.0),
+                ("c3~0, d4>0", 0.0, 250.0),
+                ("d4~0, c3<0", -9.0, 0.0),
+                ("d4~0, c3>0", 12.0, 0.0),
+                ("diagonal Q1", 7.5, 50.0),
+                ("diagonal Q2", -1.5, 150.0),
+                ("diagonal Q3", -6.0, -100.0),
+                ("diagonal Q4", 1.5, -150.0),
+            ],
+        )
+
+    def test_representative_signal_cutflow_has_two_components_per_point(self):
+        coordinates = [
+            (0.0, 0.0, 1000.0),
+            (0.0, -200.0, 1.05),
+            (0.0, 250.0, 0.82),
+            (-9.0, 0.0, 1.09),
+            (12.0, 0.0, 0.63),
+            (7.5, 50.0, 1.14),
+            (-1.5, 150.0, 1.52),
+            (-6.0, -100.0, 1.01),
+            (1.5, -150.0, 1.35),
+        ]
+        grid_samples = []
+        hhhbb_samples = []
+        aggregate = []
+        for c3, d4, mu95 in coordinates:
+            hhhh = sample(
+                f"hhhh_{c3:g}_{d4:g}",
+                "grid_signal",
+                [1.0] * 5,
+                [2.0] * 5,
+                c3,
+                d4,
+            )
+            hhhbb = sample(
+                f"hhhbb_{c3:g}_{d4:g}",
+                "postfit_hhhbb_signal",
+                [1.0] * 5,
+                [0.2] * 5,
+                c3,
+                d4,
+            )
+            grid_samples.append(hhhh)
+            hhhbb_samples.append(hhhbb)
+            aggregate.append(
+                {
+                    "point_id": hhhh.point_id,
+                    "c3": c3,
+                    "d4": d4,
+                    "cut_signal_strength95": mu95,
+                    "excluded_cut": mu95 <= 1.0,
+                    "hhhh_selected_signal_yield_per_fb": 1.5,
+                    "hhhh_selected_signal_staterror_per_fb": 0.4,
+                    "hhhbb_nominal_selected_signal_yield": 0.6,
+                    "hhhbb_nominal_selected_signal_staterror": 0.2,
+                    "hhhbb_selected_raw_entries": 2,
+                    "folds": [
+                        {"signal_raw_entries": selected}
+                        for selected in (1, 0, 1, 0, 1)
+                    ],
+                }
+            )
+
+        rows = runner._sm_signal_cutflow_rows(
+            grid_samples,
+            hhhbb_samples,
+            aggregate,
+            luminosity=10.0,
+            include_limit_representatives=True,
+        )
+        point_totals = runner._cutflow_signal_totals_by_point(rows)
+
+        self.assertEqual(len(rows), 18)
+        self.assertEqual(
+            sum(bool(row["is_limit_representative"]) for row in rows),
+            16,
+        )
+        self.assertEqual(len(point_totals), 9)
+        self.assertTrue(
+            all(
+                total["signal_components"] == ["hhhh", "hhhbb"]
+                for total in point_totals
+            )
+        )
+        self.assertEqual(
+            [
+                (total["c3"], total["d4"])
+                for total in point_totals
+                if total["is_limit_representative"]
+            ],
+            [
+                (0.0, -200.0),
+                (0.0, 250.0),
+                (-9.0, 0.0),
+                (12.0, 0.0),
+                (7.5, 50.0),
+                (-1.5, 150.0),
+                (-6.0, -100.0),
+                (1.5, -150.0),
+            ],
+        )
 
     def test_parameterized_validation_aggregation_uses_pointwise_background_scores(self):
         point = sample("p0", "grid_signal", [1] * 5, [1] * 5, 0, 0)
@@ -2043,6 +2990,93 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
             result = runner._shape_results([point], records)[0]
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["pyhf_one_bin_sigma95_fb"], 7.0)
+
+    def test_postfit_hhhbb_enters_only_the_frozen_test_shape(self):
+        point = sample("p0", "grid_signal", [1] * 5, [1] * 5, 0, 0)
+        point.xsec_fb = 2.0
+        records = populated_shape_records([point])
+        hhhbb_scores = np.linspace(0.01, 0.99, 80, dtype=float)
+        hhhbb_physical_weights = np.full(80, 0.01, dtype=float)
+        for record in records:
+            record["postfit_hhhbb_test"] = {
+                "rotation": record["rotation"],
+                "points": {
+                    point.point_id: {
+                        "sample_id": "hhhbb-p0",
+                        "c3": point.c3,
+                        "d4": point.d4,
+                    }
+                },
+                "signal_rows": {
+                    "hhhbb-p0": {
+                        "scores": hhhbb_scores.copy(),
+                        "physical_weights": hhhbb_physical_weights.copy(),
+                        "scale": 1.0,
+                    }
+                },
+                "role": "postfit-signal-only",
+            }
+
+        validation = runner._validation_fold_arrays(records[0], point)
+        test = runner._test_fold_arrays(records[0], point)
+        self.assertEqual(len(validation["signal_scores"]), 80)
+        self.assertEqual(len(test["signal_scores"]), 160)
+        # The hhhbb physical weights are converted to equivalent hhhh-fb
+        # weights by dividing by the point's hhhh theory cross section.
+        np.testing.assert_allclose(test["signal_weights"][-80:], 0.005)
+        self.assertAlmostEqual(float(np.sum(test["signal_weights"])), 2.4)
+
+        compact = runner._compact_shape_records(
+            records,
+            observable_set="extended-91-v2",
+            profile="full91",
+            n_folds=5,
+        )
+        descriptor = runner._shape_point_descriptors([point])[0]
+        compact_test = runner._test_fold_arrays(compact[0], descriptor)
+        np.testing.assert_allclose(
+            compact_test["signal_weights"], test["signal_weights"]
+        )
+        self.assertEqual(descriptor.xsec_fb, 2.0)
+
+        with mock.patch.object(
+            runner, "pyhf_one_bin_limit", new=successful_pyhf_limit
+        ), mock.patch.object(
+            runner, "pyhf_combined_limit", new=successful_pyhf_limit
+        ):
+            result = runner._shape_results([point], records, shape_jobs=1)[0]
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["signal_components"], "hhhh,hhhbb")
+        self.assertEqual(
+            result["postfit_hhhbb_role"],
+            "held-out-test-template-after-frozen-hhhh-validation-binning",
+        )
+        self.assertFalse(result["postfit_hhhbb_in_training"])
+        self.assertFalse(result["postfit_hhhbb_in_threshold_optimization"])
+        self.assertFalse(result["postfit_hhhbb_in_shape_binning_optimization"])
+        np.testing.assert_allclose(result["one_bin_signal_sumw2"], 0.052)
+
+    def test_pyhf_poi_bounds_follow_the_expected_limit_scale(self):
+        channels = [
+            {
+                "signal": np.asarray([1.0, 3.0]),
+                "background": np.asarray([2.0, 8.0]),
+            }
+        ]
+        with mock.patch.object(
+            runner, "exact_cls_signal_upper_limit", return_value=2.0
+        ):
+            bounds = runner._poi_bounds_for_channels(channels)
+
+        self.assertEqual(bounds[0], 0.0)
+        self.assertEqual(bounds[1], 5.0)
+        self.assertLess(bounds[1], 100.0)
+        self.assertEqual(
+            runner._poi_bounds_from_estimate(0.25),
+            (0.0, 2.5),
+        )
+        with self.assertRaisesRegex(ValueError, "finite and positive"):
+            runner._poi_bounds_from_estimate(0.0)
 
     def test_negative_signal_bin_uses_validation_defined_coarser_fallback(self):
         point = sample("p0", "grid_signal", [1] * 5, [1] * 5, 0, 0)
@@ -2476,6 +3510,22 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
             {"wait": False, "cancel_futures": True},
         )
 
+    def test_shape_executor_shutdown_supports_python38_signature(self):
+        class LegacyExecutor:
+            def __init__(self):
+                self.wait = None
+
+            def shutdown(self, *, wait):
+                self.wait = wait
+
+        executor = LegacyExecutor()
+        runner._shutdown_shape_executor(
+            executor,
+            wait_for_workers=True,
+            cancel_futures=False,
+        )
+        self.assertTrue(executor.wait)
+
     def test_quarantine_strategy_outputs_moves_only_canonical_products(self):
         with tempfile.TemporaryDirectory() as directory:
             strategy_dir = Path(directory) / "pooled-crossfit-v2"
@@ -2488,6 +3538,8 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
                 "cut_results_status.json": "cut-status",
                 "sm_background_cutflow.csv": "background-cutflow-csv",
                 "sm_background_cutflow.json": "background-cutflow-json",
+                "sm_background_only_cutflow.csv": "background-only-cutflow-csv",
+                "sm_signal_cutflow.csv": "signal-cutflow-csv",
                 "shape_results.csv": "shape-csv",
                 "shape_results.json": "shape-json",
                 "shape_results_status.json": "shape-status",

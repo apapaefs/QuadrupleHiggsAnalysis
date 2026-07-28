@@ -1,0 +1,18 @@
+{
+  "campaign": "gg_hhhh_c3d4_153_points_40k",
+  "canonical_process": "/home/apapaefs/Projects/QuadrupleHiggsAnalysis/MG5_aMC_v3_5_15/gg_4h_c3d4",
+  "cores_per_worker": 32,
+  "counts": {
+    "complete": 153
+  },
+  "point_count": 153,
+  "points_file": "/home/apapaefs/Projects/QuadrupleHiggsAnalysis/MadGraphCards/c3d4_refinement_40k/points_153.csv",
+  "reference_point_count": 117,
+  "refinement_point_count": 36,
+  "run_group": 5,
+  "status_file": "/home/apapaefs/Projects/QuadrupleHiggsAnalysis/MadGraphCards/c3d4_refinement_40k/campaign_status.csv",
+  "target_events_per_point": 40000,
+  "total_requested_cores": 352,
+  "updated_at": "2026-07-26T22:46:37+00:00",
+  "workers": 11
+}

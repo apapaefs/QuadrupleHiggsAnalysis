@@ -447,22 +447,31 @@ study after the pooled result.
 
 ## Commands and outputs
 
-### Smoke, preview, fast-SM and full modes
+### Smoke, preview, fast-SM, fast-pooled, fast-parameterized and full modes
 
-The v2 driver provides four explicitly labelled execution levels:
+The v2 driver provides six explicitly labelled execution levels:
 
 | Mode | Events | Classifier setup | Statistical output | Intended use |
 |---|---|---|---|---|
 | `smoke` | At most 2000 feature-tree entries per source by default | `corrected28`, fixed parameters and the SM cross-fit by default | exact single-bin cut limit only | code and file-flow checks; **not a physics result** |
 | `preview` | all events and all supplied unique coupling points | `core52`, fixed parameters and pooled plus SM cross-fits by default | exact single-bin cut limit only | rapid, physically normalized but preliminary exclusion map |
 | `fast-sm` | all events and all supplied unique coupling points | `full91`, fixed parameters and the SM cross-fit only | exact cut and pyhf score-shape limits | fast, physically valid SM-trained result without Optuna or pooled training |
+| `fast-pooled` | all events and all supplied unique coupling points | `full91`, fixed parameters and the pooled cross-fit only | exact cut and pyhf score-shape limits | direct pooled-vs-SM comparison without Optuna, SM retraining, or the parameterized gate |
+| `fast-parameterized` | all events and all supplied unique coupling points | `full91`, fixed parameters and the parameterized cross-fit only, plus a coupling-point holdout diagnostic | exact cut and pyhf score-shape limits | direct test of coupling-dependent decision boundaries without Optuna or the pooled gate |
 | `full` | all events and all supplied unique coupling points | validation profile comparison, Optuna tuning and the parameterized gate | exact cut and pyhf score-shape limits | complete optimized workflow |
 
-Preview, fast-SM and full modes reject `--max-events`.  The v2 workflow also rejects
-`--analysis-max-events` in every mode: truncating the C++ analysis could place
-a partial sample under the shared `*-extended-v2-uniform-smear-v1_var.smearCMS.root` filename
-and silently contaminate a later production run.  Smoke mode truncates only
-the Python read of an existing feature tree.  Its tables carry
+Passing `--no-pyhf` (also available as `--no-shape-limits`) to `fast-sm`,
+`fast-pooled`, `fast-parameterized`, or `full` skips the score-shape likelihood
+and retains the exact single-bin cut limit.  Such output is physically
+normalized but labelled `preliminary-cut-only`, is not paper-ready, and is
+watermarked accordingly.
+
+Preview, fast-SM, fast-pooled, fast-parameterized and full modes reject
+`--max-events`.  The v2 workflow also rejects `--analysis-max-events` in every
+mode: truncating the C++ analysis could place a partial sample under the shared
+`*-extended-v2-uniform-smear-v1_var.smearCMS.root` filename and silently
+contaminate a later production run.  Smoke mode truncates only the Python read
+of an existing feature tree.  Its tables carry
 `physics_result_valid=false` and its plots are watermarked
 `NON-PHYSICS SMOKE TEST`.
 
@@ -546,6 +555,138 @@ cut limit and the same pyhf score-shape likelihood as full mode.  It skips the
 feature-profile comparison, every Optuna study, pooled training and the
 parameterized-classifier gate.  Its default output is
 `xgboost_c3d4_study_v2_uniform-smear-v1_fast-sm/`.
+
+For the same complete-sample fast-SM classifier with no pyhf calculation, run
+
+```bash
+python 4h_analyzer.py \
+  --run-c3d4-xgboost-study \
+  --study-mode fast-sm \
+  --feature-profile full91 \
+  --training-strategy sm-crossfit-v2 \
+  --optuna-trials 0 \
+  --no-pyhf
+```
+
+The default cut-only output is
+`xgboost_c3d4_study_v2_uniform-smear-v1_fast-sm_cut-only/`.
+
+The corresponding fixed-parameter pooled-only shape study is
+
+```bash
+python 4h_analyzer.py \
+  --run-c3d4-xgboost-study \
+  --study-mode fast-pooled \
+  --optuna-trials 0 \
+  --shape-jobs 8 \
+  --c3d4-contour-interpolation clough-tocher
+```
+
+It trains five cross-fit classifiers on all unique `hhhh` grid samples, with
+equal total classifier weight for every coupling coordinate.  It does not
+train the dedicated-SM strategy, run Optuna, compare feature profiles, or
+evaluate the parameterized-classifier gate.  The coupling coordinates are not
+ML inputs: the same held-out pooled model is applied to every point, while
+thresholds and pyhf score shapes remain point-specific.  Its default output is
+`xgboost_c3d4_study_v2_uniform-smear-v1_fast-pooled/`.
+
+The fixed-parameter parameterized study is
+
+```bash
+python 4h_analyzer.py \
+  --run-c3d4-xgboost-study \
+  --study-mode fast-parameterized \
+  --feature-profile full91 \
+  --training-strategy parameterized-crossfit-v1 \
+  --optuna-trials 0 \
+  --shape-jobs 8 \
+  --c3d4-contour-interpolation clough-tocher
+```
+
+It appends \(c_3/30\) and \(d_4/700\) to every `full91` event vector.  Signal
+events receive their true point coordinates.  Each background training event
+is replicated at three deterministic distinct coordinates, with its weight
+divided by three, and background validation/test events are rescored at the
+coordinate being evaluated.  The mode runs only the five fixed-parameter
+parameterized event cross-fits: it does not run SM or pooled training, Optuna,
+feature-profile ablation, or the full-mode pooled gate.  Its default output is
+`xgboost_c3d4_study_v2_uniform-smear-v1_fast-parameterized/`.
+
+The mode also writes
+`parameterized-crossfit-v1/coupling_holdout/{point_results.csv,point_results.json,summary.json}`.
+The coupling coordinates are deterministically divided into five balanced
+groups.  For group \(k\), all signal events at those coordinates are removed
+from classifier training, background parameter replicas use only the
+remaining coordinates, the validation event fold fixes the threshold, and
+the disjoint test event fold evaluates the unseen points.  Each coordinate
+appears in this diagnostic exactly once.  The reported ratio compares that
+point-holdout test limit with the ordinary parameterized event-crossfit limit
+on the identical test fold.  This is an interpolation/extrapolation
+diagnostic, not an additional signal contribution, and `hhhbb` is excluded
+from it.
+
+An `hhhbb` forced-splitting grid can be supplied by repeating
+`--hhhbb-signal-dir`.  The point coordinates must match the primary `hhhh`
+grid exactly.  These samples are excluded from classifier training, feature
+profile selection, validation-threshold optimization, and the background
+model.  After each fold's model and threshold are fixed, the held-out `hhhbb`
+fold is scored and its yield is added only to the final cut and pyhf signal
+templates.
+
+The complete Tiresias 153-point production is available through one
+campaign-style view, so this campaign needs only
+
+```bash
+--hhhbb-signal-dir \
+  HerwigForcedSplitting/gg_hhhg_c3d4_10k_hhhbb_153/events
+```
+
+The view uses event and point-directory symlinks to preserve the original
+five production shards and each point's exact `merge_summary.json`
+normalization without duplicating the generated data.
+
+The component uses
+`K_signal * BR(h->bb)^3 * btag^8`, while `hhhh` retains
+`K_signal * BR(h->bb)^4 * btag^8`.  At each point the two fixed theory
+predictions are scaled by one common signal strength.  The output records both
+the resulting signal-strength limit and an equivalent `hhhh` cross-section
+limit.  In pyhf studies, the `hhhh`-only validation sample still fixes the
+threshold and score binning.  The held-out `hhhbb` score template is added only
+after that choice is frozen, with each physical `hhhbb` event weight divided by
+the point's `hhhh` theory cross section.  The pyhf POI therefore remains an
+equivalent `hhhh` cross section, while the two signal components retain
+independent MC-statistical `sumw2`.  The post-fit component remains unsupported
+only for the full parameterized-classifier gate; it is supported by
+`fast-parameterized` and is scored at its true \((c_3,d_4)\) coordinate after
+the classifier, threshold, and score binning have been frozen.
+
+For the SM cross-fit, the final
+`sm-crossfit-v2/sm_background_cutflow.{csv,json}` product contains
+role-labelled rows for the SM `hhhh` signal, the SM forced-splitting `hhhbb`
+signal when supplied, and every background sample.  When an `hhhbb` grid is
+present, it also publishes eight representative coupling points nearest the
+cut-based 95% CL boundary (`mu95=1`): two on the `c3=0` axis with opposite
+signs of `d4`, two on the `d4=0` axis with opposite signs of `c3`, and the
+nearest point in each of the four open quadrants.  Each coordinate has separate
+`hhhh` and `hhhbb` component rows.  Selection minimizes `|log(mu95)|` within
+each fixed geometric region, making it deterministic for a given result.
+
+The same per-sample fields are recorded for all rows: production and effective
+cross sections, rate factor, feature-tree and XGBoost yields, efficiencies, raw
+entries, generated events, normalization weight, coupling coordinates, and
+`mu95`.  The JSON also publishes `signal_rows`, `background_rows`, and
+`signal_totals_by_point`.  Signal components are additive only within the same
+coupling point; distinct points are alternative hypotheses and are never
+summed.  Signal rows are explicitly excluded from the background total and
+threshold optimization.  Convenience exports `sm_signal_cutflow.csv` and
+`sm_background_only_cutflow.csv` contain the two roles separately.
+The pooled-only mode writes the same SM-point and representative-signal table
+below `pooled-crossfit-v2/`, with
+`classifier_strategy="pooled-crossfit-v2"` recorded in the JSON.
+The parameterized-only mode writes the corresponding table below
+`parameterized-crossfit-v1/`; its background rows are rescored at the SM
+coordinate and the JSON records
+`classifier_strategy="parameterized-crossfit-v1"`.
 
 No previous Optuna history is reused in this command.  In particular, tuning
 results from a legacy or pre-uniform-smearing study must not be imported into

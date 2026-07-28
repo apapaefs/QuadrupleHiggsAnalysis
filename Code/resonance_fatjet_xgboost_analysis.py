@@ -33,7 +33,7 @@ from c3d4_xgboost_study import exact_cls_signal_upper_limit, poisson_median_obse
 
 
 FEATURE_SET = "fatjet-ak8-softdrop-v1"
-METHOD_VERSION = "resonance-fatjet-mass-aware-xgboost-v1"
+METHOD_VERSION = "resonance-fatjet-mass-aware-xgboost-v2"
 PREPROCESSING_VERSION = "fatjet-ak8-preprocessing-v1"
 SMEARING_MODEL_ID = "cms-energy-uniform-fourvector-v1"
 N_FOLDS = 5
@@ -1045,6 +1045,71 @@ def _sample_category_rows(
     return rows
 
 
+def _select_fast_threshold(
+    thresholds: np.ndarray,
+    signal_validation: Mapping[str, np.ndarray],
+    background_validation: Mapping[str, np.ndarray],
+    min_raw: int,
+    primary_min_neff: float,
+    fallback_min_neff: float | None,
+) -> dict[str, Any]:
+    """Select with the primary Neff requirement, retrying only if it fails."""
+    requirements = [("primary", float(primary_min_neff))]
+    if fallback_min_neff is not None:
+        requirements.append(("fallback", float(fallback_min_neff)))
+    audit: dict[str, Any] = {
+        "primary_background_neff_requirement": float(primary_min_neff),
+        "fallback_background_neff_requirement": (
+            None if fallback_min_neff is None else float(fallback_min_neff)
+        ),
+        "primary_valid_threshold_count": 0,
+        "fallback_valid_threshold_count": None,
+        "fallback_threshold_scan_attempted": False,
+    }
+    for tier, min_neff in requirements:
+        valid = (
+            (background_validation["raw"] >= min_raw)
+            & (background_validation["neff"] >= min_neff)
+            & (background_validation["yield"] >= 0.0)
+            & (signal_validation["yield"] > 0.0)
+        )
+        expected = np.full(len(thresholds), np.inf)
+        for index in np.flatnonzero(valid):
+            signal_limit = exact_cls_signal_upper_limit(
+                float(background_validation["yield"][index]), 0.95
+            )
+            expected[index] = signal_limit / float(signal_validation["yield"][index])
+        valid_count = int(np.count_nonzero(np.isfinite(expected)))
+        audit[f"{tier}_valid_threshold_count"] = valid_count
+        if tier == "fallback":
+            audit["fallback_threshold_scan_attempted"] = True
+        if valid_count == 0:
+            continue
+        minimum = float(np.nanmin(expected))
+        candidates = np.flatnonzero(
+            np.isclose(expected, minimum, rtol=0.0, atol=1.0e-14)
+        )
+        chosen = int(candidates[-1])
+        return {
+            "status": "ok",
+            "threshold": float(thresholds[chosen]),
+            "validation_expected_limit_fb": minimum,
+            "threshold_selection_tier": tier,
+            "used_neff_fallback": tier == "fallback",
+            "required_background_neff": min_neff,
+            "_chosen_index": chosen,
+            **audit,
+        }
+    return {
+        "status": "invalid",
+        "reason": "no threshold satisfies unique-background and Neff requirements",
+        "threshold_selection_tier": "none",
+        "used_neff_fallback": False,
+        "required_background_neff": None,
+        **audit,
+    }
+
+
 def _fast_threshold_result(
     signal: resolved.LoadedSample,
     backgrounds: Sequence[resolved.LoadedSample],
@@ -1079,27 +1144,18 @@ def _fast_threshold_result(
             )
         )
     background_validation = combine_summaries(background_validation_parts)
-    valid = (
-        (background_validation["raw"] >= args.min_background_raw)
-        & (background_validation["neff"] >= args.min_background_neff)
-        & (background_validation["yield"] >= 0.0)
-        & (signal_validation["yield"] > 0.0)
+    selection = _select_fast_threshold(
+        thresholds,
+        signal_validation,
+        background_validation,
+        args.min_background_raw,
+        args.min_background_neff,
+        args.fallback_background_neff,
     )
-    expected = np.full(len(thresholds), np.inf)
-    for index in np.flatnonzero(valid):
-        signal_limit = exact_cls_signal_upper_limit(
-            float(background_validation["yield"][index]), 0.95
-        )
-        expected[index] = signal_limit / float(signal_validation["yield"][index])
-    if not np.any(np.isfinite(expected)):
-        return {
-            "status": "invalid",
-            "reason": "no threshold satisfies unique-background and Neff requirements",
-        }
-    minimum = float(np.nanmin(expected))
-    candidates = np.flatnonzero(np.isclose(expected, minimum, rtol=0.0, atol=1.0e-14))
-    chosen = int(candidates[-1])
-    threshold = float(thresholds[chosen])
+    if selection["status"] != "ok":
+        return selection
+    chosen = int(selection.pop("_chosen_index"))
+    threshold = float(selection["threshold"])
     signal_test = grouped_threshold_scan(
         signal_scores,
         signal.scenario_weights[scenario] / 0.6,
@@ -1124,13 +1180,15 @@ def _fast_threshold_result(
     signal_yield = float(signal_test["yield"][0])
     background_yield = float(background_test["yield"][0])
     if signal_yield <= 0.0 or background_yield < 0.0:
-        return {"status": "invalid", "reason": "non-positive disjoint-test yield"}
+        return {
+            **selection,
+            "status": "invalid",
+            "reason": "non-positive disjoint-test yield",
+        }
     observed = poisson_median_observed(background_yield)
     s95 = exact_cls_signal_upper_limit(background_yield, 0.95, observed)
     return {
-        "status": "ok",
-        "threshold": threshold,
-        "validation_expected_limit_fb": minimum,
+        **selection,
         "validation_background_yield": float(background_validation["yield"][chosen]),
         "validation_background_raw_unique": int(background_validation["raw"][chosen]),
         "validation_background_neff": float(background_validation["neff"][chosen]),
@@ -1424,13 +1482,26 @@ def _write_limit_plot(
                 key=lambda row: float(row["MS_GeV"]),
             )
             if selected:
-                axis.plot(
+                line = axis.plot(
                     [float(row["MS_GeV"]) for row in selected],
                     [float(row["expected_median_limit_fb"]) for row in selected],
                     marker="o",
                     markersize=3,
                     label=scenario,
-                )
+                )[0]
+                fallback = [row for row in selected if row.get("used_neff_fallback")]
+                if fallback:
+                    requirement = float(fallback[0]["required_background_neff"])
+                    axis.scatter(
+                        [float(row["MS_GeV"]) for row in fallback],
+                        [float(row["expected_median_limit_fb"]) for row in fallback],
+                        marker="s",
+                        s=42,
+                        facecolors="none",
+                        edgecolors=line.get_color(),
+                        linewidths=1.2,
+                        label=f"{scenario} fallback Neff >= {requirement:g}",
+                    )
         axis.set_xlabel(r"$M_S$ [GeV]")
         axis.set_ylabel(r"expected 95% CL upper limit [fb]")
         axis.set_yscale("log")
@@ -1450,6 +1521,20 @@ def _write_limit_plot(
                     axis.scatter(x, y, c=z)
             else:
                 axis.scatter(x, y, c=z)
+            fallback = [row for row in selected if row.get("used_neff_fallback")]
+            if fallback:
+                requirement = float(fallback[0]["required_background_neff"])
+                axis.scatter(
+                    [float(row["M2_GeV"]) for row in fallback],
+                    [float(row["M3_GeV"]) for row in fallback],
+                    marker="s",
+                    s=38,
+                    facecolors="none",
+                    edgecolors="black",
+                    linewidths=1.1,
+                    label=f"fallback Neff >= {requirement:g}",
+                )
+                axis.legend()
             axis.set_title(scenario)
             axis.set_xlabel(r"$M_2$ [GeV]")
             axis.set_ylabel(r"$M_3$ [GeV]")
@@ -1630,6 +1715,7 @@ def run_analysis(args: argparse.Namespace) -> int:
         "fixed_xgboost_parameters": resolved.FIXED_XGBOOST_PARAMS,
         "minimum_background_raw": args.min_background_raw,
         "minimum_background_neff": args.min_background_neff,
+        "fallback_minimum_background_neff": args.fallback_background_neff,
     }
     input_fingerprint = _fingerprint(input_payload)
     if args.mode == "full" and not (model_dir / "model_manifest.json").is_file():
@@ -1713,6 +1799,22 @@ def run_analysis(args: argparse.Namespace) -> int:
         limits_complete = len(limit_rows) == 2 * len(signals) and all(
             row.get("status") == "ok" for row in limit_rows
         )
+        fallback_limits = [
+            {
+                key: row.get(key)
+                for key in (
+                    "point_id",
+                    "MS_GeV",
+                    "M2_GeV",
+                    "M3_GeV",
+                    "tagging_scenario",
+                    "required_background_neff",
+                )
+                if row.get(key) is not None
+            }
+            for row in limit_rows
+            if row.get("used_neff_fallback")
+        ]
         manifest = {
             "method_version": METHOD_VERSION,
             "feature_set": FEATURE_SET,
@@ -1738,6 +1840,19 @@ def run_analysis(args: argparse.Namespace) -> int:
             "raw_count_definition": "unique source generator events",
             "fast_statistic": "exact one-bin Poisson CLs at median background-only integer observation",
             "threshold_scan": {"minimum": 0.0, "maximum": 1.0, "step": 0.001},
+            "fast_threshold_requirements": {
+                "minimum_background_raw_unique_events": args.min_background_raw,
+                "primary_minimum_background_neff": args.min_background_neff,
+                "fallback_minimum_background_neff": args.fallback_background_neff,
+                "fallback_policy": (
+                    "retry only when no threshold satisfies the primary Neff requirement"
+                    if args.fallback_background_neff is not None
+                    else "disabled"
+                ),
+                "pyhf_template_binning_uses_primary_requirement_only": True,
+            },
+            "neff_fallback_limit_count": len(fallback_limits),
+            "neff_fallback_limits": fallback_limits,
             "validation_test_partition": "event-hash 40/60, disjoint and inverse-fraction normalized",
             "plot_outputs": plot_outputs,
             "missing_optional_backgrounds": missing_optional,
@@ -1842,6 +1957,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--background-replicas", type=int, default=3)
     parser.add_argument("--min-background-raw", type=int, default=25)
     parser.add_argument("--min-background-neff", type=float, default=10.0)
+    parser.add_argument(
+        "--fallback-background-neff",
+        type=float,
+        help=(
+            "retry fast cut-and-count threshold selection at this Neff only when "
+            "no threshold satisfies --min-background-neff; pyhf template binning "
+            "retains the primary requirement"
+        ),
+    )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--point-jobs", type=int, default=8)
     parser.add_argument("--pyhf-jobs", type=int, default=8)
@@ -1874,8 +1998,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         or args.smoke_points < 1
     ):
         raise SystemExit("worker, replica and smoke counts must be positive")
-    if args.min_background_raw < 0 or args.min_background_neff < 0.0:
+    if (
+        args.min_background_raw < 0
+        or not math.isfinite(args.min_background_neff)
+        or args.min_background_neff < 0.0
+    ):
         raise SystemExit("background template requirements must be non-negative")
+    if args.fallback_background_neff is not None and (
+        not math.isfinite(args.fallback_background_neff)
+        or args.fallback_background_neff < 0.0
+        or args.fallback_background_neff >= args.min_background_neff
+    ):
+        raise SystemExit(
+            "--fallback-background-neff must be non-negative and smaller than "
+            "--min-background-neff"
+        )
     args.tagging_scenarios = {
         "nominal": {
             "eps_bb": args.eps_bb_nominal,

@@ -2,6 +2,7 @@
 
 from pathlib import Path as _Path
 import hashlib as _hashlib
+import json as _json
 import math as _math
 import os as _os
 import re as _re
@@ -66,15 +67,25 @@ def _configure_v2_mode_defaults(args):
 
     if args.study_outdir is None:
         suffix = "" if args.study_mode == "full" else f"_{args.study_mode}"
+        if getattr(args, "no_pyhf", False) and args.study_mode in {
+            "fast-sm",
+            "fast-pooled",
+            "fast-parameterized",
+            "full",
+        }:
+            suffix += "_cut-only"
         args.study_outdir = (
             _REPO_DIR / f"xgboost_c3d4_study_v2_uniform-smear-v1{suffix}"
         )
     if args.training_strategy is None:
-        args.training_strategy = (
-            "sm-crossfit-v2"
-            if args.study_mode in {"smoke", "fast-sm"}
-            else "pooled-crossfit-v2"
-        )
+        args.training_strategy = {
+            "smoke": "sm-crossfit-v2",
+            "preview": "pooled-crossfit-v2",
+            "fast-sm": "sm-crossfit-v2",
+            "fast-pooled": "pooled-crossfit-v2",
+            "fast-parameterized": "parameterized-crossfit-v1",
+            "full": "pooled-crossfit-v2",
+        }[args.study_mode]
     return args
 
 
@@ -1042,6 +1053,40 @@ def _metadata_for_scored_signal_root(root_file, default_generated_events=None):
     return xsec_fb, generated, None if xsec_fb is not None else out_file
 
 
+def _metadata_for_hhhbb_scored_signal_root(
+    root_file, default_generated_events=None
+):
+    """Prefer the exact forced-splitting merged-LHE cross section."""
+
+    root_file = _Path(root_file)
+    sample_name = _canonical_sample_name(root_file.name)
+    suffix = "_hhhbb_stage2"
+    if sample_name.endswith(suffix):
+        run_name = sample_name[: -len(suffix)]
+        workdir = root_file.parent.parent
+        summary_file = workdir / run_name / "merge_summary.json"
+        if not summary_file.is_file():
+            matches = sorted(workdir.rglob(f"{run_name}/merge_summary.json"))
+            if matches:
+                summary_file = matches[0]
+        if summary_file.is_file():
+            try:
+                summary = _json.loads(summary_file.read_text())
+                xsec_fb = float(summary["merged_xsec_pb"]) * 1.0e3
+                generated = int(summary["total_events"])
+                if (
+                    _math.isfinite(xsec_fb)
+                    and xsec_fb > 0.0
+                    and generated > 0
+                ):
+                    return xsec_fb, generated, summary_file
+            except (KeyError, TypeError, ValueError, _json.JSONDecodeError):
+                pass
+    return _metadata_for_scored_signal_root(
+        root_file, default_generated_events
+    )
+
+
 def _infer_scored_signal_metadata(
     files,
     xsec_values,
@@ -1049,14 +1094,18 @@ def _infer_scored_signal_metadata(
     default_generated_events,
     label,
     xsec_option,
+    metadata_resolver=None,
 ):
+    metadata_resolver = metadata_resolver or _metadata_for_scored_signal_root
     normalisation_weights = [_normalisation_weight_for_var_root(path) for path in files]
     if xsec_values is None or generated_values is None:
         inferred_xsecs = []
         inferred_generated = []
         missing_xsec_sources = []
         for path in files:
-            xsec_fb, generated_events, source_file = _metadata_for_scored_signal_root(path, default_generated_events)
+            xsec_fb, generated_events, source_file = metadata_resolver(
+                path, default_generated_events
+            )
             if xsec_values is None:
                 if xsec_fb is None:
                     missing_xsec_sources.append(source_file or path)
@@ -1068,7 +1117,8 @@ def _infer_scored_signal_metadata(
         if missing_xsec_sources:
             missing_text = "\n  ".join(str(path) for path in missing_xsec_sources)
             raise SystemExit(
-                f"Could not infer {label} cross section from its Herwig .out or MG5 banner metadata. "
+                f"Could not infer {label} cross section from its campaign, Herwig .out, "
+                "or MG5 banner metadata. "
                 f"Missing metadata source(s):\n  {missing_text}\n"
                 f"Copy the matching Herwig .out file(s), or pass {xsec_option} once per signal file."
             )
@@ -2616,6 +2666,7 @@ def _run_c3d4_xgboost_study_cli_impl(args):
         run_c3d4_study,
     )
 
+    run_shape_override = False if getattr(args, "no_pyhf", False) else None
     try:
         mode_policy = _resolve_study_mode(
             study_mode=args.study_mode,
@@ -2625,7 +2676,7 @@ def _run_c3d4_xgboost_study_cli_impl(args):
             optuna_trials=args.optuna_trials,
             max_events=args.max_events,
             smoke_max_events=args.smoke_max_events,
-            run_shape=None,
+            run_shape=run_shape_override,
             hash_inputs=True,
         )
     except ValueError as error:
@@ -2733,6 +2784,110 @@ def _run_c3d4_xgboost_study_cli_impl(args):
         "--c3d4-signal-xsec-fb",
     )
 
+    hhhbb_inputs = []
+    if args.hhhbb_signal_root:
+        hhhbb_inputs.extend(args.hhhbb_signal_root)
+    if args.hhhbb_signal_dir:
+        hhhbb_inputs.extend(args.hhhbb_signal_dir)
+    hhhbb_files = []
+    hhhbb_xsecs = []
+    hhhbb_generated = []
+    hhhbb_normalisation = []
+    hhhbb_metadata = []
+    if hhhbb_inputs:
+        hhhbb_files = _ensure_analysis_var_roots(
+            hhhbb_inputs,
+            executable=args.analysis_exe,
+            source_file=args.analysis_source,
+            include_auxiliary=args.include_auxiliary_samples,
+            jobs=args.analysis_jobs,
+            max_events=args.analysis_max_events,
+            force=args.force_analysis,
+            run_missing=not args.no_run_missing_analysis,
+            analysis_tag=analysis_tag,
+            progress_callback=root_progress("post-fit hhhbb signal"),
+        )
+        if not hhhbb_files:
+            raise SystemExit(
+                "No hhhbb ROOT variable files found. Pass the completed "
+                "forced-splitting production directories with "
+                "--hhhbb-signal-dir."
+            )
+        (
+            hhhbb_xsecs,
+            hhhbb_generated,
+            hhhbb_normalisation,
+        ) = _infer_scored_signal_metadata(
+            hhhbb_files,
+            args.hhhbb_signal_xsec_fb,
+            args.hhhbb_signal_generated_events,
+            args.hhhbb_default_generated_events,
+            "post-fit hhhbb signal",
+            "--hhhbb-signal-xsec-fb",
+            metadata_resolver=_metadata_for_hhhbb_scored_signal_root,
+        )
+        for path, xsec_fb, generated in zip(
+            hhhbb_files, hhhbb_xsecs, hhhbb_generated
+        ):
+            exact_xsec_fb, exact_generated, source = (
+                _metadata_for_hhhbb_scored_signal_root(
+                    path, args.hhhbb_default_generated_events
+                )
+            )
+            if (
+                source is None
+                or _Path(source).name != "merge_summary.json"
+                or exact_xsec_fb is None
+                or exact_generated is None
+            ):
+                raise SystemExit(
+                    "The v2 hhhbb contribution requires the exact weighted "
+                    f"merged-LHE metadata for {path}; merge_summary.json was "
+                    "not found."
+                )
+            if not _math.isclose(
+                float(xsec_fb),
+                float(exact_xsec_fb),
+                rel_tol=1.0e-12,
+                abs_tol=1.0e-15,
+            ):
+                raise SystemExit(
+                    f"The hhhbb cross section for {path} ({float(xsec_fb):.16g} "
+                    "fb) does not match its exact weighted merged-LHE value "
+                    f"({float(exact_xsec_fb):.16g} fb)."
+                )
+            if int(generated) != int(exact_generated):
+                raise SystemExit(
+                    f"The hhhbb generated-event count for {path} ({generated}) "
+                    "does not match merge_summary.json "
+                    f"({exact_generated})."
+                )
+            hhhbb_metadata.append(
+                {
+                    "process_id": _canonical_sample_name(path),
+                    "description": (
+                        "full-loop gg -> hhhg with weighted forced "
+                        "g -> b bbar splitting"
+                    ),
+                    "cross_section_source": str(source),
+                    "cross_section_source_kind": (
+                        "weighted-merged-lhe-merge-summary"
+                    ),
+                    "cross_section_fb": float(exact_xsec_fb),
+                    "generated_events": int(exact_generated),
+                    "included_in_training": False,
+                    "included_in_threshold_optimization": False,
+                    "postfit_signal_component": "hhhbb",
+                }
+            )
+        input_progress.emit(
+            "input-discovery",
+            "Discovered post-fit hhhbb variable ROOT inputs",
+            sample_kind="post-fit hhhbb signal",
+            discovered=len(hhhbb_files),
+            role="excluded from training and threshold optimization",
+        )
+
     if args.background:
         _validate_explicit_background_composition(
             args.background,
@@ -2799,6 +2954,7 @@ def _run_c3d4_xgboost_study_cli_impl(args):
     )
 
     signal_rate_factor = _signal_final_rate_factor_for_cli(args)
+    hhhbb_rate_factor = _hhhbb_signal_rate_factor_for_cli(args)
     background_rate_factors = _background_rate_factors_for_cli(background_metadata, args)
     sm_specs = _study_specs(
         sm_files,
@@ -2815,6 +2971,15 @@ def _run_c3d4_xgboost_study_cli_impl(args):
         grid_generated,
         grid_normalisation,
         signal_rate_factor,
+        require_complete_feature_sources=args.observable_set == "extended-91-v2",
+    )
+    hhhbb_specs = _study_specs(
+        hhhbb_files,
+        hhhbb_xsecs,
+        hhhbb_generated,
+        hhhbb_normalisation,
+        hhhbb_rate_factor,
+        hhhbb_metadata,
         require_complete_feature_sources=args.observable_set == "extended-91-v2",
     )
     background_specs = _study_specs(
@@ -2837,6 +3002,12 @@ def _run_c3d4_xgboost_study_cli_impl(args):
     print("  pyhf score shapes:", mode_policy.run_shape)
     print("  dedicated SM samples:", len(sm_specs))
     print("  c3/d4 samples:", len(grid_specs))
+    print("  post-fit hhhbb samples:", len(hhhbb_specs))
+    if hhhbb_specs:
+        print(
+            "  post-fit hhhbb role: excluded from training/threshold/binning "
+            "optimization; added only to the final cut and pyhf signal templates"
+        )
     print("  background samples:", len(background_specs))
     print("  output:", args.study_outdir)
     print("  shape workers:", args.shape_jobs)
@@ -2846,11 +3017,13 @@ def _run_c3d4_xgboost_study_cli_impl(args):
         "Completed v2 input discovery and normalization lookup",
         dedicated_sm_samples=len(sm_specs),
         c3d4_samples=len(grid_specs),
+        postfit_hhhbb_samples=len(hhhbb_specs),
         background_samples=len(background_specs),
     )
     summary = run_c3d4_study(
         sm_signal_specs=sm_specs,
         grid_signal_specs=grid_specs,
+        hhhbb_signal_specs=hhhbb_specs,
         background_specs=background_specs,
         output_dir=args.study_outdir,
         observable_set=args.observable_set,
@@ -2863,6 +3036,7 @@ def _run_c3d4_xgboost_study_cli_impl(args):
         max_events=args.max_events,
         legacy_scan_csv=args.c3d4_scan_outdir / "c3d4_limit_scan.csv",
         repo_dir=_REPO_DIR,
+        run_shape=mode_policy.run_shape,
         shape_jobs=args.shape_jobs,
         progress_interval=args.progress_interval,
         study_mode=args.study_mode,
@@ -3107,13 +3281,22 @@ def _run_local_xgboost_cli():
     )
     parser.add_argument(
         "--study-mode",
-        choices=("smoke", "preview", "fast-sm", "full"),
+        choices=(
+            "smoke",
+            "preview",
+            "fast-sm",
+            "fast-pooled",
+            "fast-parameterized",
+            "full",
+        ),
         default="full",
         help=(
             "v2 execution level: smoke uses truncated feature-tree reads and is non-physics; "
-            "preview uses all events with fixed parameters and cut-only limits; fast-sm uses "
-            "all events, SM-only fixed-parameter cross-fitting and pyhf score shapes; full "
-            "runs the complete tuning and pooled/parameterized workflow."
+            "preview uses all events with fixed parameters and cut-only limits; fast-sm "
+            "fast-pooled and fast-parameterized use all events, one fixed-parameter "
+            "cross-fit strategy, and pyhf score shapes unless --no-pyhf is passed; "
+            "fast-parameterized also runs a coupling-point holdout diagnostic; full "
+            "runs the complete tuning and gated parameterized workflow."
         ),
     )
     parser.add_argument(
@@ -3128,8 +3311,8 @@ def _run_local_xgboost_cli():
         default=None,
         help=(
             "Force one v2 feature profile. If omitted, full mode selects globally from "
-            "all three on validation folds, fast-sm uses full91, preview uses core52, "
-            "and smoke uses corrected28."
+            "all three on validation folds, fast-sm/fast-pooled/fast-parameterized "
+            "use full91, preview uses core52, and smoke uses corrected28."
         ),
     )
     parser.add_argument(
@@ -3137,8 +3320,10 @@ def _run_local_xgboost_cli():
         choices=("sm-crossfit-v2", "pooled-crossfit-v2", "parameterized-crossfit-v1"),
         default=None,
         help=(
-            "Primary v2 classifier strategy. Defaults to SM for smoke/fast-sm modes and "
-            "pooled for preview/full; the SM baseline is also evaluated for pooled studies."
+            "Primary v2 classifier strategy. Defaults to SM for smoke/fast-sm, pooled "
+            "for preview/fast-pooled/full, and parameterized for fast-parameterized. "
+            "The fast modes evaluate only their named strategy; preview/full also "
+            "evaluate the SM baseline."
         ),
     )
     parser.add_argument("--cv-folds", type=int, default=5, help="Number of deterministic rotating cross-fit folds.")
@@ -3168,6 +3353,17 @@ def _run_local_xgboost_cli():
         type=int,
         default=1,
         help="Independent pyhf score-shape worker processes; default 1 preserves serial resource use.",
+    )
+    parser.add_argument(
+        "--no-pyhf",
+        "--no-shape-limits",
+        dest="no_pyhf",
+        action="store_true",
+        help=(
+            "Skip the pyhf score-shape stage and write exact single-bin cut limits "
+            "only. In fast-sm, fast-pooled, fast-parameterized, or full mode the "
+            "result is physically normalized but preliminary and watermarked."
+        ),
     )
     parser.add_argument(
         "--progress-interval",
@@ -3262,7 +3458,11 @@ def _run_local_xgboost_cli():
         "--hhhbb-signal-dir",
         action="append",
         type=_Path,
-        help="Directory searched recursively for hhhbb ROOT files scored and added only to final c3/d4 limits.",
+        help=(
+            "Directory searched recursively for hhhbb ROOT files. They are excluded "
+            "from XGBoost training and threshold optimization, then scored and added "
+            "only to final c3/d4 cut and pyhf signal templates."
+        ),
     )
     parser.add_argument("--hhhbb-signal-xsec-fb", action="append", type=float, help="Cross section in fb for hhhbb signal files.")
     parser.add_argument("--hhhbb-signal-generated-events", action="append", type=int, help="Generated event counts for hhhbb signal files.")

@@ -37,6 +37,73 @@ class FatJetStatisticsTests(unittest.TestCase):
         np.testing.assert_allclose(result["sumw2"], [1.06, 0.41, 0.04, 0.0])
         np.testing.assert_array_equal(result["raw"], [2, 2, 1, 0])
 
+    @staticmethod
+    def _threshold_inputs(
+        neff: list[float], raw: list[int] | None = None
+    ) -> tuple[np.ndarray, dict[str, np.ndarray], dict[str, np.ndarray]]:
+        thresholds = np.asarray([0.2, 0.8])
+        signal = {
+            "yield": np.asarray([5.0, 4.0]),
+            "sumw2": np.asarray([1.0, 1.0]),
+            "raw": np.asarray([40, 30]),
+            "neff": np.asarray([25.0, 16.0]),
+        }
+        background = {
+            "yield": np.asarray([10.0, 10.0]),
+            "sumw2": np.asarray([10.0, 10.0]),
+            "raw": np.asarray(raw if raw is not None else [30, 30]),
+            "neff": np.asarray(neff),
+        }
+        return thresholds, signal, background
+
+    def test_selective_neff_uses_primary_when_available(self) -> None:
+        thresholds, signal, background = self._threshold_inputs([12.0, 6.0])
+        result = fat._select_fast_threshold(
+            thresholds, signal, background, 25, 10.0, 5.0
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["threshold_selection_tier"], "primary")
+        self.assertFalse(result["used_neff_fallback"])
+        self.assertEqual(result["required_background_neff"], 10.0)
+        self.assertEqual(result["primary_valid_threshold_count"], 1)
+        self.assertFalse(result["fallback_threshold_scan_attempted"])
+        self.assertIsNone(result["fallback_valid_threshold_count"])
+
+    def test_selective_neff_retries_at_fallback_only_after_primary_fails(self) -> None:
+        thresholds, signal, background = self._threshold_inputs([8.0, 6.0])
+        result = fat._select_fast_threshold(
+            thresholds, signal, background, 25, 10.0, 5.0
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["threshold_selection_tier"], "fallback")
+        self.assertTrue(result["used_neff_fallback"])
+        self.assertEqual(result["required_background_neff"], 5.0)
+        self.assertEqual(result["primary_valid_threshold_count"], 0)
+        self.assertTrue(result["fallback_threshold_scan_attempted"])
+        self.assertEqual(result["fallback_valid_threshold_count"], 2)
+
+    def test_selective_neff_remains_invalid_when_both_tiers_fail(self) -> None:
+        thresholds, signal, background = self._threshold_inputs([4.0, 3.0])
+        result = fat._select_fast_threshold(
+            thresholds, signal, background, 25, 10.0, 5.0
+        )
+        self.assertEqual(result["status"], "invalid")
+        self.assertEqual(result["threshold_selection_tier"], "none")
+        self.assertFalse(result["used_neff_fallback"])
+        self.assertEqual(result["primary_valid_threshold_count"], 0)
+        self.assertTrue(result["fallback_threshold_scan_attempted"])
+        self.assertEqual(result["fallback_valid_threshold_count"], 0)
+
+    def test_selective_neff_does_not_relax_unique_event_requirement(self) -> None:
+        thresholds, signal, background = self._threshold_inputs(
+            [8.0, 6.0], raw=[24, 24]
+        )
+        result = fat._select_fast_threshold(
+            thresholds, signal, background, 25, 10.0, 5.0
+        )
+        self.assertEqual(result["status"], "invalid")
+        self.assertEqual(result["fallback_valid_threshold_count"], 0)
+
     def test_hypothesis_probabilities_close_for_both_working_points(self) -> None:
         # Two retained candidates: one genuine and one fake.  The four rows are
         # their complete pass/fail bitmask enumeration.

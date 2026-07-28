@@ -48,7 +48,10 @@ class SampleReportFactorTests(unittest.TestCase):
         self.assertEqual(by_id["ttbar4b_1c3j"]["local_lhe"], "merged_ttbar4b_1c3j_events_20k_1_20260706_weighted.lhe")
         self.assertEqual(by_id["ttbar4b_2c2j"]["local_lhe"], "merged_ttbar4b_2c2j_events_20k_1_snapshot_20260706_weighted.lhe")
         self.assertEqual(by_id["ttbar4b_0c4j"]["local_lhe"], "merged_ttbar4b_0c4j_events_more_20k_snapshot_20260706_weighted.lhe")
-        self.assertEqual(by_id["gg_to_4b_4j"]["local_lhe"], "merged_gg4b4j_events_10k_1_snapshot_20260706_weighted.lhe")
+        self.assertEqual(
+            by_id["gg_to_4b_4j"]["local_lhe"],
+            "merged_gg4b4j_existing_25617_plus_2811_20260727_weighted.lhe",
+        )
         self.assertEqual(by_id["gg_h6b_heft"]["local_lhe"], "merged_gg_h6b_heft_events_10k_1_20260706_weighted.lhe")
 
     def test_signal_generation_factor_excludes_btagging(self):

@@ -523,6 +523,15 @@ XGBoost models used by the final analysis. It caches pointwise out-of-fold
 scores and grouped multi-bin templates, scans one combined-category threshold
 in steps of 0.001, and evaluates an exact one-bin Poisson \(CL_s\) limit on a
 disjoint event-level test partition. It does not import or require pyhf.
+The threshold scan first requires at least 25 unique validation-background
+events and \(N_{\rm eff}\geq10\). With
+`--fallback-background-neff 5`, only a point and tagging scenario for which no
+threshold satisfies the primary requirement is retried at
+\(N_{\rm eff}\geq5\); the unique-event requirement is never relaxed. The
+result tables record the selected tier and both audit counts, and open squares
+identify fallback limits in the fast plots. This fallback affects only the
+fast cut-and-count validation. The multi-bin pyhf template construction keeps
+the primary \(N_{\rm eff}\geq10\) requirement.
 
 The direct and cascade jobs may be launched together:
 
@@ -533,8 +542,10 @@ nohup python3 -u Code/resonance_xgboost_analysis.py \
   --topology direct \
   --mode fast \
   --point-jobs 8 \
-  --output-dir ResonanceAnalysis/results/ak8-v1/direct \
-  > ResonanceAnalysis/logs/xgboost-ak8-v1-direct-fast.log 2>&1 &
+  --min-background-neff 10 \
+  --fallback-background-neff 5 \
+  --output-dir ResonanceAnalysis/results/ak8-v1-neff10-fallback5/direct \
+  > ResonanceAnalysis/logs/xgboost-ak8-v1-neff10-fallback5-direct-fast.log 2>&1 &
 
 nohup python3 -u Code/resonance_xgboost_analysis.py \
   --analysis-root . \
@@ -542,8 +553,10 @@ nohup python3 -u Code/resonance_xgboost_analysis.py \
   --topology cascade \
   --mode fast \
   --point-jobs 8 \
-  --output-dir ResonanceAnalysis/results/ak8-v1/cascade \
-  > ResonanceAnalysis/logs/xgboost-ak8-v1-cascade-fast.log 2>&1 &
+  --min-background-neff 10 \
+  --fallback-background-neff 5 \
+  --output-dir ResonanceAnalysis/results/ak8-v1-neff10-fallback5/cascade \
+  > ResonanceAnalysis/logs/xgboost-ak8-v1-neff10-fallback5-cascade-fast.log 2>&1 &
 ```
 
 Fast plots are visibly labelled `FAST CUT-AND-COUNT VALIDATION — NOT FINAL
@@ -561,8 +574,10 @@ nohup python3 -u Code/resonance_xgboost_analysis.py \
   --topology direct \
   --mode full \
   --pyhf-jobs 8 \
-  --output-dir ResonanceAnalysis/results/ak8-v1/direct \
-  > ResonanceAnalysis/logs/xgboost-ak8-v1-direct-full.log 2>&1 &
+  --min-background-neff 10 \
+  --fallback-background-neff 5 \
+  --output-dir ResonanceAnalysis/results/ak8-v1-neff10-fallback5/direct \
+  > ResonanceAnalysis/logs/xgboost-ak8-v1-neff10-fallback5-direct-full.log 2>&1 &
 
 nohup python3 -u Code/resonance_xgboost_analysis.py \
   --analysis-root . \
@@ -570,8 +585,10 @@ nohup python3 -u Code/resonance_xgboost_analysis.py \
   --topology cascade \
   --mode full \
   --pyhf-jobs 8 \
-  --output-dir ResonanceAnalysis/results/ak8-v1/cascade \
-  > ResonanceAnalysis/logs/xgboost-ak8-v1-cascade-full.log 2>&1 &
+  --min-background-neff 10 \
+  --fallback-background-neff 5 \
+  --output-dir ResonanceAnalysis/results/ak8-v1-neff10-fallback5/cascade \
+  > ResonanceAnalysis/logs/xgboost-ak8-v1-neff10-fallback5-cascade-full.log 2>&1 &
 ```
 
 Full mode refuses to train or rescore. It verifies the mode-independent core
