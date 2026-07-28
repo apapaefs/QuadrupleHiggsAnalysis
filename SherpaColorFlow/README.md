@@ -508,7 +508,9 @@ default; use `--no-backup` only for disposable test data.
 
 The script validates that all shard `<init>` blocks agree. When sibling
 `sherpa_*.log` files are present, it also reads the Sherpa-reported physical
-cross section and writes that into the merged `<init>` process line. This is
+cross section from the final reported process table and writes that into the
+merged `<init>` process line. Earlier warm-up/integration iterations in the
+same log are ignored. This is
 needed for the seeded single-rank workflow, where the shard LHE files may carry
 placeholder init process lines such as `1 1 1 1`. The cross section is not
 summed over shards.

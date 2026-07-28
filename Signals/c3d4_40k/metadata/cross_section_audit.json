@@ -1,0 +1,17 @@
+{
+  "analysis_conversion": "Herwig Total [nb] * 1e6",
+  "cross_section_handoff": "MG5 pb -> Herwig Total nb -> analysis fb",
+  "expected_points": 153,
+  "issues": [],
+  "manifest_points": 153,
+  "maximum_relative_difference": 0.00022135524750294935,
+  "missing_selected_roots": [],
+  "relative_tolerance": 0.0005,
+  "selected_production_roots": 153,
+  "status": "ok",
+  "target_events_per_point": [
+    40000
+  ],
+  "unexpected_selected_roots": [],
+  "unique_coordinates": 153
+}

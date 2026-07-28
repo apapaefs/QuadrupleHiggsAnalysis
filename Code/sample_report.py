@@ -1338,11 +1338,15 @@ def terminal_xgboost_mc_table(rows, title="Per-sample XGBoost MC event counts", 
 
 
 def terminal_sm_background_cutflow_table(rows, luminosity, thresholds):
-    """Render the SM cross-fit background rates in the historical table style."""
+    """Render SM cross-fit signal references and background rates."""
 
-    rows = sort_rows_by_importance(rows, keep_signal_first=False)
+    rows = sort_rows_by_importance(rows, keep_signal_first=True)
     headers = [
-        "Background",
+        "Role",
+        "Sample",
+        "c3",
+        "d4",
+        "mu95",
         "sigma_input [fb]",
         "N_input",
         "sigma_XGB [fb]",
@@ -1351,7 +1355,26 @@ def terminal_sm_background_cutflow_table(rows, luminosity, thresholds):
     ]
     table_rows = [
         [
+            str(
+                row.get("sample_role")
+                or ("signal" if _is_signal_row(row) else "background")
+            ),
             _score_row_label(row),
+            (
+                terminal_number(row["c3"])
+                if row.get("c3") is not None
+                else "--"
+            ),
+            (
+                terminal_number(row["d4"])
+                if row.get("d4") is not None
+                else "--"
+            ),
+            (
+                terminal_number(row["cut_signal_strength95"])
+                if row.get("cut_signal_strength95") is not None
+                else "--"
+            ),
             terminal_number(row["input_xsec_fb"]),
             terminal_number(row["input_events"]),
             terminal_number(row["xgboost_xsec_fb"]),
@@ -1361,19 +1384,55 @@ def terminal_sm_background_cutflow_table(rows, luminosity, thresholds):
         for row in rows
     ]
     if not table_rows:
-        table_rows = [["(no backgrounds)", "--", "--", "--", "--", "0 / 0"]]
+        table_rows = [
+            [
+                "--",
+                "(no samples)",
+                "--",
+                "--",
+                "--",
+                "--",
+                "--",
+                "--",
+                "--",
+                "0 / 0",
+            ]
+        ]
 
     threshold_values = [float(value) for value in thresholds]
     threshold_text = ", ".join(f"{value:g}" for value in threshold_values)
     lines = [
-        f"SM XGBoost background cutflow / rates (L = {float(luminosity):g} fb^-1)",
+        "SM XGBoost background cutflow / rates + signal references "
+        f"(L = {float(luminosity):g} fb^-1)",
         f"Validation-optimized SM threshold by held-out fold: {threshold_text}",
         "Input is the feature-tree yield before XGBoost; input/XGBoost rates include "
         "cross sections, K/BR factors, and tag/mistag factors.",
         "XGBoost yields use each disjoint held-out test fold exactly once; N_XGB errors "
         "are weighted-MC statistical uncertainties.",
-        _terminal_table(headers, table_rows, right_aligned=set(range(1, len(headers)))),
+        "Signal reference rows are reported separately and do not enter the "
+        "background total or threshold optimization.",
     ]
+    if any(row.get("signal_component") == "sm_hh4b" for row in rows):
+        lines.append(
+            "The SM hh+4b row is a post-training signal diagnostic only; "
+            "its mu95 is intentionally blank and it is excluded from training, "
+            "optimization, backgrounds, and limits."
+        )
+    lines.extend(
+        [
+            (
+                "The eight limit representatives minimize |log(mu95)| in two "
+                "c3~0, two d4~0, and four diagonal regions; mu95=1 is the 95% "
+                "CL boundary. Different coupling points are alternative "
+                "hypotheses and are not summed."
+            ),
+            _terminal_table(
+                headers,
+                table_rows,
+                right_aligned=set(range(2, len(headers))),
+            ),
+        ]
+    )
     return "\n".join(lines)
 
 

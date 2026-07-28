@@ -1,0 +1,19 @@
+{
+  "analysis_cross_section_source": "merge_summary.json merged_xsec_pb * 1e3",
+  "duplicate_coordinates": {},
+  "events_per_point": 10000,
+  "expected_points": 153,
+  "extra_coordinates": [],
+  "issues": [],
+  "manifest_points": 153,
+  "maximum_relative_difference": 0.004094066195286543,
+  "missing_coordinates": [],
+  "points_with_zero_weight_events": 41,
+  "relative_tolerance": 0.005,
+  "selected_hhhbb_roots": 153,
+  "status": "ok",
+  "total_zero_weight_events": 48,
+  "workdirs": [
+    "/mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis_runs/HerwigForcedSplitting/gg_hhhg_c3d4_10k_hhhbb_153_20260727"
+  ]
+}

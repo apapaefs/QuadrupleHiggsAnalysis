@@ -38,6 +38,7 @@ Backgrounds/test*.lhe
 Backgrounds/AlpGen8Q-LHEWriter-Reweighted.lhe
 Backgrounds/events/
 Signals/events/
+Signals/sm_hh4b_heft/lhe/
 HerwigSignalPoints/**/events/
 
 # Sherpa color-flow source bundle: ignore generated products, not source data.

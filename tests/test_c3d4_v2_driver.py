@@ -20,6 +20,26 @@ exec(compile(SOURCE, str(MODULE_PATH), "exec"), DRIVER)
 
 
 class C3D4V2DriverTests(unittest.TestCase):
+    def test_sm_hh4b_option_is_rejected_by_legacy_limit_scan(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "--run-c3d4-limit-scan",
+                "--sm-hh4b-signal-dir",
+                "unused",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "supported only with --run-c3d4-xgboost-study",
+            result.stderr,
+        )
+
     def test_replot_is_mutually_exclusive_with_the_legacy_limit_scan(self):
         result = subprocess.run(
             [
@@ -39,7 +59,14 @@ class C3D4V2DriverTests(unittest.TestCase):
 
     def test_v2_mode_defaults_use_distinct_output_directories_and_strategies(self):
         configured = {}
-        for mode in ("smoke", "preview", "fast-sm", "full"):
+        for mode in (
+            "smoke",
+            "preview",
+            "fast-sm",
+            "fast-pooled",
+            "fast-parameterized",
+            "full",
+        ):
             args = types.SimpleNamespace(
                 study_mode=mode,
                 study_outdir=None,
@@ -49,22 +76,35 @@ class C3D4V2DriverTests(unittest.TestCase):
 
         self.assertEqual(
             configured["smoke"].study_outdir,
-            DRIVER["_REPO_DIR"] / "xgboost_c3d4_study_v2_smoke",
+            DRIVER["_REPO_DIR"]
+            / "xgboost_c3d4_study_v2_uniform-smear-v1_smoke",
         )
         self.assertEqual(
             configured["preview"].study_outdir,
-            DRIVER["_REPO_DIR"] / "xgboost_c3d4_study_v2_preview",
+            DRIVER["_REPO_DIR"]
+            / "xgboost_c3d4_study_v2_uniform-smear-v1_preview",
         )
         self.assertEqual(
             configured["fast-sm"].study_outdir,
-            DRIVER["_REPO_DIR"] / "xgboost_c3d4_study_v2_fast-sm",
+            DRIVER["_REPO_DIR"]
+            / "xgboost_c3d4_study_v2_uniform-smear-v1_fast-sm",
+        )
+        self.assertEqual(
+            configured["fast-pooled"].study_outdir,
+            DRIVER["_REPO_DIR"]
+            / "xgboost_c3d4_study_v2_uniform-smear-v1_fast-pooled",
+        )
+        self.assertEqual(
+            configured["fast-parameterized"].study_outdir,
+            DRIVER["_REPO_DIR"]
+            / "xgboost_c3d4_study_v2_uniform-smear-v1_fast-parameterized",
         )
         self.assertEqual(
             configured["full"].study_outdir,
-            DRIVER["_REPO_DIR"] / "xgboost_c3d4_study_v2",
+            DRIVER["_REPO_DIR"] / "xgboost_c3d4_study_v2_uniform-smear-v1",
         )
         self.assertEqual(
-            len({args.study_outdir for args in configured.values()}), 4
+            len({args.study_outdir for args in configured.values()}), 6
         )
         self.assertEqual(
             configured["smoke"].training_strategy, "sm-crossfit-v2"
@@ -76,8 +116,101 @@ class C3D4V2DriverTests(unittest.TestCase):
             configured["preview"].training_strategy, "pooled-crossfit-v2"
         )
         self.assertEqual(
+            configured["fast-pooled"].training_strategy,
+            "pooled-crossfit-v2",
+        )
+        self.assertEqual(
+            configured["fast-parameterized"].training_strategy,
+            "parameterized-crossfit-v1",
+        )
+        self.assertEqual(
             configured["full"].training_strategy, "pooled-crossfit-v2"
         )
+
+    def test_no_pyhf_uses_a_distinct_fast_sm_output_directory(self):
+        args = types.SimpleNamespace(
+            study_mode="fast-sm",
+            study_outdir=None,
+            training_strategy=None,
+            no_pyhf=True,
+        )
+
+        configured = DRIVER["_configure_v2_mode_defaults"](args)
+
+        self.assertEqual(
+            configured.study_outdir,
+            DRIVER["_REPO_DIR"]
+            / "xgboost_c3d4_study_v2_uniform-smear-v1_fast-sm_cut-only",
+        )
+        self.assertEqual(configured.training_strategy, "sm-crossfit-v2")
+
+    def test_no_pyhf_uses_a_distinct_fast_parameterized_output_directory(self):
+        args = types.SimpleNamespace(
+            study_mode="fast-parameterized",
+            study_outdir=None,
+            training_strategy=None,
+            no_pyhf=True,
+        )
+
+        configured = DRIVER["_configure_v2_mode_defaults"](args)
+
+        self.assertEqual(
+            configured.study_outdir,
+            DRIVER["_REPO_DIR"]
+            / (
+                "xgboost_c3d4_study_v2_uniform-smear-v1_"
+                "fast-parameterized_cut-only"
+            ),
+        )
+        self.assertEqual(
+            configured.training_strategy,
+            "parameterized-crossfit-v1",
+        )
+
+    def test_no_pyhf_is_forwarded_as_a_cut_only_mode_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            args = types.SimpleNamespace(
+                shape_jobs=1,
+                progress_interval=30.0,
+                analysis_max_events=None,
+                reuse_sm_optuna_from=None,
+                study_mode="fast-sm",
+                observable_set="extended-91-v2",
+                feature_profile="full91",
+                training_strategy="sm-crossfit-v2",
+                optuna_trials=0,
+                max_events=None,
+                smoke_max_events=2000,
+                no_pyhf=True,
+                study_outdir=directory / "cut-only",
+                c3d4_scan_outdir=directory / "legacy",
+            )
+            policy = types.SimpleNamespace(name="fast-sm")
+            with mock.patch(
+                "c3d4_xgboost_runner._resolve_study_mode",
+                return_value=policy,
+            ) as resolve_mode, mock.patch(
+                "c3d4_xgboost_runner._validate_study_output_mode",
+                side_effect=ValueError("stop after mode resolution"),
+            ):
+                with self.assertRaisesRegex(SystemExit, "stop after mode resolution"):
+                    DRIVER["_run_c3d4_xgboost_study_cli_impl"](args)
+
+        self.assertIs(resolve_mode.call_args.kwargs["run_shape"], False)
+
+    def test_cli_help_exposes_no_pyhf_cut_only_switch(self):
+        result = subprocess.run(
+            [sys.executable, str(MODULE_PATH), "--help"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--no-pyhf", result.stdout)
+        self.assertIn("--no-shape-limits", result.stdout)
+        self.assertIn("fast-parameterized", result.stdout)
 
     def test_analysis_max_events_is_rejected_before_root_discovery(self):
         args = types.SimpleNamespace(
@@ -160,7 +293,7 @@ class C3D4V2DriverTests(unittest.TestCase):
         ):
             directory = Path(directory)
             raw = directory / "sample.root"
-            tagged = directory / "sample-extended-v2_var.smearCMS.root"
+            tagged = directory / f"sample-{DRIVER['EXTENDED_V2_TAG']}_var.smearCMS.root"
             raw.touch()
             tagged.touch()
 
@@ -179,7 +312,7 @@ class C3D4V2DriverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             raw = directory / "background.root"
-            tagged = directory / "background-extended-v2_var.smearCMS.root"
+            tagged = directory / f"background-{DRIVER['EXTENDED_V2_TAG']}_var.smearCMS.root"
             raw.touch()
             tagged.touch()
             sample = {
@@ -224,6 +357,33 @@ class C3D4V2DriverTests(unittest.TestCase):
                     DRIVER["_ensure_background_csv_var_roots"](
                         [sample], args, analysis_tag=DRIVER["EXTENDED_V2_TAG"]
                     )
+
+    def test_explicit_backgrounds_reject_heterogeneous_global_composition(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            first = directory / "HW-first.root"
+            second = directory / "HW-second.root"
+            first.touch()
+            second.touch()
+            csv_file = directory / "backgrounds.csv"
+            csv_file.write_text(
+                "process_id,events,cross_section_pb,local_lhe,b_quarks,c_quarks,light_jets\n"
+                "first,100,1.0,first.lhe.gz,8,0,0\n"
+                "second,100,1.0,second.lhe.gz,6,1,1\n"
+            )
+
+            with self.assertRaisesRegex(SystemExit, "heterogeneous mistag compositions"):
+                DRIVER["_validate_explicit_background_composition"](
+                    [first, second], csv_file, 0, 0
+                )
+            with self.assertRaisesRegex(SystemExit, "does not match"):
+                DRIVER["_validate_explicit_background_composition"](
+                    [second], csv_file, 0, 0
+                )
+
+            DRIVER["_validate_explicit_background_composition"](
+                [second], csv_file, 1, 1
+            )
 
     def test_legacy_csv_background_retains_existing_output_without_raw_source(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -271,17 +431,18 @@ class C3D4V2DriverTests(unittest.TestCase):
 
     def test_tagged_analysis_paths_do_not_replace_legacy_paths(self):
         raw = Path("/tmp/HW-point.root")
+        tag = DRIVER["EXTENDED_V2_TAG"]
         self.assertEqual(
             DRIVER["_analysis_output_root"](raw),
             Path("/tmp/HW-point_var.smearCMS.root"),
         )
         self.assertEqual(
-            DRIVER["_analysis_output_root"](raw, DRIVER["EXTENDED_V2_TAG"]),
-            Path("/tmp/HW-point-extended-v2_var.smearCMS.root"),
+            DRIVER["_analysis_output_root"](raw, tag),
+            Path(f"/tmp/HW-point-{tag}_var.smearCMS.root"),
         )
         self.assertEqual(
-            DRIVER["_analysis_log_file"](raw, DRIVER["EXTENDED_V2_TAG"]),
-            Path("/tmp/HW-point-extended-v2.analysis.log"),
+            DRIVER["_analysis_log_file"](raw, tag),
+            Path(f"/tmp/HW-point-{tag}.analysis.log"),
         )
 
     def test_tagged_and_untagged_discovery_are_disjoint(self):
@@ -289,8 +450,9 @@ class C3D4V2DriverTests(unittest.TestCase):
             directory = Path(directory)
             raw = directory / "HW-point.root"
             legacy = directory / "HW-point_var.smearCMS.root"
-            tagged = directory / "HW-point-extended-v2_var.smearCMS.root"
-            for path in (raw, legacy, tagged):
+            previous_v2 = directory / "HW-point-extended-v2_var.smearCMS.root"
+            tagged = directory / f"HW-point-{DRIVER['EXTENDED_V2_TAG']}_var.smearCMS.root"
+            for path in (raw, legacy, previous_v2, tagged):
                 path.touch()
 
             legacy_roots, legacy_raw = DRIVER["_discover_analysis_inputs"]([directory])
@@ -308,7 +470,7 @@ class C3D4V2DriverTests(unittest.TestCase):
             directory = Path(directory)
             events = directory / "events"
             events.mkdir()
-            tagged = events / "HW-point-extended-v2_var.smearCMS.root"
+            tagged = events / f"HW-point-{DRIVER['EXTENDED_V2_TAG']}_var.smearCMS.root"
             tagged.touch()
             out_file = directory / "HW-point.out"
             out_file.write_text("Total: 10000 10000 1.25e-09\n")
@@ -319,11 +481,82 @@ class C3D4V2DriverTests(unittest.TestCase):
             self.assertEqual(generated, 10000)
             self.assertAlmostEqual(xsec_fb, 1.25e-3)
 
+    def test_hhhbb_metadata_prefers_exact_merged_lhe_cross_section(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            events = directory / "events"
+            point = directory / "run_gg_hhhg_4_-7.5_50.0"
+            events.mkdir()
+            point.mkdir()
+            tagged = (
+                events
+                / (
+                    "run_gg_hhhg_4_-7.5_50.0_hhhbb_stage2-"
+                    f"{DRIVER['EXTENDED_V2_TAG']}_var.smearCMS.root"
+                )
+            )
+            tagged.touch()
+            summary = point / "merge_summary.json"
+            summary.write_text(
+                json.dumps(
+                    {
+                        "merged_xsec_pb": 0.00020191483113482072,
+                        "total_events": 10000,
+                    }
+                )
+            )
+            (point / "run_gg_hhhg_4_-7.5_50.0_hhhbb_stage2.out").write_text(
+                "Total: 10000 10002 0.202(2)e-06\n"
+            )
+
+            xsec_fb, generated, source = DRIVER[
+                "_metadata_for_hhhbb_scored_signal_root"
+            ](tagged, 10000)
+
+            self.assertEqual(source, summary)
+            self.assertEqual(generated, 10000)
+            self.assertAlmostEqual(xsec_fb, 0.20191483113482072)
+
+    def test_sm_hh4b_metadata_uses_normalized_lhe_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            events = directory / "events"
+            events.mkdir()
+            tagged = (
+                events
+                / (
+                    "HW-run_gg_hhbbbb_heft_4_0.0_0.0-"
+                    f"{DRIVER['EXTENDED_V2_TAG']}_var.smearCMS.root"
+                )
+            )
+            tagged.touch()
+            metadata_file = directory / "sample_metadata.json"
+            metadata_file.write_text(
+                json.dumps(
+                    {
+                        "cross_section_pb": 9.62241e-06,
+                        "event_count": 9515,
+                    }
+                )
+            )
+            (directory / "HW-run_gg_hhbbbb_heft_4_0.0_0.0.out").write_text(
+                "Total: 9514 9514 1.0e-08\n"
+            )
+
+            xsec_fb, generated, source = DRIVER[
+                "_metadata_for_sm_hh4b_scored_signal_root"
+            ](tagged, 10000)
+
+            self.assertEqual(source, metadata_file)
+            self.assertEqual(generated, 9515)
+            self.assertAlmostEqual(xsec_fb, 0.00962241)
+
     def test_summary_lookup_keeps_extended_tag(self):
-        tagged = Path("/tmp/HW-point-extended-v2_var.smearCMS.root")
+        tag = DRIVER["EXTENDED_V2_TAG"]
+        tagged = Path(f"/tmp/HW-point-{tag}_var.smearCMS.root")
         self.assertEqual(
             DRIVER["_analysis_summary_file_for_var_root"](tagged),
-            Path("/tmp/HW-point-extended-v2.analysis_summary.json"),
+            Path(f"/tmp/HW-point-{tag}.analysis_summary.json"),
         )
         self.assertEqual(DRIVER["_canonical_sample_name"](tagged), "HW-point")
 
@@ -351,9 +584,10 @@ class C3D4V2DriverTests(unittest.TestCase):
     def test_feature_tree_log_fallback_accepts_cpp_labels(self):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
-            var_root = directory / "sample-extended-v2_var.smearCMS.root"
+            tag = DRIVER["EXTENDED_V2_TAG"]
+            var_root = directory / f"sample-{tag}_var.smearCMS.root"
             var_root.touch()
-            log = directory / "sample-extended-v2.analysis.log"
+            log = directory / f"sample-{tag}.analysis.log"
             log.write_text(
                 "feature-tree MC events = 99\n"
                 "feature-tree weight out = 98.5\n"
@@ -370,7 +604,7 @@ class C3D4V2DriverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             raw = directory / "sample.root"
-            tagged = directory / "sample-extended-v2_var.smearCMS.root"
+            tagged = directory / f"sample-{DRIVER['EXTENDED_V2_TAG']}_var.smearCMS.root"
             raw.touch()
             tagged.touch()
             run_one = mock.Mock(return_value=tagged)
@@ -470,6 +704,21 @@ class C3D4V2DriverTests(unittest.TestCase):
                     "Data3_feature_names_json": Named(json.dumps(EXTENDED_FEATURE_NAMES)),
                     "Data3_feature_units_json": Named(json.dumps(EXTENDED_FEATURE_UNITS)),
                     "Data3_pairing_count": Parameter(pairing_count),
+                    "analysis_output_tag": Named(DRIVER["EXTENDED_V2_TAG"]),
+                    "jet_smearing_model_id": Named(DRIVER["JET_SMEARING_MODEL_ID"]),
+                    "jet_smearing_acceptance_order": Named(
+                        DRIVER["JET_SMEARING_ACCEPTANCE_ORDER"]
+                    ),
+                    "jet_smearing_fourvector_scaling": Named(
+                        DRIVER["JET_SMEARING_FOURVECTOR_SCALING"]
+                    ),
+                    "jet_smearing_seed": Parameter(DRIVER["JET_SMEARING_SEED"]),
+                    "jet_smearing_min_energy_gev": Parameter(
+                        DRIVER["JET_SMEARING_MIN_ENERGY_GEV"]
+                    ),
+                    "jet_smearing_gaussian_draws_per_jet": Parameter(1),
+                    "jet_smearing_correlated_mass_scaling": Parameter(1),
+                    "max_smearing_mass_scaling_residual_gev": Parameter(1.0e-12),
                 }
 
             def IsZombie(self):
@@ -483,23 +732,57 @@ class C3D4V2DriverTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
-            tagged = directory / "sample-extended-v2_var.smearCMS.root"
+            tag = DRIVER["EXTENDED_V2_TAG"]
+            tagged = directory / f"sample-{tag}_var.smearCMS.root"
             raw = directory / "sample.root"
             tagged.touch()
             raw.touch()
-            summary = directory / "sample-extended-v2.analysis_summary.json"
+            summary = directory / f"sample-{tag}.analysis_summary.json"
             summary.write_text(json.dumps({
                 "observable_schema": EXTENDED_SCHEMA_ID,
+                "analysis_output_tag": DRIVER["EXTENDED_V2_TAG"],
+                "jet_smearing_model_id": DRIVER["JET_SMEARING_MODEL_ID"],
+                "jet_smearing_acceptance_order": DRIVER[
+                    "JET_SMEARING_ACCEPTANCE_ORDER"
+                ],
+                "jet_smearing_fourvector_scaling": DRIVER[
+                    "JET_SMEARING_FOURVECTOR_SCALING"
+                ],
+                "jet_smearing_correlated_mass_scaling": True,
+                "jet_smearing_preserves_jet_mass": False,
+                "jet_smearing_gaussian_draws_per_jet": 1,
+                "jet_smearing_seed": DRIVER["JET_SMEARING_SEED"],
+                "jet_smearing_min_energy_gev": DRIVER[
+                    "JET_SMEARING_MIN_ENERGY_GEV"
+                ],
+                "max_smearing_mass_scaling_residual_gev": 1.0e-12,
                 "input_file": str(raw),
                 "mc_events_in": 3,
                 "c_mistags": 0,
                 "light_mistags": 0,
                 "required_true_bjets": 8,
+                "true_b_upward_pt_migrations": 3,
+                "true_b_downward_pt_migrations": 2,
+                "non_b_upward_pt_migrations": 6,
+                "non_b_downward_pt_migrations": 4,
+                "true_b_upward_pt_migrations_raw_pt_10_12_gev": 1,
+                "true_b_upward_pt_migrations_raw_pt_12_15_gev": 1,
+                "true_b_upward_pt_migrations_raw_pt_15_20_gev": 1,
+                "non_b_upward_pt_migrations_raw_pt_10_12_gev": 1,
+                "non_b_upward_pt_migrations_raw_pt_12_15_gev": 2,
+                "non_b_upward_pt_migrations_raw_pt_15_20_gev": 3,
                 "total_weight_in": 10.0,
+                "preselection_mc_events_out": 2,
+                "preselection_weight_out": 2.0,
+                "preselection_efficiency": 0.2,
                 "feature_tree_mc_events_out": 3,
                 "feature_tree_weight_out": 3.0,
                 "feature_tree_efficiency": 0.3,
+                "analysis_mc_events_out": 1,
+                "analysis_weight_out": 1.0,
+                "analysis_efficiency": 0.1,
             }))
+            valid_summary = json.loads(summary.read_text())
             os.utime(raw, (99.0, 99.0))
             os.utime(tagged, (100.0, 100.0))
             os.utime(summary, (101.0, 101.0))
@@ -527,6 +810,19 @@ class C3D4V2DriverTests(unittest.TestCase):
                     )
                 )
 
+            wrong_smearing = RootFile()
+            wrong_smearing.objects["Data"] = Tree()
+            wrong_smearing.objects["jet_smearing_model_id"] = Named(
+                "cms-energy-massless-v0"
+            )
+            fake_root.TFile.Open = lambda *args: wrong_smearing
+            with mock.patch.dict(sys.modules, {"ROOT": fake_root}):
+                self.assertFalse(
+                    DRIVER["_extended_v2_output_is_current"](
+                        tagged, raw_root=raw
+                    )
+                )
+
             wrong_pairings = RootFile(pairing_count=104)
             wrong_pairings.objects["Data"] = Tree()
             fake_root.TFile.Open = lambda *args: wrong_pairings
@@ -537,6 +833,43 @@ class C3D4V2DriverTests(unittest.TestCase):
                     )
                 )
 
+            wrong_seed = RootFile()
+            wrong_seed.objects["Data"] = Tree()
+            wrong_seed.objects["jet_smearing_seed"] = Parameter(
+                DRIVER["JET_SMEARING_SEED"] + 1
+            )
+            fake_root.TFile.Open = lambda *args: wrong_seed
+            with mock.patch.dict(sys.modules, {"ROOT": fake_root}):
+                self.assertFalse(
+                    DRIVER["_extended_v2_output_is_current"](
+                        tagged, raw_root=raw
+                    )
+                )
+
+            fake_root.TFile.Open = lambda *args: current_file
+            invalid_summary_fields = (
+                ("input_file", str(directory / "different.root")),
+                ("jet_smearing_seed", DRIVER["JET_SMEARING_SEED"] + 1),
+                ("jet_smearing_min_energy_gev", 1.0e-5),
+                ("true_b_upward_pt_migrations", 4),
+                ("max_smearing_mass_scaling_residual_gev", 1.0e-4),
+                ("feature_tree_efficiency", 0.31),
+            )
+            for index, (field, value) in enumerate(invalid_summary_fields, start=1):
+                invalid_summary = dict(valid_summary)
+                invalid_summary[field] = value
+                summary.write_text(json.dumps(invalid_summary))
+                os.utime(summary, (101.0 + index, 101.0 + index))
+                with mock.patch.dict(sys.modules, {"ROOT": fake_root}):
+                    self.assertFalse(
+                        DRIVER["_extended_v2_output_is_current"](
+                            tagged, raw_root=raw
+                        ),
+                        field,
+                    )
+
+            summary.write_text(json.dumps(valid_summary))
+            os.utime(summary, (109.0, 109.0))
             stale_summary = json.loads(summary.read_text())
             stale_summary["mc_events_in"] = 2
             summary.write_text(json.dumps(stale_summary))

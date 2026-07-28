@@ -260,19 +260,25 @@ def init_info_with_log_cross_section(
 
     first_log = next(iter(logs))
     first_values = logs[first_log]
-    if len(first_values) != reference.nprup:
-        if reference.nprup == 1 and first_values:
-            first_values = first_values[:1]
-        else:
-            raise ValueError(
-                f"{first_log}: found {len(first_values)} Sherpa cross-section line(s), "
-                f"but <init> declares {reference.nprup} process(es)"
-            )
+    if len(first_values) < reference.nprup:
+        raise ValueError(
+            f"{first_log}: found {len(first_values)} Sherpa cross-section line(s), "
+            f"but <init> declares {reference.nprup} process(es)"
+        )
+    # Sherpa generation logs can repeat the process table after every
+    # integration iteration.  The last NPRUP rows are the converged values;
+    # selecting the first rows would transmit a warm-up cross section.
+    first_values = first_values[-reference.nprup:]
 
     for path, values in list(logs.items())[1:]:
-        if len(values) != len(first_values):
-            raise ValueError(f"{path}: Sherpa log cross-section process count differs from {first_log}")
-        for index, ((ref_xsec, ref_xerr), (xsec, xerr)) in enumerate(zip(first_values, values), start=1):
+        if len(values) < reference.nprup:
+            raise ValueError(
+                f"{path}: Sherpa log has fewer cross-section rows than {first_log}"
+            )
+        final_values = values[-reference.nprup:]
+        for index, ((ref_xsec, ref_xerr), (xsec, xerr)) in enumerate(
+            zip(first_values, final_values), start=1
+        ):
             if not close_enough(ref_xsec, xsec, abs_tol, rel_tol):
                 raise ValueError(
                     f"{path}: Sherpa log cross-section mismatch for process {index}: "

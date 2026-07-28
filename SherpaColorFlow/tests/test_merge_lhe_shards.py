@@ -169,6 +169,45 @@ class MergeLheShardsTests(unittest.TestCase):
             self.assertIn("0.00108292 2.83736e-05 1 1\n</init>", merged)
             self.assertNotIn("  1.0 1.0 1.0 1", merged)
 
+    def test_uses_final_sherpa_iteration_not_warmup_cross_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            for idx, seed in enumerate((1234, 2468), start=1):
+                job = base / f"job_{idx:04d}"
+                job.mkdir()
+                (job / f"events_{seed}.lhe").write_text(
+                    lhe_header(1.0, 1.0)
+                    + event_block(idx)
+                    + "</LesHouchesEvents>\n"
+                )
+                (job / f"sherpa_{seed}.log").write_text(
+                    "proc : 0.2 pb +- ( 0.1 pb = 50 % ) warmup\n"
+                    "proc : 9.62241e-06 pb +- ( 8.76932e-07 pb = 9.1 % ) final\n"
+                )
+
+            output = base / "merged.lhe"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    str(base),
+                    "--output",
+                    str(output),
+                    "--expected-events",
+                    "2",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertIn("XSECUP=9.62241e-06", result.stdout)
+            self.assertIn(
+                "9.62241e-06 8.76932e-07 1 1",
+                output.read_text(),
+            )
+            self.assertNotIn("0.2 0.1 1 1", output.read_text())
+
     def test_cross_section_mismatch_fails_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

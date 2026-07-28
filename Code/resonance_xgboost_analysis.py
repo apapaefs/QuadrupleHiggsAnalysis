@@ -37,7 +37,12 @@ import numpy as np
 
 METHOD_VERSION = "resonance-mass-aware-xgboost-v1"
 TREE_SCHEMA = "resonance-hybrid-v1"
-EXTRACTOR_METHOD_VERSION = "resonance-hybrid-v1.1-leading-composition"
+EXTRACTOR_METHOD_VERSION = "resonance-hybrid-v1.2-uniform-fourvector-smearing"
+EXTRACTOR_PREPROCESSING_VERSION = "resonance-preprocessing-v2"
+EXTRACTOR_SMEARING_MODEL_ID = "cms-energy-uniform-fourvector-v1"
+EXTRACTOR_SMEARING_ETA_PRESELECTION = "finite |eta|<2.5 before smearing"
+EXTRACTOR_SMEARING_PT_THRESHOLD = "smeared pT>20 GeV"
+EXTRACTOR_SMEARING_ACCEPTANCE_ORDER = "raw_abs_eta_then_smear_then_smeared_pt"
 DEFAULT_TREE = "ResonanceFeatures"
 DEFAULT_SEED = 12345
 N_FOLDS = 5
@@ -639,6 +644,33 @@ def _summary_metadata(path: Path) -> tuple[int, float, float, int, float, dict[s
     if summary.get("method_version") != EXTRACTOR_METHOD_VERSION:
         raise AnalysisInputError(
             f"{path}: expected extractor method_version {EXTRACTOR_METHOD_VERSION!r}"
+        )
+    if summary.get("preprocessing_version") != EXTRACTOR_PREPROCESSING_VERSION:
+        raise AnalysisInputError(
+            f"{path}: expected preprocessing_version "
+            f"{EXTRACTOR_PREPROCESSING_VERSION!r}"
+        )
+    smearing = summary.get("smearing")
+    if not isinstance(smearing, Mapping):
+        raise AnalysisInputError(f"{path}: missing smearing metadata")
+    expected_smearing_metadata = {
+        "enabled": True,
+        "preprocessing_version": EXTRACTOR_PREPROCESSING_VERSION,
+        "model_id": EXTRACTOR_SMEARING_MODEL_ID,
+        "eta_preselection": EXTRACTOR_SMEARING_ETA_PRESELECTION,
+        "pt_threshold": EXTRACTOR_SMEARING_PT_THRESHOLD,
+        "smear_before_pt_threshold": True,
+        "acceptance_order": EXTRACTOR_SMEARING_ACCEPTANCE_ORDER,
+    }
+    incompatible_smearing = [
+        name
+        for name, expected in expected_smearing_metadata.items()
+        if smearing.get(name) != expected
+    ]
+    if incompatible_smearing:
+        raise AnalysisInputError(
+            f"{path}: incompatible smearing metadata: "
+            + ", ".join(incompatible_smearing)
         )
     if summary.get("tag_efficiencies_applied") is not False:
         raise AnalysisInputError(f"{path}: tagging must not be pre-applied")
@@ -2818,6 +2850,9 @@ def run_analysis(args: argparse.Namespace) -> int:
         "method_version": METHOD_VERSION,
         "tree_schema": TREE_SCHEMA,
         "extractor_method_version": EXTRACTOR_METHOD_VERSION,
+        "extractor_preprocessing_version": EXTRACTOR_PREPROCESSING_VERSION,
+        "extractor_smearing_model_id": EXTRACTOR_SMEARING_MODEL_ID,
+        "extractor_smearing_acceptance_order": EXTRACTOR_SMEARING_ACCEPTANCE_ORDER,
         "topology": args.topology,
         "mode": args.mode,
         "tree_name": args.tree_name,
@@ -2967,6 +3002,9 @@ def run_analysis(args: argparse.Namespace) -> int:
             "status": "normalization_only",
             "topology": args.topology,
             "extractor_method_version": EXTRACTOR_METHOD_VERSION,
+            "extractor_preprocessing_version": EXTRACTOR_PREPROCESSING_VERSION,
+            "extractor_smearing_model_id": EXTRACTOR_SMEARING_MODEL_ID,
+            "extractor_smearing_acceptance_order": EXTRACTOR_SMEARING_ACCEPTANCE_ORDER,
             "analysis_fingerprint": analysis_fingerprint,
             "command": shlex.join(sys.argv),
             "configuration": configuration,
@@ -3342,6 +3380,9 @@ def run_analysis(args: argparse.Namespace) -> int:
         "topology": args.topology,
         "tree_schema": TREE_SCHEMA,
         "extractor_method_version": EXTRACTOR_METHOD_VERSION,
+        "extractor_preprocessing_version": EXTRACTOR_PREPROCESSING_VERSION,
+        "extractor_smearing_model_id": EXTRACTOR_SMEARING_MODEL_ID,
+        "extractor_smearing_acceptance_order": EXTRACTOR_SMEARING_ACCEPTANCE_ORDER,
         "analysis_fingerprint": analysis_fingerprint,
         "run_fingerprint": run_fingerprint,
         "command": shlex.join(sys.argv),
@@ -3413,6 +3454,11 @@ def run_analysis(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--feature-set",
+        choices=("resonance-hybrid-v1", "fatjet-ak8-softdrop-v1"),
+        default="resonance-hybrid-v1",
+    )
     parser.add_argument("--analysis-root", type=Path, default=Path(__file__).resolve().parent.parent)
     parser.add_argument("--topology", required=True, choices=("direct", "cascade"))
     parser.add_argument("--mode", choices=("full", "smoke", "normalization-only"), default="full")
@@ -3447,7 +3493,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    feature_set = "resonance-hybrid-v1"
+    for index, argument in enumerate(arguments):
+        if argument == "--feature-set" and index + 1 < len(arguments):
+            feature_set = arguments[index + 1]
+        elif argument.startswith("--feature-set="):
+            feature_set = argument.split("=", 1)[1]
+    if feature_set == "fatjet-ak8-softdrop-v1":
+        from resonance_fatjet_xgboost_analysis import main as fatjet_main
+
+        return fatjet_main(arguments)
+    args = build_parser().parse_args(arguments)
     if not math.isfinite(args.luminosity) or args.luminosity <= 0.0:
         raise SystemExit("--luminosity must be positive and finite")
     for name in (
