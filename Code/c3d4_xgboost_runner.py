@@ -1702,39 +1702,101 @@ def _publish_postfit_sm_hh4b_result(
     return row
 
 
-def _print_postfit_sm_hh4b_result(row: Mapping[str, Any]) -> None:
-    """Print the standalone SM hh+4b result as the final study output."""
+def _sm_hh4b_signal_cutflow_row(
+    result: Mapping[str, Any],
+    *,
+    luminosity: float,
+) -> dict[str, Any]:
+    """Convert the post-training SM hh+4b result into a signal-table row."""
 
-    print()
-    print("SM hh+4b post-training signal result")
-    print(f"  classifier strategy = {row['classifier_strategy']}")
-    print(f"  raw HEFT cross section = {row['xsec_fb']:.8g} fb")
-    print(f"  rate factor = {row['rate_factor']:.8g}")
-    print(
-        "  effective inclusive cross section = "
-        f"{row['xsec_fb'] * row['rate_factor']:.8g} fb"
+    luminosity = float(luminosity)
+    if not math.isfinite(luminosity) or luminosity <= 0.0:
+        raise ValueError("luminosity must be finite and positive")
+    if (
+        str(result.get("component")) != "sm_hh4b"
+        or abs(float(result["c3"])) > 1.0e-12
+        or abs(float(result["d4"])) > 1.0e-12
+    ):
+        raise ValueError("The SM hh+4b table row requires its SM-only result")
+    forbidden_roles = (
+        "included_in_training",
+        "included_in_threshold_optimization",
+        "included_in_shape_binning_optimization",
+        "included_in_background",
+        "included_in_limits",
     )
-    print(
-        "  effective cross section after feature selection = "
-        f"{row['effective_feature_xsec_fb']:.8g} fb"
-    )
-    print(
-        "  effective cross section after XGBoost = "
-        f"{row['effective_selected_xsec_fb']:.8g} fb"
-    )
-    print(f"  analysis efficiency = {row['analysis_efficiency']:.8g}")
-    print(f"  XGBoost efficiency = {row['xgboost_efficiency']:.8g}")
-    print(f"  final efficiency = {row['final_efficiency']:.8g}")
-    print(
-        "  nominal selected yield at study luminosity = "
-        f"{row['nominal_selected_signal_yield']:.8g} +- "
-        f"{row['nominal_selected_signal_staterror']:.8g}"
-    )
-    print(
-        "  selected MC count = "
-        f"{row['selected_raw_entries']} / {row['entries']}"
-    )
-    print("  limits/background role = none (standalone SM signal diagnostic)")
+    if any(bool(result.get(role, False)) for role in forbidden_roles):
+        raise ValueError(
+            "The SM hh+4b table row must remain excluded from training, "
+            "optimization, backgrounds, and limits"
+        )
+
+    input_events = float(result["nominal_feature_signal_yield"])
+    selected_events = float(result["nominal_selected_signal_yield"])
+    selected_error = float(result["nominal_selected_signal_staterror"])
+    for label, calculated, stored in (
+        (
+            "feature-selected cross section",
+            input_events / luminosity,
+            float(result["effective_feature_xsec_fb"]),
+        ),
+        (
+            "XGBoost-selected cross section",
+            selected_events / luminosity,
+            float(result["effective_selected_xsec_fb"]),
+        ),
+    ):
+        if not math.isclose(
+            calculated,
+            stored,
+            rel_tol=1.0e-12,
+            abs_tol=1.0e-15,
+        ):
+            raise ValueError(
+                f"The SM hh+4b {label} does not close between its yield "
+                f"and stored rate: {calculated} versus {stored}"
+            )
+    return {
+        "sample_id": str(result["process_id"]),
+        "sample_role": "signal",
+        "is_signal": True,
+        "signal_component": "sm_hh4b",
+        "point_id": str(result["point_id"]),
+        "point_class": "standalone-sm-diagnostic",
+        "representative_category": "SM post-training diagnostic",
+        "is_limit_representative": False,
+        "representative_selection": None,
+        "cut_signal_strength95": None,
+        "theory_to_limit_ratio": None,
+        "limit_proximity_log_mu95": None,
+        "excluded_cut": False,
+        "file": str(result["file"]),
+        "process_id": str(result["process_id"]),
+        "description": (
+            "SM HEFT gg -> hh + b bbar b bbar "
+            "(post-training signal diagnostic)"
+        ),
+        "production_xsec_fb": float(result["xsec_fb"]),
+        "rate_factor": float(result["rate_factor"]),
+        "effective_inclusive_xsec_fb": (
+            float(result["xsec_fb"]) * float(result["rate_factor"])
+        ),
+        "input_xsec_fb": input_events / luminosity,
+        "input_events": input_events,
+        "xgboost_xsec_fb": selected_events / luminosity,
+        "xgboost_events": selected_events,
+        "xgboost_events_error": selected_error,
+        "xgboost_xsec_error_fb": selected_error / luminosity,
+        "xgboost_efficiency": float(result["xgboost_efficiency"]),
+        "feature_tree_efficiency": float(result["analysis_efficiency"]),
+        "entries": int(result["entries"]),
+        "selected_entries": int(result["selected_raw_entries"]),
+        "generated_events": int(result["generated_events"]),
+        "normalisation_weight": float(result["normalisation_weight"]),
+        "c3": float(result["c3"]),
+        "d4": float(result["d4"]),
+        **{role: False for role in forbidden_roles},
+    }
 
 
 def _coupling_holdout_assignments(
@@ -2440,6 +2502,7 @@ def _sm_signal_cutflow_rows(
     *,
     luminosity: float,
     include_limit_representatives: bool = False,
+    sm_hh4b_result: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Build role-labelled SM and representative-point signal cutflow rows."""
 
@@ -2648,6 +2711,13 @@ def _sm_signal_cutflow_rows(
                         result["hhhbb_nominal_selected_signal_staterror"]
                     ),
                     selected_entries=int(result["hhhbb_selected_raw_entries"]),
+                )
+            )
+        if not is_representative and sm_hh4b_result is not None:
+            rows.append(
+                _sm_hh4b_signal_cutflow_row(
+                    sm_hh4b_result,
+                    luminosity=luminosity,
                 )
             )
     return rows
@@ -7141,6 +7211,7 @@ def _run_c3d4_study_impl(
                 aggregate,
                 luminosity=luminosity,
                 include_limit_representatives=bool(hhhbb_samples),
+                sm_hh4b_result=sm_hh4b_result,
             )
             sm_background_cutflow = [
                 *sm_signal_cutflow,
@@ -7414,6 +7485,10 @@ def _run_c3d4_study_impl(
                     "thresholds_by_fold": sm_thresholds,
                     "signal_rows_are_excluded_from_background_total": True,
                     "signal_rows_are_alternative_coupling_hypotheses": True,
+                    "postfit_sm_hh4b_is_signal_only": any(
+                        row.get("signal_component") == "sm_hh4b"
+                        for row in sm_signal_cutflow
+                    ),
                     "rows": sm_background_cutflow,
                     "signal_rows": sm_signal_cutflow,
                     "background_rows": sm_background_only_cutflow,
@@ -8099,6 +8174,10 @@ def _run_c3d4_study_impl(
             "signal_only_csv": str(sm_strategy_dir / "sm_signal_cutflow.csv"),
             "signal_rows_are_excluded_from_background_total": True,
             "signal_rows_are_alternative_coupling_hypotheses": True,
+            "postfit_sm_hh4b_is_signal_only": any(
+                row.get("signal_component") == "sm_hh4b"
+                for row in cutflow_result.get("sm_signal_cutflow", [])
+            ),
             "limit_representative_point_count": len(
                 {
                     str(row["point_id"])
@@ -8168,10 +8247,6 @@ def _run_c3d4_study_impl(
         selected_profile=selected_profile,
         strategies=list(strategy_results),
     )
-    for result in strategy_results.values():
-        sm_hh4b_result = result.get("postfit_sm_hh4b")
-        if sm_hh4b_result is not None:
-            _print_postfit_sm_hh4b_result(sm_hh4b_result)
     return summary
 
 

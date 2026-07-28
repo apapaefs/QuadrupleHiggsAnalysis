@@ -2473,42 +2473,57 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
         self.assertFalse(result["cross_section_fit_applied"])
         self.assertNotIn("cut_sigma95_fb", result)
 
-    def test_sm_hh4b_terminal_result_prints_complete_standalone_summary(self):
-        row = {
+    def test_sm_hh4b_cutflow_row_is_a_nonlimit_signal_reference(self):
+        result = {
+            "component": "sm_hh4b",
             "classifier_strategy": "sm-crossfit-v2",
+            "point_id": "c3=0,d4=0",
+            "c3": 0.0,
+            "d4": 0.0,
+            "file": "/sm-hh4b.root",
+            "process_id": "sm_hh4b_heft",
             "xsec_fb": 0.01,
             "rate_factor": 0.2,
-            "effective_feature_xsec_fb": 0.001,
-            "effective_selected_xsec_fb": 0.0005,
+            "generated_events": 1000,
+            "normalisation_weight": 1000.0,
+            "entries": 100,
             "analysis_efficiency": 0.5,
             "xgboost_efficiency": 0.5,
             "final_efficiency": 0.25,
+            "effective_feature_xsec_fb": 0.001,
+            "effective_selected_xsec_fb": 0.0005,
+            "nominal_feature_signal_yield": 3.0,
             "nominal_selected_signal_yield": 1.5,
             "nominal_selected_signal_staterror": 0.1,
             "selected_raw_entries": 25,
-            "entries": 100,
+            "included_in_training": False,
+            "included_in_threshold_optimization": False,
+            "included_in_shape_binning_optimization": False,
+            "included_in_background": False,
+            "included_in_limits": False,
         }
 
-        output = io.StringIO()
-        with redirect_stdout(output):
-            runner._print_postfit_sm_hh4b_result(row)
+        row = runner._sm_hh4b_signal_cutflow_row(
+            result,
+            luminosity=3000.0,
+        )
 
-        text = output.getvalue()
-        self.assertIn("SM hh+4b post-training signal result", text)
-        self.assertIn("classifier strategy = sm-crossfit-v2", text)
-        self.assertIn("effective inclusive cross section = 0.002 fb", text)
-        self.assertIn("final efficiency = 0.25", text)
-        self.assertIn(
-            "nominal selected yield at study luminosity = 1.5 +- 0.1",
-            text,
+        self.assertEqual(row["sample_role"], "signal")
+        self.assertEqual(row["signal_component"], "sm_hh4b")
+        self.assertIsNone(row["cut_signal_strength95"])
+        self.assertAlmostEqual(row["input_xsec_fb"], 0.001)
+        self.assertAlmostEqual(row["xgboost_xsec_fb"], 0.0005)
+        self.assertEqual(row["selected_entries"], 25)
+        self.assertFalse(row["included_in_training"])
+        self.assertFalse(row["included_in_background"])
+        self.assertFalse(row["included_in_limits"])
+        rendered = runner.terminal_sm_background_cutflow_table(
+            [row],
+            luminosity=3000.0,
+            thresholds=[0.5] * 5,
         )
-        self.assertIn("selected MC count = 25 / 100", text)
-        self.assertTrue(
-            text.rstrip().endswith(
-                "limits/background role = none "
-                "(standalone SM signal diagnostic)"
-            )
-        )
+        self.assertIn("SM HEFT gg->hh + b bbar b bbar", rendered)
+        self.assertIn("post-training signal diagnostic only", rendered)
 
     def test_parameterized_postfit_hhhbb_is_scored_at_its_true_coordinate(self):
         hhhbb = sample(
@@ -2802,7 +2817,7 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
                 [background], records, luminosity=3000.0
             )
 
-    def test_sm_signal_cutflow_reports_hhhh_and_hhhbb_as_separate_signals(self):
+    def test_sm_signal_cutflow_reports_all_components_as_separate_signals(self):
         hhhh = sample(
             "run_gg_4h_test_0_0",
             "grid_signal",
@@ -2841,15 +2856,45 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
                 ],
             }
         ]
+        sm_hh4b_result = {
+            "component": "sm_hh4b",
+            "point_id": "c3=0,d4=0",
+            "c3": 0.0,
+            "d4": 0.0,
+            "file": "/sm-hh4b.root",
+            "process_id": "sm_hh4b_heft",
+            "xsec_fb": 0.01,
+            "rate_factor": 0.2,
+            "generated_events": 1000,
+            "normalisation_weight": 1000.0,
+            "entries": 100,
+            "analysis_efficiency": 0.5,
+            "xgboost_efficiency": 0.5,
+            "effective_feature_xsec_fb": 0.001,
+            "effective_selected_xsec_fb": 0.0005,
+            "nominal_feature_signal_yield": 0.01,
+            "nominal_selected_signal_yield": 0.005,
+            "nominal_selected_signal_staterror": 0.001,
+            "selected_raw_entries": 25,
+            "included_in_training": False,
+            "included_in_threshold_optimization": False,
+            "included_in_shape_binning_optimization": False,
+            "included_in_background": False,
+            "included_in_limits": False,
+        }
 
         rows = runner._sm_signal_cutflow_rows(
             [hhhh],
             [hhhbb],
             aggregate,
             luminosity=10.0,
+            sm_hh4b_result=sm_hh4b_result,
         )
 
-        self.assertEqual([row["signal_component"] for row in rows], ["hhhh", "hhhbb"])
+        self.assertEqual(
+            [row["signal_component"] for row in rows],
+            ["hhhh", "hhhbb", "sm_hh4b"],
+        )
         self.assertTrue(all(row["sample_role"] == "signal" for row in rows))
         self.assertTrue(all(row["is_signal"] for row in rows))
         self.assertAlmostEqual(rows[0]["effective_inclusive_xsec_fb"], 1.0)
@@ -2862,6 +2907,11 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
         self.assertAlmostEqual(rows[1]["xgboost_events"], 0.6)
         self.assertAlmostEqual(rows[1]["xgboost_events_error"], 0.2)
         self.assertEqual(rows[1]["selected_entries"], 2)
+        self.assertAlmostEqual(rows[2]["input_events"], 0.01)
+        self.assertAlmostEqual(rows[2]["xgboost_events"], 0.005)
+        self.assertIsNone(rows[2]["cut_signal_strength95"])
+        self.assertFalse(rows[2]["included_in_background"])
+        self.assertFalse(rows[2]["included_in_limits"])
 
         background = {
             "sample_id": "background",
@@ -2883,6 +2933,8 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
         )
         self.assertIn("signal references", rendered)
         self.assertLess(rendered.index("SM gg->hhhh->8b"), rendered.index("QCD background"))
+        self.assertIn("SM HEFT gg->hh + b bbar b bbar", rendered)
+        self.assertIn("post-training signal diagnostic only", rendered)
         self.assertIn("do not enter the background total", rendered)
 
     def test_limit_representatives_cover_axes_and_four_diagonal_quadrants(self):

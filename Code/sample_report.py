@@ -1411,11 +1411,28 @@ def terminal_sm_background_cutflow_table(rows, luminosity, thresholds):
         "are weighted-MC statistical uncertainties.",
         "Signal reference rows are reported separately and do not enter the "
         "background total or threshold optimization.",
-        "The eight limit representatives minimize |log(mu95)| in two c3~0, "
-        "two d4~0, and four diagonal regions; mu95=1 is the 95% CL boundary. "
-        "Different coupling points are alternative hypotheses and are not summed.",
-        _terminal_table(headers, table_rows, right_aligned=set(range(2, len(headers)))),
     ]
+    if any(row.get("signal_component") == "sm_hh4b" for row in rows):
+        lines.append(
+            "The SM hh+4b row is a post-training signal diagnostic only; "
+            "its mu95 is intentionally blank and it is excluded from training, "
+            "optimization, backgrounds, and limits."
+        )
+    lines.extend(
+        [
+            (
+                "The eight limit representatives minimize |log(mu95)| in two "
+                "c3~0, two d4~0, and four diagonal regions; mu95=1 is the 95% "
+                "CL boundary. Different coupling points are alternative "
+                "hypotheses and are not summed."
+            ),
+            _terminal_table(
+                headers,
+                table_rows,
+                right_aligned=set(range(2, len(headers))),
+            ),
+        ]
+    )
     return "\n".join(lines)
 
 
