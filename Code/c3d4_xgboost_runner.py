@@ -3261,8 +3261,14 @@ def write_v2_input_observable_report(
     observable_set: str,
     feature_profile: str,
     luminosity: float,
+    comparison_signal_samples: Sequence[EventSample] = (),
 ) -> dict[str, Any]:
-    """Write v2 input-shape and legacy-style stacked cross-section galleries."""
+    """Write input-shape and stacked-cross-section galleries.
+
+    The dedicated SM hhhh sample and the backgrounds are classifier inputs.
+    Optional comparison signals, currently the SM hhh+bb component, are shown
+    only after training and are never used to choose the classifier or bins.
+    """
 
     if not sm_samples:
         raise ValueError("The input-observable report requires an SM signal sample")
@@ -3281,10 +3287,35 @@ def write_v2_input_observable_report(
 
     report_samples = []
     sample_rows = []
-    for index, event_sample in enumerate([*sm_samples, *background_samples]):
-        is_signal = event_sample.kind == "sm_signal"
+    report_event_samples = [
+        *sm_samples,
+        *comparison_signal_samples,
+        *background_samples,
+    ]
+    for index, event_sample in enumerate(report_event_samples):
+        is_training_signal = event_sample.kind == "sm_signal"
+        is_comparison_signal = event_sample.kind == "postfit_hhhbb_signal"
+        is_signal = is_training_signal or is_comparison_signal
+        signal_component = (
+            "hhhh"
+            if is_training_signal
+            else "hhhbb"
+            if is_comparison_signal
+            else None
+        )
+        analysis_role = (
+            "classifier-training-signal"
+            if is_training_signal
+            else "post-training-signal-comparison"
+            if is_comparison_signal
+            else "classifier-training-background"
+        )
         metadata = dict(event_sample.metadata or {})
-        label = sample_latex_label(metadata, is_signal=is_signal)
+        label = (
+            r"SM $gg\to hhhg\,(g\to b\bar{b})\to 8b$"
+            if is_comparison_signal
+            else sample_latex_label(metadata, is_signal=is_training_signal)
+        )
         effective_xsec_fb = float(np.sum(event_sample.physical_weights)) / luminosity
         report_samples.append(
             {
@@ -3298,6 +3329,9 @@ def write_v2_input_observable_report(
                     np.sum(event_sample.physical_weights)
                 ),
                 "is_signal": is_signal,
+                "signal_component": signal_component,
+                "analysis_role": analysis_role,
+                "included_in_training": not is_comparison_signal,
                 "process_id": metadata.get("process_id"),
                 "metadata": metadata,
                 "style": sample_style(index),
@@ -3312,6 +3346,9 @@ def write_v2_input_observable_report(
                 "entries": event_sample.entries,
                 "input_xsec_fb": effective_xsec_fb,
                 "process_id": metadata.get("process_id", ""),
+                "signal_component": signal_component or "",
+                "analysis_role": analysis_role,
+                "included_in_training": not is_comparison_signal,
             }
         )
 
@@ -3347,7 +3384,10 @@ def write_v2_input_observable_report(
                 {
                     "feature": feature_name,
                     "path": str(stacked_path),
-                    "detail": "stacked physical input cross section; SM shown x1000",
+                    "detail": (
+                        "stacked physical input cross section; signal components "
+                        "shown x1000"
+                    ),
                 },
             ]
         )
@@ -3371,13 +3411,24 @@ def write_v2_input_observable_report(
             "to the effective input cross section after rate factors."
         ),
         "signal_display_scale": 1000.0,
-        "samples": [
-            {"label": row["label"], "file": row["file"]} for row in sample_rows
+        "signal_stack_order": [
+            "backgrounds",
+            "SM hhh+bb (penultimate)",
+            "SM hhhh (top)",
         ],
+        "comparison_signal_policy": (
+            "The SM hhh+bb sample is displayed with physical normalization only "
+            "after training. It is excluded from classifier training, validation, "
+            "bin selection, and optimization."
+        ),
+        "comparison_signal_count": len(comparison_signal_samples),
+        "samples": sample_rows,
         "plots": plot_metadata,
         "report_line": (
             f"{len(feature_names)} observables; normalized comparisons and stacked "
-            "input cross sections. The SM stack is enlarged by 1000 for visibility."
+            "input cross sections. Signal components are enlarged by 1000 for "
+            "visibility; SM hhh+bb is immediately below SM hhhh in the stack and "
+            "is not a classifier input."
         ),
     }
     metadata_path = report_dir / "report_metadata.json"
@@ -3400,6 +3451,7 @@ def write_v2_input_observable_report(
         "observable_count": len(feature_names),
         "plot_count": len(plot_rows),
         "signal_display_scale": 1000.0,
+        "comparison_signal_count": len(comparison_signal_samples),
     }
 
 
@@ -6872,6 +6924,19 @@ def _run_c3d4_study_impl(
     _write_json_atomic(output_dir / "method_manifest.json", manifest)
     input_observable_report = None
     if write_input_report:
+        sm_hhhbb_report_samples = [
+            sample
+            for sample in hhhbb_samples
+            if sample.c3 is not None
+            and sample.d4 is not None
+            and abs(float(sample.c3)) <= 1.0e-12
+            and abs(float(sample.d4)) <= 1.0e-12
+        ]
+        if hhhbb_samples and len(sm_hhhbb_report_samples) != 1:
+            raise ValueError(
+                "The input-observable report requires exactly one SM hhh+bb "
+                "sample at (c3,d4)=(0,0)"
+            )
         progress.emit(
             "input-report",
             "Writing normalized and stacked input-observable plots",
@@ -6886,6 +6951,7 @@ def _run_c3d4_study_impl(
             observable_set=observable_set,
             feature_profile=selected_profile,
             luminosity=luminosity,
+            comparison_signal_samples=sm_hhhbb_report_samples,
         )
         manifest["input_observable_report"] = input_observable_report
         _write_json_atomic(output_dir / "method_manifest.json", manifest)
@@ -8533,11 +8599,25 @@ def write_c3d4_input_report_from_manifest(
 
     specs_by_kind: dict[str, list[dict[str, Any]]] = {
         "sm_signal": [],
+        "postfit_hhhbb_signal": [],
         "background": [],
     }
     for item in manifest.get("inputs", []):
         if not isinstance(item, Mapping) or item.get("kind") not in specs_by_kind:
             continue
+        if item.get("kind") == "postfit_hhhbb_signal":
+            try:
+                c3 = float(item.get("c3"))
+                d4 = float(item.get("d4"))
+            except (TypeError, ValueError):
+                continue
+            if not (
+                math.isfinite(c3)
+                and math.isfinite(d4)
+                and abs(c3) <= 1.0e-12
+                and abs(d4) <= 1.0e-12
+            ):
+                continue
         path = Path(str(item.get("path", ""))).expanduser()
         if not path.is_absolute():
             path = (Path(__file__).resolve().parents[1] / path).resolve()
@@ -8566,6 +8646,15 @@ def write_c3d4_input_report_from_manifest(
     sm_samples = _load_samples(
         specs_by_kind["sm_signal"], kind="sm_signal", **common
     )
+    comparison_signal_samples = (
+        _load_samples(
+            specs_by_kind["postfit_hhhbb_signal"],
+            kind="postfit_hhhbb_signal",
+            **common,
+        )
+        if specs_by_kind["postfit_hhhbb_signal"]
+        else []
+    )
     background_samples = _load_samples(
         specs_by_kind["background"], kind="background", **common
     )
@@ -8576,6 +8665,7 @@ def write_c3d4_input_report_from_manifest(
         observable_set=observable_set,
         feature_profile=feature_profile,
         luminosity=luminosity,
+        comparison_signal_samples=comparison_signal_samples,
     )
     manifest["input_observable_report"] = report
     outputs = dict(manifest.get("outputs") or {})

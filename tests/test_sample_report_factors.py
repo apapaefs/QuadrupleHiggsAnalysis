@@ -668,6 +668,28 @@ class SampleReportFactorTests(unittest.TestCase):
 
         self.assertEqual([sample["label"] for sample in ordered], ["gg->8b", "gg->6b+2c", "SM"])
 
+    def test_stacked_sample_order_places_hhhbb_penultimate_below_hhhh(self):
+        ordered = stacked_sample_order(
+            [
+                {
+                    "label": "SM hhhh",
+                    "is_signal": True,
+                    "signal_component": "hhhh",
+                },
+                {"label": "background", "is_signal": False},
+                {
+                    "label": "SM hhh+bb",
+                    "is_signal": True,
+                    "signal_component": "hhhbb",
+                },
+            ]
+        )
+
+        self.assertEqual(
+            [sample["label"] for sample in ordered],
+            ["background", "SM hhh+bb", "SM hhhh"],
+        )
+
     def test_sample_report_wires_stacked_input_plots_into_index_metadata(self):
         module_text = (CODE_DIR / "xgboost_root_varfiles_module.py").read_text()
 
@@ -729,8 +751,18 @@ class SampleReportFactorTests(unittest.TestCase):
                         "is_signal": False,
                     },
                     {
+                        "label": "SM hhh+bb",
+                        "process_id": "sm_hhhbb",
+                        "signal_component": "hhhbb",
+                        "values": [650.0],
+                        "weights": [1.0],
+                        "input_xsec_fb": 0.02,
+                        "is_signal": True,
+                    },
+                    {
                         "label": "SM",
                         "process_id": "sm_4h",
+                        "signal_component": "hhhh",
                         "values": [700.0],
                         "weights": [1.0],
                         "input_xsec_fb": 0.01,
@@ -745,12 +777,24 @@ class SampleReportFactorTests(unittest.TestCase):
             labels = [group["label"] for group in metadata["stacked_groups"]]
             display_labels = [group["display_label"] for group in metadata["stacked_groups"]]
             plot_labels = [group["plot_label"] for group in metadata["stacked_groups"]]
+            group_keys = [group["group_key"] for group in metadata["stacked_groups"]]
             self.assertIn(r"$gg \rightarrow 6b + 2\slashed{b}$", labels)
+            self.assertIn(
+                (
+                    r"$\mathrm{SM}\ gg \rightarrow hhhg\,(g\rightarrow b\bar{b}) "
+                    r"\rightarrow 8b$"
+                ),
+                labels,
+            )
             self.assertIn(r"$\mathrm{SM}\ gg \rightarrow hhhh \rightarrow 8b$", labels)
+            self.assertEqual(group_keys[-2:], ["signal_hhhbb", "signal_hhhh"])
             self.assertFalse(any(r"\slash{b}" in label for label in labels + display_labels))
             self.assertTrue(any(r"\slashed{b}" in label for label in plot_labels))
             self.assertFalse(any(r"\not{b}" in label for label in plot_labels))
-            self.assertTrue(any(r"\mathbf{\times 1000}" in label for label in display_labels))
+            self.assertEqual(
+                sum(r"\mathbf{\times 1000}" in label for label in display_labels),
+                2,
+            )
 
     def test_stacked_input_plot_writer_omits_norm_annotation(self):
         import matplotlib.axes
