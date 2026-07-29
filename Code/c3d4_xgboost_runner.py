@@ -2918,6 +2918,67 @@ def _cutflow_signal_totals_by_point(
     return totals
 
 
+def _pyhf_shape_cutflow_rows(
+    cutflow_rows: Sequence[Mapping[str, Any]],
+    aggregate: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach the full pyhf expected ``mu95`` to cutflow reference rows.
+
+    The rate columns deliberately remain the frozen hard-threshold cutflow.
+    They provide a like-for-like comparison with the earlier terminal table,
+    while ``shape_signal_strength95`` is derived from the canonical binned
+    pyhf result.  The standalone SM ``hh+4b`` diagnostic remains blank because
+    it is not part of the likelihood.
+    """
+
+    results_by_point: dict[str, Mapping[str, Any]] = {}
+    for result in aggregate:
+        point_id = str(result["point_id"])
+        if point_id in results_by_point:
+            raise ValueError(
+                f"Duplicate aggregate result for pyhf table point {point_id!r}"
+            )
+        results_by_point[point_id] = result
+
+    output: list[dict[str, Any]] = []
+    for source in cutflow_rows:
+        row = dict(source)
+        row["shape_signal_strength95"] = None
+        if not bool(row.get("is_signal")):
+            output.append(row)
+            continue
+        if row.get("included_in_limits") is False:
+            output.append(row)
+            continue
+
+        point_id = str(row.get("point_id", ""))
+        if not point_id or point_id not in results_by_point:
+            raise ValueError(
+                "A signal row included in the likelihood has no matching "
+                f"aggregate pyhf result: {point_id!r}"
+            )
+        result = results_by_point[point_id]
+        sigma95 = result.get("shape_sigma95_fb")
+        theory_xsec = result.get("hhhh_xsec_fb", result.get("xsec_fb"))
+        try:
+            sigma95_value = float(sigma95)
+            theory_xsec_value = float(theory_xsec)
+        except (TypeError, ValueError):
+            sigma95_value = math.nan
+            theory_xsec_value = math.nan
+        if (
+            math.isfinite(sigma95_value)
+            and sigma95_value > 0.0
+            and math.isfinite(theory_xsec_value)
+            and theory_xsec_value > 0.0
+        ):
+            row["shape_signal_strength95"] = (
+                sigma95_value / theory_xsec_value
+            )
+        output.append(row)
+    return output
+
+
 def _aggregate_validation_crossfit(
     grid_samples: Sequence[EventSample],
     rotations: Sequence[Mapping[str, Any]],
@@ -7725,6 +7786,42 @@ def _run_c3d4_study_impl(
             },
         )
         progress.emit("maps", "Completed strategy maps", strategy=strategy)
+        if run_shape and result.get("sm_background_cutflow") is not None:
+            progress.emit(
+                "shape-publish",
+                "Publishing final pyhf score-shape results table",
+                strategy=strategy,
+                study_mode=mode_policy.name,
+                completed_points=len(result["shape"]),
+            )
+            print()
+            print(f"Classifier strategy: {strategy} (full pyhf score-shape fit)")
+            print(
+                terminal_sm_background_cutflow_table(
+                    _pyhf_shape_cutflow_rows(
+                        result["sm_background_cutflow"],
+                        result["aggregate"],
+                    ),
+                    luminosity=luminosity,
+                    thresholds=result["sm_thresholds"],
+                    limit_kind="pyhf-shape",
+                )
+            )
+            progress.emit(
+                "shape-publish",
+                "Final pyhf score-shape results are available",
+                strategy=strategy,
+                study_mode=mode_policy.name,
+                results=str(strategy_dir / "shape_results.json"),
+                limit_map=str(
+                    strategy_dir
+                    / "maps"
+                    / f"{strategy}_shape_sigma95_fb.pdf"
+                ),
+                status_file=str(
+                    strategy_dir / "shape_results_status.json"
+                ),
+            )
 
     gate = None
     if (

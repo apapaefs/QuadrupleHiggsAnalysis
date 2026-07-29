@@ -305,6 +305,47 @@ class SampleReportFactorTests(unittest.TestCase):
         self.assertIn("31 / 50000", table)
         self.assertIn("0.7, 0.8", table)
 
+    def test_terminal_sm_background_cutflow_table_can_show_pyhf_mu95(self):
+        table = terminal_sm_background_cutflow_table(
+            [
+                {
+                    "sample_role": "signal",
+                    "is_signal": True,
+                    "process_id": "sm_hhhh",
+                    "description": "SM signal",
+                    "c3": 0.0,
+                    "d4": 0.0,
+                    "shape_signal_strength95": 2.5,
+                    "production_xsec_fb": 0.001,
+                    "input_xsec_fb": 0.0005,
+                    "input_events": 1.5,
+                    "xgboost_xsec_fb": 0.0001,
+                    "xgboost_events": 0.3,
+                    "xgboost_events_error": 0.03,
+                    "entries": 100,
+                    "selected_entries": 10,
+                }
+            ],
+            luminosity=3000.0,
+            thresholds=[0.7, 0.8],
+            limit_kind="pyhf-shape",
+        )
+
+        self.assertIn("SM pyhf score-shape expected limits", table)
+        self.assertIn("mu95 (pyhf)", table)
+        self.assertIn("2.5", table)
+        self.assertIn("does not use that single selected count", table)
+        self.assertIn("same ones printed in the cut-only table", table)
+
+    def test_terminal_sm_background_cutflow_table_rejects_unknown_limit_kind(self):
+        with self.assertRaisesRegex(ValueError, "limit_kind"):
+            terminal_sm_background_cutflow_table(
+                [],
+                luminosity=3000.0,
+                thresholds=[],
+                limit_kind="unknown",
+            )
+
     def test_terminal_xgboost_mc_table_orders_by_expected_selected_events(self):
         rows = [
             {

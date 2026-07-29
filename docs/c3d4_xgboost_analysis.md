@@ -730,6 +730,17 @@ The parameterized-only mode writes the corresponding table below
 coordinate and the JSON records
 `classifier_strategy="parameterized-crossfit-v1"`.
 
+When the score-shape calculation is enabled, the runner prints a second table
+after the canonical pyhf results and final maps have been written.  It retains
+the same sample rows, ordering, input rates and hard-threshold XGBoost rates as
+the earlier cut-only table, but replaces the displayed `mu95` by the median
+background-only expected 95% CL signal-strength limit from the full binned
+pyhf likelihood.  The repeated hard-threshold columns are comparison
+information only: pyhf fits the frozen score bins in the five held-out-fold
+channels and does not reduce them to the displayed single selected count.
+The non-SM reference points are deliberately kept identical between the two
+terminal tables rather than being reselected after the pyhf result is known.
+
 No previous Optuna history is reused in this command.  In particular, tuning
 results from a legacy or pre-uniform-smearing study must not be imported into
 the new detector-response contract.

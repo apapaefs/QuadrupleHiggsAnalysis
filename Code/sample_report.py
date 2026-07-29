@@ -1337,8 +1337,31 @@ def terminal_xgboost_mc_table(rows, title="Per-sample XGBoost MC event counts", 
     return "\n".join(lines)
 
 
-def terminal_sm_background_cutflow_table(rows, luminosity, thresholds):
-    """Render SM cross-fit signal references and background rates."""
+def terminal_sm_background_cutflow_table(
+    rows,
+    luminosity,
+    thresholds,
+    *,
+    limit_kind="cut",
+):
+    """Render SM cross-fit signal references and background rates.
+
+    ``limit_kind="cut"`` displays the exact single-bin cut-and-count limit.
+    ``limit_kind="pyhf-shape"`` keeps the same rows and rate columns for a
+    direct comparison, but displays the median expected signal-strength limit
+    from the full binned pyhf score-shape fit.
+    """
+
+    if limit_kind not in {"cut", "pyhf-shape"}:
+        raise ValueError(
+            "limit_kind must be either 'cut' or 'pyhf-shape'"
+        )
+    is_shape_table = limit_kind == "pyhf-shape"
+    limit_key = (
+        "shape_signal_strength95"
+        if is_shape_table
+        else "cut_signal_strength95"
+    )
 
     rows = sort_rows_by_importance(rows, keep_signal_first=True)
     headers = [
@@ -1346,7 +1369,7 @@ def terminal_sm_background_cutflow_table(rows, luminosity, thresholds):
         "Sample",
         "c3",
         "d4",
-        "mu95",
+        "mu95 (pyhf)" if is_shape_table else "mu95",
         "sigma_prod [fb]",
         "sigma_input [fb]",
         "N_input",
@@ -1372,8 +1395,8 @@ def terminal_sm_background_cutflow_table(rows, luminosity, thresholds):
                 else "--"
             ),
             (
-                terminal_number(row["cut_signal_strength95"])
-                if row.get("cut_signal_strength95") is not None
+                terminal_number(row[limit_key])
+                if row.get(limit_key) is not None
                 else "--"
             ),
             (
@@ -1419,8 +1442,12 @@ def terminal_sm_background_cutflow_table(rows, luminosity, thresholds):
     threshold_values = [float(value) for value in thresholds]
     threshold_text = ", ".join(f"{value:g}" for value in threshold_values)
     lines = [
-        "SM XGBoost background cutflow / rates + signal references "
-        f"(L = {float(luminosity):g} fb^-1)",
+        (
+            "SM pyhf score-shape expected limits + cutflow / rate references "
+            if is_shape_table
+            else "SM XGBoost background cutflow / rates + signal references "
+        )
+        + f"(L = {float(luminosity):g} fb^-1)",
         f"Validation-optimized SM threshold by held-out fold: {threshold_text}",
         "Input is the feature-tree yield before XGBoost; input/XGBoost rates include "
         "cross sections, K/BR factors, and tag/mistag factors.",
@@ -1431,6 +1458,21 @@ def terminal_sm_background_cutflow_table(rows, luminosity, thresholds):
         "Signal reference rows are reported separately and do not enter the "
         "background total or threshold optimization.",
     ]
+    if is_shape_table:
+        lines.extend(
+            [
+                "mu95 (pyhf) is the median background-only expected 95% CL "
+                "upper limit from the full score-shape likelihood, expressed "
+                "as a multiple of the theory signal at that coupling point.",
+                "The sigma_XGB, N_XGB, and selected-entry columns repeat the "
+                "frozen hard-threshold cutflow only for comparison. The pyhf "
+                "fit does not use that single selected count; it fits the "
+                "frozen score bins in all held-out-fold channels.",
+                "The signal reference points are the same ones printed in the "
+                "cut-only table, so the two mu95 columns can be compared "
+                "without changing rows.",
+            ]
+        )
     if any(row.get("signal_component") == "sm_hh4b" for row in rows):
         lines.append(
             "The SM hh+4b row is a post-training signal diagnostic only; "
@@ -1444,10 +1486,20 @@ def terminal_sm_background_cutflow_table(rows, luminosity, thresholds):
     lines.extend(
         [
             (
-                "The eight limit representatives minimize |log(mu95)| in two "
-                "c3~0, two d4~0, and four diagonal regions; mu95=1 is the 95% "
-                "CL boundary. Different coupling points are alternative "
-                "hypotheses and are not summed."
+                (
+                    "For this direct comparison, the eight non-SM signal "
+                    "references retain the cut-only region selection. "
+                    "mu95=1 is the pyhf expected 95% CL boundary. Different "
+                    "coupling points are alternative hypotheses and are not "
+                    "summed."
+                )
+                if is_shape_table
+                else (
+                    "The eight limit representatives minimize |log(mu95)| in two "
+                    "c3~0, two d4~0, and four diagonal regions; mu95=1 is the 95% "
+                    "CL boundary. Different coupling points are alternative "
+                    "hypotheses and are not summed."
+                )
             ),
             _terminal_table(
                 headers,

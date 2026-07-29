@@ -3115,6 +3115,78 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
         self.assertTrue(all(row["cut_signal_strength95"] is None for row in fitted_hh4b))
         self.assertTrue(all(not row["included_in_limits"] for row in fitted_hh4b))
 
+    def test_pyhf_shape_cutflow_rows_replace_only_likelihood_signal_mu95(self):
+        cutflow = [
+            {
+                "sample_id": "hhhh",
+                "point_id": "c3=0,d4=0",
+                "is_signal": True,
+                "signal_component": "hhhh",
+                "cut_signal_strength95": 8.0,
+            },
+            {
+                "sample_id": "hhhbb",
+                "point_id": "c3=0,d4=0",
+                "is_signal": True,
+                "signal_component": "hhhbb",
+                "cut_signal_strength95": 8.0,
+            },
+            {
+                "sample_id": "hh4b",
+                "point_id": "c3=0,d4=0",
+                "is_signal": True,
+                "signal_component": "sm_hh4b",
+                "included_in_limits": False,
+                "cut_signal_strength95": None,
+            },
+            {
+                "sample_id": "background",
+                "is_signal": False,
+            },
+        ]
+        rows = runner._pyhf_shape_cutflow_rows(
+            cutflow,
+            [
+                {
+                    "point_id": "c3=0,d4=0",
+                    "xsec_fb": 0.25,
+                    "shape_sigma95_fb": 1.0,
+                }
+            ],
+        )
+
+        self.assertEqual(rows[0]["shape_signal_strength95"], 4.0)
+        self.assertEqual(rows[1]["shape_signal_strength95"], 4.0)
+        self.assertIsNone(rows[2]["shape_signal_strength95"])
+        self.assertIsNone(rows[3]["shape_signal_strength95"])
+        self.assertEqual(rows[0]["cut_signal_strength95"], 8.0)
+
+    def test_fast_sm_prints_final_pyhf_table_after_shape_maps(self):
+        with tempfile.TemporaryDirectory() as directory, mocked_mode_study_pipeline(
+            point_count=4
+        ):
+            terminal = io.StringIO()
+            with redirect_stdout(terminal):
+                runner.run_c3d4_study(
+                    sm_signal_specs=[{}],
+                    grid_signal_specs=[{}] * 4,
+                    background_specs=[{}],
+                    output_dir=directory,
+                    study_mode="fast-sm",
+                )
+
+        rendered = terminal.getvalue()
+        self.assertIn(
+            "Classifier strategy: sm-crossfit-v2 (full pyhf score-shape fit)",
+            rendered,
+        )
+        self.assertIn("SM pyhf score-shape expected limits", rendered)
+        self.assertIn("mu95 (pyhf)", rendered)
+        self.assertLess(
+            rendered.index("[v2 maps] Completed strategy maps"),
+            rendered.index("[v2 shape-publish] Publishing final pyhf"),
+        )
+
     def test_limit_representatives_cover_axes_and_four_diagonal_quadrants(self):
         coordinates = [
             (0.0, -200.0, 1.05),
