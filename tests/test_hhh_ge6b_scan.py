@@ -33,6 +33,7 @@ def component_row(
         "process": process,
         "audit_status": "ok",
         "audit_issues": "",
+        "probe_trial_weight_correction_applied": process == "hhhbb",
     }
     fractions = {
         "exact6": 0.5,
@@ -175,7 +176,8 @@ BLOCK TRIPCOUP
                 """{
   "merged_xsec_pb": 4.3137165723808403e-7,
   "merged_xsec_error_pb": 3.6261064868847914e-9,
-  "total_events": 10000
+  "total_events": 10000,
+  "zero_weight_events": 2
 }
 """
             )
@@ -212,6 +214,10 @@ BLOCK TRIPCOUP
             )
             self.assertGreater(
                 float(normalization["inclusive_xsec_error_pb"]), 0.0
+            )
+            self.assertEqual(normalization["zero_weight_events"], 2)
+            self.assertTrue(
+                normalization["probe_trial_weight_correction_applied"]
             )
 
     def test_additive_unmatched_denominator_and_ratios(self) -> None:

@@ -479,6 +479,8 @@ def normalization(sample: SampleInput) -> dict[str, object]:
             "herwig_reference_xsec_pb": inclusive_pb,
             "herwig_reference_xsec_error_pb": uncertainty_pb,
             "herwig_relative_difference": 0.0,
+            "zero_weight_events": 0,
+            "probe_trial_weight_correction_applied": False,
             "normalization_source": "Herwig Total [nb] * 1e3",
             "status": "ok" if not issues else "failed",
             "issues": issues,
@@ -544,6 +546,8 @@ def normalization(sample: SampleInput) -> dict[str, object]:
         "herwig_reference_xsec_pb": stage2_pb,
         "herwig_reference_xsec_error_pb": stage2_uncertainty_pb,
         "herwig_relative_difference": herwig_relative_difference,
+        "zero_weight_events": int(payload.get("zero_weight_events", 0)),
+        "probe_trial_weight_correction_applied": True,
         "normalization_source": (
             "probe-trial-corrected forced-splitting "
             "merge_summary.json merged_xsec_pb"
@@ -648,6 +652,10 @@ def make_cross_section_row(
             "herwig_reference_xsec_error_pb"
         ],
         "herwig_relative_difference": norm["herwig_relative_difference"],
+        "zero_weight_events": norm["zero_weight_events"],
+        "probe_trial_weight_correction_applied": norm[
+            "probe_trial_weight_correction_applied"
+        ],
         "hhhbb_generation_pt_b_min_gev": (
             15.0 if sample.process == "hhhbb" else ""
         ),
@@ -737,6 +745,9 @@ def combine_component_rows(
                 "inclusive showered hhh can contain g->bb; "
                 "components are not matched"
             ),
+            "hhhbb_probe_trial_weight_correction_applied": hhhbb[
+                "probe_trial_weight_correction_applied"
+            ],
             "hhh_audit_status": hhh["audit_status"],
             "hhhbb_audit_status": hhhbb["audit_status"],
             "audit_status": (
