@@ -48,6 +48,7 @@ from c3d4_xgboost_study import (
     select_test_binning,
     validation_binning,
 )
+from hh4b_c3_xsec import evaluate_hh4b_c3_fit
 from observable_schemas import (
     EXTENDED_SCHEMA_ID,
     LEGACY_SCHEMA_ID,
@@ -69,7 +70,7 @@ from sample_report import (
 )
 
 
-METHOD_VERSION = "resolved-8b-c3d4-xgboost-v2.6"
+METHOD_VERSION = "resolved-8b-c3d4-xgboost-v2.7"
 CLASSIFIER_WEIGHT_SCALE_VERSION = "equal-class-mean-effective-row-weight-1-v1"
 BASE_SEED = 12345
 DEFAULT_PROFILES = ("corrected28", "core52", "full91")
@@ -1628,6 +1629,11 @@ def _aggregate_postfit_sm_hh4b_result(
     luminosity = _finite_float(luminosity, "luminosity")
     if luminosity <= 0.0:
         raise ValueError("luminosity must be positive")
+    c3_cross_section_fit = (sample.metadata or {}).get(
+        "c3_cross_section_fit"
+    )
+    if c3_cross_section_fit is not None:
+        evaluate_hh4b_c3_fit(c3_cross_section_fit, 0.0)
 
     return {
         "component": "sm_hh4b",
@@ -1676,7 +1682,8 @@ def _aggregate_postfit_sm_hh4b_result(
         "included_in_shape_binning_optimization": False,
         "included_in_background": False,
         "included_in_limits": False,
-        "cross_section_fit_applied": False,
+        "cross_section_fit_applied": c3_cross_section_fit is not None,
+        "c3_cross_section_fit": c3_cross_section_fit,
     }
 
 
@@ -1706,8 +1713,13 @@ def _sm_hh4b_signal_cutflow_row(
     result: Mapping[str, Any],
     *,
     luminosity: float,
+    point_id: str | None = None,
+    c3: float | None = None,
+    d4: float | None = None,
+    category: str | None = None,
+    is_limit_representative: bool = False,
 ) -> dict[str, Any]:
-    """Convert the post-training SM hh+4b result into a signal-table row."""
+    """Rescale the frozen SM hh+4b efficiency to one table coordinate."""
 
     luminosity = float(luminosity)
     if not math.isfinite(luminosity) or luminosity <= 0.0:
@@ -1731,18 +1743,22 @@ def _sm_hh4b_signal_cutflow_row(
             "optimization, backgrounds, and limits"
         )
 
-    input_events = float(result["nominal_feature_signal_yield"])
-    selected_events = float(result["nominal_selected_signal_yield"])
-    selected_error = float(result["nominal_selected_signal_staterror"])
+    reference_input_events = float(result["nominal_feature_signal_yield"])
+    reference_selected_events = float(
+        result["nominal_selected_signal_yield"]
+    )
+    reference_selected_error = float(
+        result["nominal_selected_signal_staterror"]
+    )
     for label, calculated, stored in (
         (
             "feature-selected cross section",
-            input_events / luminosity,
+            reference_input_events / luminosity,
             float(result["effective_feature_xsec_fb"]),
         ),
         (
             "XGBoost-selected cross section",
-            selected_events / luminosity,
+            reference_selected_events / luminosity,
             float(result["effective_selected_xsec_fb"]),
         ),
     ):
@@ -1756,16 +1772,75 @@ def _sm_hh4b_signal_cutflow_row(
                 f"The SM hh+4b {label} does not close between its yield "
                 f"and stored rate: {calculated} versus {stored}"
             )
+
+    target_c3 = float(result["c3"]) if c3 is None else float(c3)
+    target_d4 = float(result["d4"]) if d4 is None else float(d4)
+    target_point_id = (
+        str(result["point_id"]) if point_id is None else str(point_id)
+    )
+    fit = result.get("c3_cross_section_fit")
+    if fit is None:
+        if (
+            abs(target_c3 - float(result["c3"])) > 1.0e-12
+            or abs(target_d4 - float(result["d4"])) > 1.0e-12
+        ):
+            raise ValueError(
+                "A c3 cross-section fit is required to evaluate SM hh+4b "
+                "away from its generated SM point"
+            )
+        target_xsec_fb = float(result["xsec_fb"])
+        target_xsec_uncertainty_fb = None
+        fit_file = None
+        fit_applied = False
+    else:
+        evaluation = evaluate_hh4b_c3_fit(fit, target_c3)
+        target_xsec_fb = float(evaluation["cross_section_fb"])
+        target_xsec_uncertainty_fb = float(
+            evaluation["cross_section_uncertainty_fb"]
+        )
+        fit_file = fit.get("fit_file")
+        fit_applied = True
+
+    reference_xsec_fb = float(result["xsec_fb"])
+    if reference_xsec_fb <= 0.0:
+        raise ValueError("The SM hh+4b reference cross section must be positive")
+    xsec_scale = target_xsec_fb / reference_xsec_fb
+    input_events = reference_input_events * xsec_scale
+    selected_events = reference_selected_events * xsec_scale
+    selected_error = reference_selected_error * xsec_scale
+    relative_fit_uncertainty = (
+        target_xsec_uncertainty_fb / target_xsec_fb
+        if target_xsec_uncertainty_fb is not None
+        else None
+    )
+    point_class = (
+        "limit-representative"
+        if is_limit_representative
+        else "standard-model-reference"
+    )
+    category = category or (
+        "SM reference"
+        if not is_limit_representative
+        else "95% CL representative"
+    )
     return {
-        "sample_id": str(result["process_id"]),
+        "sample_id": (
+            f"{result['process_id']}@{target_point_id}"
+            if fit_applied
+            else str(result["process_id"])
+        ),
         "sample_role": "signal",
         "is_signal": True,
         "signal_component": "sm_hh4b",
-        "point_id": str(result["point_id"]),
-        "point_class": "standalone-sm-diagnostic",
-        "representative_category": "SM post-training diagnostic",
-        "is_limit_representative": False,
-        "representative_selection": None,
+        "point_id": target_point_id,
+        "point_class": point_class,
+        "representative_category": category,
+        "is_limit_representative": bool(is_limit_representative),
+        "representative_selection": (
+            "matched-to-hhhbb-representative-coordinate"
+            if is_limit_representative
+            else None
+        ),
         "cut_signal_strength95": None,
         "theory_to_limit_ratio": None,
         "limit_proximity_log_mu95": None,
@@ -1773,19 +1848,59 @@ def _sm_hh4b_signal_cutflow_row(
         "file": str(result["file"]),
         "process_id": str(result["process_id"]),
         "description": (
-            "SM HEFT gg -> hh + b bbar b bbar "
-            "(post-training signal diagnostic)"
+            (
+                "SM HEFT gg -> hh + b bbar b bbar"
+                if abs(target_c3) < 1.0e-12
+                else "HEFT gg -> hh + b bbar b bbar"
+            )
+            + f" [{category}; frozen SM efficiency]"
         ),
-        "production_xsec_fb": float(result["xsec_fb"]),
+        "production_xsec_fb": target_xsec_fb,
+        "production_xsec_uncertainty_fb": target_xsec_uncertainty_fb,
+        "reference_production_xsec_fb": reference_xsec_fb,
+        "cross_section_rescale_factor": xsec_scale,
+        "cross_section_fit_applied": fit_applied,
+        "cross_section_fit_file": fit_file,
+        "cross_section_depends_on": "c3",
+        "cross_section_independent_of_d4": True,
+        "efficiency_extrapolated_from_sm": bool(
+            fit_applied
+            and (
+                abs(target_c3 - float(result["c3"])) > 1.0e-12
+                or abs(target_d4 - float(result["d4"])) > 1.0e-12
+            )
+        ),
+        "efficiency_reference_c3": float(result["c3"]),
+        "efficiency_reference_d4": float(result["d4"]),
         "rate_factor": float(result["rate_factor"]),
         "effective_inclusive_xsec_fb": (
-            float(result["xsec_fb"]) * float(result["rate_factor"])
+            target_xsec_fb * float(result["rate_factor"])
+        ),
+        "effective_inclusive_xsec_uncertainty_fb": (
+            None
+            if target_xsec_uncertainty_fb is None
+            else target_xsec_uncertainty_fb * float(result["rate_factor"])
         ),
         "input_xsec_fb": input_events / luminosity,
+        "input_xsec_fit_uncertainty_fb": (
+            None
+            if relative_fit_uncertainty is None
+            else input_events / luminosity * relative_fit_uncertainty
+        ),
         "input_events": input_events,
         "xgboost_xsec_fb": selected_events / luminosity,
+        "xgboost_xsec_fit_uncertainty_fb": (
+            None
+            if relative_fit_uncertainty is None
+            else selected_events / luminosity * relative_fit_uncertainty
+        ),
         "xgboost_events": selected_events,
         "xgboost_events_error": selected_error,
+        "xgboost_events_fit_uncertainty": (
+            None
+            if relative_fit_uncertainty is None
+            else selected_events * relative_fit_uncertainty
+        ),
         "xgboost_xsec_error_fb": selected_error / luminosity,
         "xgboost_efficiency": float(result["xgboost_efficiency"]),
         "feature_tree_efficiency": float(result["analysis_efficiency"]),
@@ -1793,8 +1908,8 @@ def _sm_hh4b_signal_cutflow_row(
         "selected_entries": int(result["selected_raw_entries"]),
         "generated_events": int(result["generated_events"]),
         "normalisation_weight": float(result["normalisation_weight"]),
-        "c3": float(result["c3"]),
-        "d4": float(result["d4"]),
+        "c3": target_c3,
+        "d4": target_d4,
         **{role: False for role in forbidden_roles},
     }
 
@@ -2713,11 +2828,22 @@ def _sm_signal_cutflow_rows(
                     selected_entries=int(result["hhhbb_selected_raw_entries"]),
                 )
             )
-        if not is_representative and sm_hh4b_result is not None:
+        if (
+            sm_hh4b_result is not None
+            and (
+                not is_representative
+                or sm_hh4b_result.get("c3_cross_section_fit") is not None
+            )
+        ):
             rows.append(
                 _sm_hh4b_signal_cutflow_row(
                     sm_hh4b_result,
                     luminosity=luminosity,
+                    point_id=point_id,
+                    c3=float(result["c3"]),
+                    d4=float(result["d4"]),
+                    category=category,
+                    is_limit_representative=is_representative,
                 )
             )
     return rows
@@ -6359,6 +6485,12 @@ def _run_c3d4_study_impl(
     else:
         strategies = ["sm-crossfit-v2", "pooled-crossfit-v2"]
     legacy = _load_legacy_baseline(None if legacy_scan_csv is None else Path(legacy_scan_csv))
+    sm_hh4b_fit_applied = bool(
+        sm_hh4b_samples
+        and (sm_hh4b_samples[0].metadata or {}).get(
+            "c3_cross_section_fit"
+        )
+    )
     runtime_versions = _package_versions()
     shape_thread_environment = {
         variable: os.environ.get(variable) for variable in SHAPE_THREAD_ENVIRONMENT
@@ -6417,16 +6549,28 @@ def _run_c3d4_study_impl(
             "sm_hh4b": {
                 "enabled": bool(sm_hh4b_samples),
                 "point_count": len(sm_hh4b_samples),
+                "efficiency_sample_count": len(sm_hh4b_samples),
                 "role": (
-                    "single SM efficiency diagnostic scored only after the "
-                    "classifier and SM validation thresholds are fixed"
+                    "single frozen SM efficiency scored only after the "
+                    "classifier and SM validation thresholds are fixed; "
+                    "the c3 fit is evaluated at matching hhhbb table points"
+                    if sm_hh4b_fit_applied
+                    else (
+                        "single SM efficiency diagnostic scored only after "
+                        "the classifier and SM validation thresholds are fixed"
+                    )
                 ),
                 "included_in_training": False,
                 "included_in_threshold_optimization": False,
                 "included_in_shape_binning_optimization": False,
                 "included_in_background": False,
                 "included_in_limits": False,
-                "cross_section_fit_applied": False,
+                "cross_section_fit_applied": sm_hh4b_fit_applied,
+                "table_point_matching": (
+                    "same selected c3/d4 coordinates as hhhbb"
+                    if sm_hh4b_fit_applied
+                    else "SM point only"
+                ),
             },
         },
         "fold_assignment_sha256": fold_digest,
@@ -8118,6 +8262,12 @@ def _run_c3d4_study_impl(
                 ),
                 "point_count": 1,
                 "included_in_limits": False,
+                "cross_section_fit_applied": sm_hh4b_fit_applied,
+                "table_point_matching": (
+                    "same selected c3/d4 coordinates as hhhbb"
+                    if sm_hh4b_fit_applied
+                    else "SM point only"
+                ),
             }
             for strategy in strategy_results
         }

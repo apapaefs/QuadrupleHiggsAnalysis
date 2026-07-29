@@ -108,6 +108,11 @@ Override them with `--luminosity`, `--signal-k-factor`,
 `--background-k-factor`, `--btagging-rate`, `--c-mistag-rate`, and
 `--light-mistag-rate` as needed.
 
+The optional post-training HEFT `hh+4b` signal uses one SM showered sample for
+its efficiency and a weighted quadratic Sherpa cross-section fit in `c3`.
+Setup, fitting, and normalization conventions are documented in
+[`HerwigSignalPoints/sm_hh4b_heft/README.md`](HerwigSignalPoints/sm_hh4b_heft/README.md).
+
 ## Sherpa Colour-Flow OpenMPI Runs
 
 `SherpaColorFlow/` contains a vendored patched Sherpa source tree, corrected

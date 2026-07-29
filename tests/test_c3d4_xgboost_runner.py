@@ -25,6 +25,7 @@ if str(CODE) not in sys.path:
 
 import c3d4_xgboost_runner as runner  # noqa: E402
 import c3d4_plot_style as plot_style  # noqa: E402
+from hh4b_c3_xsec import fit_hh4b_c3_cross_section  # noqa: E402
 from observable_schemas import (  # noqa: E402
     EXTENDED_FEATURE_NAMES,
     PARAMETERIZED_ML_FEATURES,
@@ -2525,6 +2526,70 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
         self.assertIn("SM HEFT gg->hh + b bbar b bbar", rendered)
         self.assertIn("post-training signal diagnostic only", rendered)
 
+    def test_sm_hh4b_fit_rescales_only_cross_section_at_target_point(self):
+        fit = fit_hh4b_c3_cross_section(
+            [
+                {
+                    "c3": c3,
+                    "cross_section_pb": (
+                        1.0e-5 + 2.0e-6 * c3 + 3.0e-7 * c3 * c3
+                    ),
+                    "integration_error_pb": 1.0e-8,
+                }
+                for c3 in (-20.0, -2.0, -1.0, 0.0, 20.0)
+            ]
+        )
+        result = {
+            "component": "sm_hh4b",
+            "point_id": "c3=0,d4=0",
+            "c3": 0.0,
+            "d4": 0.0,
+            "file": "/sm-hh4b.root",
+            "process_id": "sm_hh4b_heft",
+            "xsec_fb": 0.01,
+            "rate_factor": 0.2,
+            "generated_events": 1000,
+            "normalisation_weight": 1000.0,
+            "entries": 100,
+            "analysis_efficiency": 0.5,
+            "xgboost_efficiency": 0.5,
+            "effective_feature_xsec_fb": 0.001,
+            "effective_selected_xsec_fb": 0.0005,
+            "nominal_feature_signal_yield": 3.0,
+            "nominal_selected_signal_yield": 1.5,
+            "nominal_selected_signal_staterror": 0.1,
+            "selected_raw_entries": 25,
+            "c3_cross_section_fit": fit,
+            "included_in_training": False,
+            "included_in_threshold_optimization": False,
+            "included_in_shape_binning_optimization": False,
+            "included_in_background": False,
+            "included_in_limits": False,
+        }
+
+        row = runner._sm_hh4b_signal_cutflow_row(
+            result,
+            luminosity=3000.0,
+            point_id="c3=3,d4=200",
+            c3=3.0,
+            d4=200.0,
+            category="positive diagonal",
+            is_limit_representative=True,
+        )
+
+        self.assertAlmostEqual(row["production_xsec_fb"], 0.0187)
+        self.assertAlmostEqual(row["cross_section_rescale_factor"], 1.87)
+        self.assertAlmostEqual(row["input_xsec_fb"], 0.00187)
+        self.assertAlmostEqual(row["xgboost_xsec_fb"], 0.000935)
+        self.assertAlmostEqual(row["xgboost_efficiency"], 0.5)
+        self.assertAlmostEqual(row["rate_factor"], 0.2)
+        self.assertEqual(row["point_id"], "c3=3,d4=200")
+        self.assertEqual(row["c3"], 3.0)
+        self.assertEqual(row["d4"], 200.0)
+        self.assertTrue(row["cross_section_fit_applied"])
+        self.assertTrue(row["is_limit_representative"])
+        self.assertFalse(row["included_in_limits"])
+
     def test_parameterized_postfit_hhhbb_is_scored_at_its_true_coordinate(self):
         hhhbb = sample(
             "hhhbb",
@@ -2936,6 +3001,119 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
         self.assertIn("SM HEFT gg->hh + b bbar b bbar", rendered)
         self.assertIn("post-training signal diagnostic only", rendered)
         self.assertIn("do not enter the background total", rendered)
+
+    def test_hh4b_fit_rows_follow_the_same_representative_points_as_hhhbb(self):
+        fit = fit_hh4b_c3_cross_section(
+            [
+                {
+                    "c3": c3,
+                    "cross_section_pb": 1.0e-5 + 1.0e-7 * c3 * c3,
+                    "integration_error_pb": 1.0e-8,
+                }
+                for c3 in (-20.0, -2.0, -1.0, 0.0, 20.0)
+            ]
+        )
+        hhhh_samples = [
+            sample(
+                f"hhhh_{c3:g}_{d4:g}",
+                "grid_signal",
+                [1.0] * 5,
+                [0.2] * 5,
+                c3,
+                d4,
+            )
+            for c3, d4 in ((0.0, 0.0), (3.0, 200.0))
+        ]
+        hhhbb_samples = [
+            sample(
+                f"hhhbb_{c3:g}_{d4:g}",
+                "postfit_hhhbb_signal",
+                [1.0] * 5,
+                [0.02] * 5,
+                c3,
+                d4,
+            )
+            for c3, d4 in ((0.0, 0.0), (3.0, 200.0))
+        ]
+        aggregate = []
+        for hhhh in hhhh_samples:
+            aggregate.append(
+                {
+                    "point_id": hhhh.point_id,
+                    "c3": hhhh.c3,
+                    "d4": hhhh.d4,
+                    "cut_signal_strength95": 1.0,
+                    "excluded_cut": False,
+                    "hhhh_selected_signal_yield_per_fb": 0.5,
+                    "hhhh_selected_signal_staterror_per_fb": 0.1,
+                    "hhhbb_nominal_selected_signal_yield": 0.2,
+                    "hhhbb_nominal_selected_signal_staterror": 0.04,
+                    "hhhbb_selected_raw_entries": 2,
+                    "folds": [{"signal_raw_entries": 1}] * 5,
+                }
+            )
+        sm_hh4b_result = {
+            "component": "sm_hh4b",
+            "point_id": "c3=0,d4=0",
+            "c3": 0.0,
+            "d4": 0.0,
+            "file": "/sm-hh4b.root",
+            "process_id": "sm_hh4b_heft",
+            "xsec_fb": 0.01,
+            "rate_factor": 0.2,
+            "generated_events": 1000,
+            "normalisation_weight": 1000.0,
+            "entries": 100,
+            "analysis_efficiency": 0.5,
+            "xgboost_efficiency": 0.5,
+            "effective_feature_xsec_fb": 0.001,
+            "effective_selected_xsec_fb": 0.0005,
+            "nominal_feature_signal_yield": 3.0,
+            "nominal_selected_signal_yield": 1.5,
+            "nominal_selected_signal_staterror": 0.1,
+            "selected_raw_entries": 25,
+            "c3_cross_section_fit": fit,
+            "included_in_training": False,
+            "included_in_threshold_optimization": False,
+            "included_in_shape_binning_optimization": False,
+            "included_in_background": False,
+            "included_in_limits": False,
+        }
+        representative = {
+            "representative_category": "positive diagonal",
+            "result": aggregate[1],
+            "cut_signal_strength95": 1.0,
+            "limit_proximity_log_mu95": 0.0,
+        }
+
+        with mock.patch.object(
+            runner,
+            "_select_limit_representative_points",
+            return_value=[representative],
+        ):
+            rows = runner._sm_signal_cutflow_rows(
+                hhhh_samples,
+                hhhbb_samples,
+                aggregate,
+                luminosity=3000.0,
+                include_limit_representatives=True,
+                sm_hh4b_result=sm_hh4b_result,
+            )
+
+        coordinates_by_component = {}
+        for row in rows:
+            coordinates_by_component.setdefault(
+                row["signal_component"], []
+            ).append((row["c3"], row["d4"]))
+        expected = [(0.0, 0.0), (3.0, 200.0)]
+        self.assertEqual(coordinates_by_component["hhhh"], expected)
+        self.assertEqual(coordinates_by_component["hhhbb"], expected)
+        self.assertEqual(coordinates_by_component["sm_hh4b"], expected)
+        fitted_hh4b = [
+            row for row in rows if row["signal_component"] == "sm_hh4b"
+        ]
+        self.assertTrue(all(row["cut_signal_strength95"] is None for row in fitted_hh4b))
+        self.assertTrue(all(not row["included_in_limits"] for row in fitted_hh4b))
 
     def test_limit_representatives_cover_axes_and_four_diagonal_quadrants(self):
         coordinates = [

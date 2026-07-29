@@ -1347,6 +1347,7 @@ def terminal_sm_background_cutflow_table(rows, luminosity, thresholds):
         "c3",
         "d4",
         "mu95",
+        "sigma_prod [fb]",
         "sigma_input [fb]",
         "N_input",
         "sigma_XGB [fb]",
@@ -1375,6 +1376,21 @@ def terminal_sm_background_cutflow_table(rows, luminosity, thresholds):
                 if row.get("cut_signal_strength95") is not None
                 else "--"
             ),
+            (
+                (
+                    terminal_number(row["production_xsec_fb"])
+                    + " +/- "
+                    + terminal_number(
+                        row["production_xsec_uncertainty_fb"]
+                    )
+                )
+                if row.get("production_xsec_uncertainty_fb") is not None
+                else (
+                    terminal_number(row["production_xsec_fb"])
+                    if row.get("production_xsec_fb") is not None
+                    else "--"
+                )
+            ),
             terminal_number(row["input_xsec_fb"]),
             terminal_number(row["input_events"]),
             terminal_number(row["xgboost_xsec_fb"]),
@@ -1395,6 +1411,7 @@ def terminal_sm_background_cutflow_table(rows, luminosity, thresholds):
                 "--",
                 "--",
                 "--",
+                "--",
                 "0 / 0",
             ]
         ]
@@ -1407,6 +1424,8 @@ def terminal_sm_background_cutflow_table(rows, luminosity, thresholds):
         f"Validation-optimized SM threshold by held-out fold: {threshold_text}",
         "Input is the feature-tree yield before XGBoost; input/XGBoost rates include "
         "cross sections, K/BR factors, and tag/mistag factors.",
+        "sigma_prod is the raw generator production cross section before K/BR "
+        "and tag/mistag factors.",
         "XGBoost yields use each disjoint held-out test fold exactly once; N_XGB errors "
         "are weighted-MC statistical uncertainties.",
         "Signal reference rows are reported separately and do not enter the "
@@ -1416,7 +1435,11 @@ def terminal_sm_background_cutflow_table(rows, luminosity, thresholds):
         lines.append(
             "The SM hh+4b row is a post-training signal diagnostic only; "
             "its mu95 is intentionally blank and it is excluded from training, "
-            "optimization, backgrounds, and limits."
+            "optimization, backgrounds, and limits. When a c3 fit is present, "
+            "the additional hh+4b rows use its raw production cross section "
+            "and the frozen SM efficiency; the displayed +/- on sigma_prod is "
+            "the propagated integration-fit uncertainty. The signal K-factor "
+            "is applied later through the rate factor, exactly once."
         )
     lines.extend(
         [

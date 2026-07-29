@@ -32,6 +32,9 @@ DEFAULT_SIGNAL_K_FACTOR = 2.0
 DEFAULT_BACKGROUND_K_FACTOR = 2.0
 DEFAULT_BACKGROUND_CSV = _REPO_DIR / "Backgrounds" / "processes.csv"
 DEFAULT_BACKGROUND_HERWIG_TEMPLATE = _REPO_DIR / "Backgrounds" / "HW-AlpGen8Q-LHEWriter-Reweighted.in"
+DEFAULT_SM_HH4B_C3_XSEC_FIT = (
+    _REPO_DIR / "Signals" / "sm_hh4b_heft" / "c3_xsec_fit.json"
+)
 LEGACY_EXTENDED_V2_TAG = "extended-v2"
 EXTENDED_V2_TAG = "extended-v2-uniform-smear-v1"
 JET_SMEARING_MODEL_ID = "cms-energy-uniform-fourvector-v1"
@@ -2993,6 +2996,39 @@ def _run_c3d4_xgboost_study_cli_impl(args):
                 f"normalized-LHE metadata: {sm_hh4b_generated[0]} versus "
                 f"{exact_generated}."
             )
+        sm_hh4b_c3_fit = None
+        fit_option = getattr(
+            args,
+            "sm_hh4b_c3_xsec_fit",
+            DEFAULT_SM_HH4B_C3_XSEC_FIT,
+        )
+        if fit_option is not None:
+            fit_path = _Path(fit_option)
+            if fit_path.is_file():
+                from hh4b_c3_xsec import (
+                    evaluate_hh4b_c3_fit,
+                    load_hh4b_c3_fit,
+                )
+
+                try:
+                    sm_hh4b_c3_fit = load_hh4b_c3_fit(fit_path)
+                    evaluate_hh4b_c3_fit(sm_hh4b_c3_fit, 0.0)
+                except ValueError as exc:
+                    raise SystemExit(
+                        f"Invalid SM hh+4b c3 cross-section fit {fit_path}: "
+                        f"{exc}"
+                    ) from exc
+            elif fit_path != DEFAULT_SM_HH4B_C3_XSEC_FIT:
+                raise SystemExit(
+                    "The requested SM hh+4b c3 cross-section fit does not "
+                    f"exist: {fit_path}"
+                )
+            else:
+                print(
+                    "Warning: no completed SM hh+4b c3 cross-section fit was "
+                    f"found at {fit_path}; retaining the singleton SM-only "
+                    "table row."
+                )
         sm_hh4b_metadata.append(
             {
                 "process_id": "sm_hh4b_heft",
@@ -3009,7 +3045,8 @@ def _run_c3d4_xgboost_study_cli_impl(args):
                 "included_in_shape_binning_optimization": False,
                 "included_in_background": False,
                 "included_in_limits": False,
-                "cross_section_fit_applied": False,
+                "cross_section_fit_applied": sm_hh4b_c3_fit is not None,
+                "c3_cross_section_fit": sm_hh4b_c3_fit,
                 "postfit_signal_component": "sm_hh4b",
             }
         )
@@ -3156,8 +3193,14 @@ def _run_c3d4_xgboost_study_cli_impl(args):
         )
     print("  post-fit SM hh+4b samples:", len(sm_hh4b_specs))
     if sm_hh4b_specs:
+        role = (
+            "one frozen SM efficiency evaluated with the c3 cross-section fit "
+            "at every hhhbb table point"
+            if sm_hh4b_metadata[0].get("cross_section_fit_applied")
+            else "one SM efficiency result"
+        )
         print(
-            "  post-fit SM hh+4b role: one SM efficiency result after the "
+            f"  post-fit SM hh+4b role: {role} after the "
             "classifier/threshold are frozen; excluded from training, "
             "backgrounds, shape optimization, and limits"
         )
@@ -3684,6 +3727,16 @@ def _run_local_xgboost_cli():
         type=int,
         default=10000,
         help="Fallback generated-event count for the singleton SM hh+4b file.",
+    )
+    parser.add_argument(
+        "--sm-hh4b-c3-xsec-fit",
+        type=_Path,
+        default=DEFAULT_SM_HH4B_C3_XSEC_FIT,
+        help=(
+            "Quadratic raw-generator cross-section fit used to rescale the "
+            "singleton SM hh+4b efficiency at the same c3/d4 table points as "
+            "hhh+bb. The standard fit is used automatically when present."
+        ),
     )
     parser.add_argument("--no-c3d4-chebyshev-fit", action="store_true", help="Disable the Chebyshev-Lobatto sigma*eff fit and plot only scored points.")
     parser.add_argument("--c3d4-fit-k3-min", type=float, default=-29.0, help="Minimum k3=1+c3 used to scale the Chebyshev fit.")
