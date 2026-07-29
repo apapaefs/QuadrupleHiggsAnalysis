@@ -14,6 +14,8 @@ and c3/d4 limit plotting.
   plotting helpers.
 - `Code/c3d4_score_template_report.py`: reconstructs the SM out-of-fold scores
   from a completed `fast-sm` study and plots the exact saved pyhf templates.
+- `Signals/hhh_c3d4_10k/run_campaign.sh`: runs the 153-point inclusive HHH
+  generation and the common HHH/HHHbb/HHHH six-or-more b-tag comparison.
 
 ## Forced-Splitting Production on Tiresias
 

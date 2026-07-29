@@ -27,6 +27,10 @@ Code/FourHiggs8bAnalysis_smear_CMS
 /MG5_aMC_v3_5_15/
 /LTS_MG5aMC_v3.5.15.tgz
 /HerwigForcedSplitting/
+/HerwigSignalPoints/hhh_c3d4_10k/
+/Code/BJetMultiplicityAnalysis
+/Signals/hhh_c3d4_10k/results/
+/Signals/hhh_c3d4_10k/smoke/
 /tmp/
 
 # Local OS/editor artifacts

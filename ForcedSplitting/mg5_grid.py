@@ -21,6 +21,12 @@ class MG5ProcessConfig(object):
 
 
 MG5_PROCESS_CONFIGS = {
+    "gg_hhh": MG5ProcessConfig(
+        process="gg_hhh",
+        run_prefix="run_gg_hhh",
+        default_process_dir="gg_hhh",
+        process_card_line="generate g g > h h h [noborn=QCD]",
+    ),
     "gg_hhhg": MG5ProcessConfig(
         process="gg_hhhg",
         run_prefix="run_gg_hhhg",
@@ -171,7 +177,12 @@ def load_signal_grid(manifest_file, statuses=None, c3_only=False, c3_only_d4="0.
     seen = set()
     with Path(manifest_file).open(newline="") as handle:
         for row in csv.DictReader(handle):
-            if statuses and row.get("status") not in statuses:
+            status = row.get("status")
+            # Authoritative point manifests such as points_153.csv describe
+            # coordinates rather than preparation state and therefore have no
+            # status column.  Preserve filtering for campaign manifests while
+            # accepting those status-less point lists.
+            if statuses and status not in (None, "") and status not in statuses:
                 continue
             c3 = row.get("c3")
             d4 = row.get("d4")
@@ -190,6 +201,7 @@ def load_signal_grid(manifest_file, statuses=None, c3_only=False, c3_only_d4="0.
                     "run_group": row.get("run_group") or "4",
                     "c3": c3,
                     "d4": d4,
+                    "seed": row.get("seed"),
                 }
             )
     return points
@@ -305,6 +317,7 @@ def prepare_mg5_grid(
     blocks = []
     for point in load_signal_grid(reference_grid_manifest, c3_only=c3_only, c3_only_d4=c3_only_d4):
         run_name = _run_name(process_config, point)
+        point_seed = int(point.get("seed") or seed)
         run_dir = process_dir / "Events" / run_name
         existing_lhe = _find_lhe(run_dir)
         row = {
@@ -315,7 +328,7 @@ def prepare_mg5_grid(
             "c3": point["c3"],
             "d4": point["d4"],
             "events": int(events),
-            "seed": int(seed),
+            "seed": point_seed,
             "cores": int(cores),
             "run_dir": str(run_dir),
             "lhe_file": str(existing_lhe) if existing_lhe is not None else str(run_dir / "unweighted_events.lhe.gz"),
@@ -339,7 +352,7 @@ def prepare_mg5_grid(
                 accuracy,
                 points,
                 iterations,
-                seed,
+                point_seed,
                 extra_run_settings=MG5_PROCESS_RUN_SETTINGS.get(process, []),
             )
         )
