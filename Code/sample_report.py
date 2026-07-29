@@ -1473,6 +1473,12 @@ def terminal_sm_background_cutflow_table(
                 "without changing rows.",
             ]
         )
+        if any(row.get("signal_component") == "hhhbb" for row in rows):
+            lines.append(
+                "For a point containing hhhh and hhh+bb rows, the repeated "
+                "mu95 is their common fitted signal-strength multiplier; it "
+                "is not formed separately from each row's sigma_prod."
+            )
     if any(row.get("signal_component") == "sm_hh4b" for row in rows):
         lines.append(
             "The SM hh+4b row is a post-training signal diagnostic only; "

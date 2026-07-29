@@ -311,6 +311,7 @@ class SampleReportFactorTests(unittest.TestCase):
                 {
                     "sample_role": "signal",
                     "is_signal": True,
+                    "signal_component": "hhhbb",
                     "process_id": "sm_hhhh",
                     "description": "SM signal",
                     "c3": 0.0,
@@ -336,6 +337,7 @@ class SampleReportFactorTests(unittest.TestCase):
         self.assertIn("2.5", table)
         self.assertIn("does not use that single selected count", table)
         self.assertIn("same ones printed in the cut-only table", table)
+        self.assertIn("common fitted signal-strength multiplier", table)
 
     def test_terminal_sm_background_cutflow_table_rejects_unknown_limit_kind(self):
         with self.assertRaisesRegex(ValueError, "limit_kind"):

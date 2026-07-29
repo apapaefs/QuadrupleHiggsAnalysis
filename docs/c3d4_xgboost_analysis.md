@@ -740,6 +740,9 @@ information only: pyhf fits the frozen score bins in the five held-out-fold
 channels and does not reduce them to the displayed single selected count.
 The non-SM reference points are deliberately kept identical between the two
 terminal tables rather than being reselected after the pyhf result is known.
+When both `hhhh` and `hhhbb` appear at a point, the same displayed `mu95`
+multiplies both signal templates; it is not computed separately from the
+production cross section printed on each component row.
 
 No previous Optuna history is reused in this command.  In particular, tuning
 results from a legacy or pre-uniform-smearing study must not be imported into
