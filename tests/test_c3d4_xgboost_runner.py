@@ -4137,6 +4137,18 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
 
     def test_v2_input_report_writes_normalized_and_stacked_full91_gallery(self):
         signal = sample("sm", "sm_signal", [1] * 5, [3, 6, 9, 12, 15])
+        hhhbb = sample(
+            "sm_hhhbb",
+            "postfit_hhhbb_signal",
+            [1] * 5,
+            [1, 2, 3, 4, 5],
+            0,
+            0,
+        )
+        hhhbb.metadata = {
+            "process_id": "sm_hhhbb",
+            "postfit_signal_component": "hhhbb",
+        }
         background = sample("bkg", "background", [1] * 5, [2, 4, 6, 8, 10])
         background.metadata = {"process_id": "gg_to_8b"}
         stacked_metadata = {
@@ -4158,24 +4170,36 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
                 observable_set="extended-91-v2",
                 feature_profile="full91",
                 luminosity=3000.0,
+                comparison_signal_samples=[hhhbb],
             )
 
             self.assertEqual(normalized_plot.call_count, 91)
             self.assertEqual(stacked_plot.call_count, 91)
             self.assertEqual(report["plot_count"], 182)
+            self.assertEqual(report["comparison_signal_count"], 1)
             self.assertTrue(Path(report["index"]).is_file())
             self.assertTrue(Path(report["metadata"]).is_file())
             first_samples = stacked_plot.call_args_list[0].args[2]
             np.testing.assert_array_equal(first_samples[0]["weights"], signal.physical_weights)
             np.testing.assert_array_equal(
-                first_samples[1]["weights"], background.physical_weights
+                first_samples[1]["weights"], hhhbb.physical_weights
+            )
+            np.testing.assert_array_equal(
+                first_samples[2]["weights"], background.physical_weights
+            )
+            self.assertEqual(first_samples[0]["signal_component"], "hhhh")
+            self.assertEqual(first_samples[1]["signal_component"], "hhhbb")
+            self.assertFalse(first_samples[1]["included_in_training"])
+            self.assertEqual(
+                first_samples[1]["analysis_role"],
+                "post-training-signal-comparison",
             )
             self.assertAlmostEqual(
                 first_samples[0]["input_xsec_fb"],
                 float(np.sum(signal.physical_weights)) / 3000.0,
             )
 
-    def test_backfill_report_uses_only_sm_and_background_manifest_inputs(self):
+    def test_backfill_report_uses_sm_hhhbb_only_at_sm_point(self):
         manifest = {
             "status": "complete",
             "observable_set": "extended-91-v2",
@@ -4187,11 +4211,35 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
             "inputs": [
                 {"kind": "sm_signal", "path": "/sm.root", "xsec_fb": 1.0},
                 {"kind": "grid_signal", "path": "/grid.root", "xsec_fb": 1.0},
+                {
+                    "kind": "postfit_hhhbb_signal",
+                    "path": "/sm_hhhbb.root",
+                    "xsec_fb": 0.1,
+                    "c3": 0.0,
+                    "d4": 0.0,
+                    "metadata": {"postfit_signal_component": "hhhbb"},
+                },
+                {
+                    "kind": "postfit_hhhbb_signal",
+                    "path": "/non_sm_hhhbb.root",
+                    "xsec_fb": 0.2,
+                    "c3": 1.0,
+                    "d4": 0.0,
+                    "metadata": {"postfit_signal_component": "hhhbb"},
+                },
                 {"kind": "background", "path": "/bkg.root", "xsec_fb": 2.0},
             ],
             "outputs": {},
         }
         loaded_signal = sample("sm", "sm_signal", [1] * 5, [1] * 5)
+        loaded_hhhbb = sample(
+            "sm_hhhbb",
+            "postfit_hhhbb_signal",
+            [1] * 5,
+            [1] * 5,
+            0,
+            0,
+        )
         loaded_background = sample("bkg", "background", [1] * 5, [1] * 5)
         report = {"status": "complete", "plot_count": 182, "index": "/index.html"}
 
@@ -4201,18 +4249,30 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
             with mock.patch.object(
                 runner,
                 "_load_samples",
-                side_effect=[[loaded_signal], [loaded_background]],
+                side_effect=[[loaded_signal], [loaded_hhhbb], [loaded_background]],
             ) as load_samples, mock.patch.object(
                 runner, "write_v2_input_observable_report", return_value=report
             ) as write_report:
                 result = runner.write_c3d4_input_report_from_manifest(output)
 
             self.assertEqual(result, report)
-            self.assertEqual(load_samples.call_count, 2)
+            self.assertEqual(load_samples.call_count, 3)
             self.assertEqual(load_samples.call_args_list[0].kwargs["kind"], "sm_signal")
-            self.assertEqual(load_samples.call_args_list[1].kwargs["kind"], "background")
+            self.assertEqual(
+                load_samples.call_args_list[1].kwargs["kind"],
+                "postfit_hhhbb_signal",
+            )
+            self.assertEqual(load_samples.call_args_list[2].kwargs["kind"], "background")
+            self.assertEqual(
+                [str(spec["path"]) for spec in load_samples.call_args_list[1].args[0]],
+                ["/sm_hhhbb.root"],
+            )
             self.assertNotIn("grid_signal", repr(load_samples.call_args_list))
             write_report.assert_called_once()
+            self.assertEqual(
+                write_report.call_args.kwargs["comparison_signal_samples"],
+                [loaded_hhhbb],
+            )
             updated = json.loads((output / "method_manifest.json").read_text())
             self.assertEqual(updated["outputs"]["input_observable_report"], report)
 

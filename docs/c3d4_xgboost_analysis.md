@@ -887,11 +887,17 @@ strategy, parameters and seeds, together with the shape worker count, thread
 caps, checkpoint fingerprints and per-strategy resume counts.
 
 The command also writes `<study-outdir>/sample_report/index.html`.  For every
-observable in the selected profile this contains a normalized SM/background
-comparison and a legacy-style stacked input-cross-section histogram.  The
-stack uses the same physical event normalization as the v2 study and enlarges
-the SM contribution by 1000 only for display.  Pass `--no-sample-report` to
-disable this output.
+observable in the selected profile this contains a normalized comparison and a
+legacy-style stacked input-cross-section histogram.  When SM \(hhh+b\bar b\)
+files are supplied, the gallery includes only their \((c_3,d_4)=(0,0)\) sample,
+as a separate post-training signal comparison.  This sample is not used to
+train the classifier, choose score regions, or optimize the analysis.  The
+stack uses the same physical event normalization as the v2 study and orders
+the components from bottom to top as backgrounds, SM \(hhh+b\bar b\), and SM
+\(hhhh\).  Thus \(hhh+b\bar b\) is the penultimate layer and \(hhhh\) remains
+at the top.  Both signal components are enlarged by 1000 only for visibility;
+the reported physical cross sections are unchanged.  Pass
+`--no-sample-report` to disable this output.
 
 The same gallery can be added to a completed study without retraining or
 rerunning the statistical calculation:

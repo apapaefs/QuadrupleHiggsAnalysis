@@ -541,6 +541,10 @@ def feature_bin_edges(values, sample_weights, min_bins=5, max_bins=60, entries_p
 
 
 STACKED_INPUT_SM_LABEL = r"$\mathrm{SM}\ gg \rightarrow hhhh \rightarrow 8b$"
+STACKED_INPUT_SM_HHHBB_LABEL = (
+    r"$\mathrm{SM}\ gg \rightarrow hhhg\,(g\rightarrow b\bar{b}) "
+    r"\rightarrow 8b$"
+)
 STACKED_INPUT_GROUP_LABELS = {
     "gg_to_8b": r"$gg \rightarrow 8b$",
     "gg_to_6b_2nonb": r"$gg \rightarrow 6b + 2\slashed{b}$",
@@ -571,7 +575,15 @@ def _sample_process_id(sample):
 
 def _stacked_input_group_key_and_label(sample, index):
     if sample.get("is_signal"):
-        return "signal", STACKED_INPUT_SM_LABEL
+        metadata = sample.get("metadata") or {}
+        component = str(
+            sample.get("signal_component")
+            or metadata.get("postfit_signal_component")
+            or ""
+        ).lower()
+        if component == "hhhbb":
+            return "signal_hhhbb", STACKED_INPUT_SM_HHHBB_LABEL
+        return "signal_hhhh", STACKED_INPUT_SM_LABEL
     process_id = _sample_process_id(sample)
     group_key = STACKED_INPUT_PROCESS_GROUPS.get(process_id)
     if group_key:
@@ -699,11 +711,34 @@ def stacked_input_cross_section_histogram(values, weights, edges, input_xsec_fb,
 
 
 def stacked_sample_order(samples):
-    """Order samples for stacked plots: backgrounds first, signal last."""
+    """Order backgrounds first, then hhh+bb, with hhhh at the stack top."""
 
     backgrounds = [sample for sample in samples if not sample.get("is_signal")]
     signals = [sample for sample in samples if sample.get("is_signal")]
-    return backgrounds + signals
+
+    def signal_rank(sample):
+        group_key = sample.get("group_key")
+        if group_key == "signal_hhhbb":
+            return 0
+        if group_key == "signal_hhhh":
+            return 1
+        metadata = sample.get("metadata") or {}
+        if not hasattr(metadata, "get"):
+            metadata = {}
+        component = str(
+            sample.get("signal_component")
+            or metadata.get("postfit_signal_component")
+            or ""
+        ).lower()
+        # ``fill_between`` adds each sample above the cumulative height.
+        # Place hhh+bb immediately below the primary hhhh signal.
+        if component == "hhhbb":
+            return 0
+        if component == "hhhh":
+            return 1
+        return 0
+
+    return backgrounds + sorted(signals, key=signal_rank)
 
 
 def _step_values(values):
@@ -715,6 +750,8 @@ def _step_values(values):
 
 def _stacked_publication_color(sample, background_index):
     if sample.get("is_signal"):
+        if sample.get("group_key") == "signal_hhhbb":
+            return "#3182bd"
         return "#9ecae1"
     background_colors = ["#e41a1c", "#984ea3", "#ff7f00", "#4daf4a", "#a65628", "#f781bf"]
     return background_colors[background_index % len(background_colors)]
@@ -825,7 +862,13 @@ def write_stacked_input_cross_section_plot(path, observable_name, samples, signa
             }
         )
         fill_alpha = 0.92 if sample.get("is_signal") else 0.96
-        outline_color = "#1f77b4" if sample.get("is_signal") else "black"
+        outline_color = (
+            "#084594"
+            if sample.get("group_key") == "signal_hhhbb"
+            else "#1f77b4"
+            if sample.get("is_signal")
+            else "black"
+        )
         outline_width = 1.15 if sample.get("is_signal") else 0.7
 
         ax.fill_between(
