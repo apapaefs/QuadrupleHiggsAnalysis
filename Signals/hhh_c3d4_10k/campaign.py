@@ -34,8 +34,14 @@ INTEGRATED_WEIGHT = re.compile(
     rf"Integrated weight\s*\(pb\)\s*:\s*({FLOAT_PATTERN})",
     re.IGNORECASE,
 )
-C3_VALUE = re.compile(rf"^\s*({FLOAT_PATTERN})\s+#\s*c3\s*$", re.IGNORECASE)
-D4_VALUE = re.compile(rf"^\s*({FLOAT_PATTERN})\s+#\s*d4\s*$", re.IGNORECASE)
+C3_VALUE = re.compile(
+    rf"^\s*(?:\d+\s+)*({FLOAT_PATTERN})\s+#\s*c3\s*$",
+    re.IGNORECASE,
+)
+D4_VALUE = re.compile(
+    rf"^\s*(?:\d+\s+)*({FLOAT_PATTERN})\s+#\s*d4\s*$",
+    re.IGNORECASE,
+)
 HERWIG_COMPLETE_MARKER = "Number of events that pass basic cuts"
 
 

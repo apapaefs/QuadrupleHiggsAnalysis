@@ -96,6 +96,26 @@ class HHHGe6BScanTests(unittest.TestCase):
             self.assertIn("set iseed 202", deck)
             self.assertTrue(deck.startswith("set run_mode 2\nset nb_core 64"))
 
+    def test_lhe_validator_reads_indexed_coupling_block_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            lhe = Path(temporary) / "events.lhe"
+            lhe.write_text(
+                """<LesHouchesEvents>
+#  Integrated weight (pb)  : 4.4032e-05
+BLOCK QUARTCOUP
+      6 0.000000e+00 # d4
+BLOCK TRIPCOUP
+      4 0.000000e+00 # c3
+<event>
+</event>
+</LesHouchesEvents>
+"""
+            )
+            audit = campaign.inspect_lhe(lhe, 1, 0.0, 0.0)
+            self.assertEqual(audit["status"], "ok")
+            self.assertEqual(audit["embedded_c3"], 0.0)
+            self.assertEqual(audit["embedded_d4"], 0.0)
+
     def test_binomial_tag_components_and_boundaries(self) -> None:
         self.assertEqual(scan.binomial_tag_probabilities(5)["ge6"], 0.0)
         six = scan.binomial_tag_probabilities(6)
