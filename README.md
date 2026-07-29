@@ -12,6 +12,8 @@ and c3/d4 limit plotting.
   `*_var.smearCMS.root` variable trees.
 - `Code/xgboost_root_varfiles_module.py`: XGBoost training, scoring, and limit
   plotting helpers.
+- `Code/c3d4_score_template_report.py`: reconstructs the SM out-of-fold scores
+  from a completed `fast-sm` study and plots the exact saved pyhf templates.
 
 ## Forced-Splitting Production on Tiresias
 

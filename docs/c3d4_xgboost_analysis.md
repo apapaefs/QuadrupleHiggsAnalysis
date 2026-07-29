@@ -556,6 +556,48 @@ feature-profile comparison, every Optuna study, pooled training and the
 parameterized-classifier gate.  Its default output is
 `xgboost_c3d4_study_v2_uniform-smear-v1_fast-sm/`.
 
+### Plotting the SM score and the exact pyhf templates
+
+A completed `fast-sm` study can be turned into an auditable SM-point
+score-template report without retraining XGBoost, changing the binning, or
+rerunning pyhf:
+
+```bash
+python Code/c3d4_score_template_report.py \
+  xgboost_c3d4_study_v2_uniform-smear-v1_fast-sm \
+  --repo-root "$PWD"
+```
+
+The authoritative bin contents are read directly from the
+`pyhf_shape_with_mcstat.workspace_spec` stored for \(c_3=d_4=0\) in
+`sm-crossfit-v2/shape_results.json`.  The post-processor then independently
+reloads the manifest-recorded ROOT files and the five saved models.  Each
+event is scored once by the model for its test fold, and the reconstructed
+signal and background yields and \(\sqrt{\sum w^2}\) uncertainties must agree
+with the saved workspace.  This closure check includes the post-training
+\(hhhbb\) signal contribution on the equivalent-\(hhhh\)-cross-section basis.
+
+The report is written below
+`sm-crossfit-v2/score_template_report/sm/` and contains:
+
+- `sm_oof_xgboost_score_distribution.{pdf,png}`, a common 0--1 display
+  histogram showing the weighted out-of-fold classifier separation;
+- `sm_pyhf_unrolled_templates.{pdf,png}`, the exact score bins used in the
+  five pyhf channels;
+- `sm_pyhf_templates.csv` and `workspace_sm.json`, containing the numerical
+  templates;
+- `sm_oof_scores.csv.gz`, containing one auditable score row per loaded
+  event; and
+- `report.json`, recording input/model hashes, normalization metadata,
+  exactly-once scoring, template closure, and output hashes.
+
+The common display histogram is not the statistical model: each pyhf channel
+has its own validation-defined boundaries.  The workspace observations are
+the nominal background expectations (background-only Asimov data), not
+collider observations.  Use `--skip-rescore` only when the ROOT environment is
+unavailable and an extraction of the already-saved workspace templates is
+sufficient.
+
 For the same complete-sample fast-SM classifier with no pyhf calculation, run
 
 ```bash
