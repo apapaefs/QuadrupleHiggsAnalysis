@@ -228,6 +228,10 @@ class FeatureCampaignContractTests(unittest.TestCase):
             "schema": "resonance-hybrid-v1",
             "method_version": method_version,
             "preprocessing_version": prepare.PREPROCESSING_VERSION,
+            "higgs_mass_targets_gev": list(
+                prepare.DEFAULT_HIGGS_MASS_TARGETS_GEV
+            ),
+            "higgs_mass_target_assignment": "candidate_pt_rank_descending",
             "input": str(input_path.resolve()),
             "events_available": 1,
             "events_requested": 1,
@@ -354,6 +358,34 @@ class FeatureCampaignContractTests(unittest.TestCase):
                     False,
                 )
 
+    def test_feature_job_uses_shared_baseline_in_separate_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_path = root / "input.root"
+            input_path.touch()
+            record = prepare._run_job(
+                {
+                    "id": "sample",
+                    "kind": "signal",
+                    "input": input_path,
+                    "output": root / "features" / "sample.root",
+                    "c_mistags": 0,
+                    "light_mistags": 0,
+                },
+                root / "extractor",
+                root / "logs",
+                None,
+                10,
+                False,
+                True,
+            )
+            option = record["command"].index("--higgs-mass-targets")
+            self.assertEqual(record["command"][option + 1], "120,115,110,105")
+            self.assertEqual(
+                prepare.DEFAULT_FEATURE_BASE.name,
+                prepare.MASS_TARGET_PROFILE_ID,
+            )
+
     def test_xgboost_summary_accepts_current_extractor_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "features.analysis_summary.json"
@@ -390,6 +422,13 @@ class FeatureCampaignContractTests(unittest.TestCase):
                         "preprocessing_version", "resonance-preprocessing-v1"
                     ),
                     "expected preprocessing_version",
+                ),
+                "higgs_mass_targets": (
+                    lambda summary: summary.__setitem__(
+                        "higgs_mass_targets_gev",
+                        [125.0, 125.0, 125.0, 125.0],
+                    ),
+                    "expected Higgs mass targets",
                 ),
                 "smearing_preprocessing_version": (
                     lambda summary: summary["smearing"].__setitem__(
@@ -458,10 +497,11 @@ class FeatureCampaignContractTests(unittest.TestCase):
             non_b_body.index("const bool smeared_passes_pt"),
         )
 
-    def test_common_mass_target_preserves_historical_scoring_order(self) -> None:
+    def test_explicit_common_target_preserves_historical_scoring_order(self) -> None:
         source = (
             Path(__file__).resolve().parents[1] / "FourHiggsResonanceAnalysis.cc"
         ).read_text()
+        self.assertIn("{{120.0, 115.0, 110.0, 105.0}}", source)
         consider = source.split("  void consider(", 1)[1].split(
             "\n};\n\nusing IndexCallback", 1
         )[0]

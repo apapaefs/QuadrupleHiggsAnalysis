@@ -21,15 +21,18 @@ SPEC.loader.exec_module(study)
 
 
 class TargetPointTests(unittest.TestCase):
-    def test_small_preset_is_frozen_and_contains_both_baselines(self) -> None:
+    def test_small_preset_is_frozen_and_contains_shared_baseline(self) -> None:
         points = study.small_target_points()
         values = [point.values for point in points]
         self.assertEqual(len(values), 19)
         self.assertEqual(len(values), len(set(values)))
+        self.assertEqual(
+            study.BASELINE_TARGETS["resonant"],
+            study.BASELINE_TARGETS["nonresonant"],
+        )
         self.assertIn(study.BASELINE_TARGETS["resonant"], values)
-        self.assertIn(study.BASELINE_TARGETS["nonresonant"], values)
 
-    def test_none_preset_still_keeps_comparison_baselines(self) -> None:
+    def test_none_preset_still_keeps_shared_comparison_baseline(self) -> None:
         points = study.resolve_target_points("none", [])
         self.assertEqual(
             {point.values for point in points},
@@ -132,7 +135,7 @@ class ManifestAndJobTests(unittest.TestCase):
                 nonresonant_executable=root / "nonresonant",
                 max_events=100,
             )
-            self.assertEqual(len(jobs), 8)
+            self.assertEqual(len(jobs), 4)
             resonant = next(job for job in jobs if job.workflow == "resonant")
             nonresonant = next(
                 job for job in jobs if job.workflow == "nonresonant"

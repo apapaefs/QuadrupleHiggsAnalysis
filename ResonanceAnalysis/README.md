@@ -76,12 +76,15 @@ resolved Higgs is a pair of single-tag objects. For the fixed charm- and
 light-mistag composition of a sample, the extractor enumerates all admissible
 resolved/merged assignments, including every allowed choice of double-b jets
 and every pairing of the selected single-tag objects into four Higgs
-candidates. Each assignment is ranked with
+candidates. The four candidates are ordered by decreasing \(p_T\), and each
+assignment is ranked with
 
 \[
 {\cal S}_h=\sum_{i=1}^{4}
-\left(\frac{m_{h_i}-m_h}{m_h}\right)^2,
-\qquad m_h=125\ {\rm GeV},
+\left(\frac{m_{h_i}-m_i^{\rm target}}{m_i^{\rm target}}\right)^2,
+\qquad
+(m_1^{\rm target},m_2^{\rm target},m_3^{\rm target},m_4^{\rm target})
+=(120,115,110,105)\ {\rm GeV},
 \]
 
 and the assignment with the smallest value is retained. The feature tree
@@ -96,38 +99,21 @@ Higgs candidates define three exclusive categories:
 | mixed | `n_merged = 1 or 2` |
 | boosted | `n_merged = 3 or 4` |
 
-The \(125\) GeV value is a common reconstruction target for **every** signal
-and background event in the resonant workflow; it is not a special mass
-assigned to the resonant backgrounds. It represents the nominal on-shell
-Higgs mass used in the simulation and makes the resolved/merged assignment
-symmetric under interchange of the four Higgs candidates. This is particularly
-useful when a candidate can be either one double-B jet or a resolved jet pair
-and there is no natural candidate-\(p_T\) rank to which a different mass target
-should be attached.
-
-The resolved non-resonant self-coupling workflow instead orders four resolved
-candidates by decreasing \(p_T\) and uses the frozen staggered pairing targets
-\((120,115,110,105)\) GeV. Those numbers can be interpreted as heuristic
+The same staggered targets are used for every signal and background event in
+both the resonant and non-resonant workflows. They are heuristic
 reconstruction anchors for the downward and rank-dependent response after
-detector smearing, not four different physical Higgs masses; the repository
-does not contain a calibration record establishing that the exact values are
-optimal. The two choices are nevertheless internally consistent because each
-workflow applies its own pairing prescription identically to all of its
-signals and backgrounds, but their reconstruction efficiencies should not be
-compared as though the object definitions were identical.
-
-The common-\(125\)-GeV choice is physics-motivated rather than an empirical
-claim that it is optimal after detector response. A dedicated reconstruction
-systematic should repeat the resonant extraction with response-calibrated
-common targets, and with a staggered prescription in the fully resolved
-category, before interpreting small sensitivity differences between the two
-workflows.
+detector smearing, not four different physical Higgs masses. This shared
+baseline avoids introducing an analysis-dependent mass-target convention.
+The exact values are not claimed to be optimal: nearby staggered and common
+targets remain reconstruction-systematic alternatives.
 
 The reproducible implementation of that check is documented in
-[the mass-target study](../MassTargetStudy/README.md). It applies the common
-and staggered prescriptions, plus nearby variations, to both workflows and
-selects a tuple on a tuning split before reporting its performance on
-held-out events.
+[the mass-target study](../MassTargetStudy/README.md). It applies common and
+staggered prescriptions, plus nearby variations, to both workflows and
+selects a tuple on a tuning split before reporting its performance on held-out
+events. Since this reconstruction-level diagnostic does not by itself
+establish an improvement in the final expected limit, the shared baseline is
+retained for the nominal analyses.
 
 Every feature-tree entry satisfies
 
@@ -235,21 +221,21 @@ python3 Code/resonance_xgboost_analysis.py \
   --analysis-root . \
   --topology direct \
   --mode smoke \
-  --signal-root-dir ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1 \
-  --background-manifest ResonanceAnalysis/background_manifest_smoke_cms-energy-uniform-fourvector-v1.csv \
+  --signal-root-dir ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1/baseline-120-115-110-105 \
+  --background-manifest ResonanceAnalysis/background_manifest_smoke_cms-energy-uniform-fourvector-v1_baseline-120-115-110-105.csv \
   --smoke-points 3 \
   --smoke-max-events 250 \
-  --output-dir ResonanceAnalysis/results/smoke/cms-energy-uniform-fourvector-v1/direct
+  --output-dir ResonanceAnalysis/results/smoke/cms-energy-uniform-fourvector-v1/baseline-120-115-110-105/direct
 
 python3 Code/resonance_xgboost_analysis.py \
   --analysis-root . \
   --topology cascade \
   --mode smoke \
-  --signal-root-dir ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1 \
-  --background-manifest ResonanceAnalysis/background_manifest_smoke_cms-energy-uniform-fourvector-v1.csv \
+  --signal-root-dir ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1/baseline-120-115-110-105 \
+  --background-manifest ResonanceAnalysis/background_manifest_smoke_cms-energy-uniform-fourvector-v1_baseline-120-115-110-105.csv \
   --smoke-points 3 \
   --smoke-max-events 250 \
-  --output-dir ResonanceAnalysis/results/smoke/cms-energy-uniform-fourvector-v1/cascade
+  --output-dir ResonanceAnalysis/results/smoke/cms-energy-uniform-fourvector-v1/baseline-120-115-110-105/cascade
 ```
 
 Smoke mode checks loading, mass-aware features, folds, tagging closure, output
@@ -295,31 +281,31 @@ python3 -m json.tool ResonanceAnalysis/background_regeneration_status.json | les
 ```
 
 Once regeneration is complete, extract new features for all 483 signal points
-and all backgrounds. The old fixed-mass feature pairs are neither overwritten
-nor reused:
+and all backgrounds. Existing common-125-GeV and earlier feature pairs are
+neither overwritten nor reused:
 
 ```bash
 nohup python3 -u Code/prepare_resonance_features.py \
   --analysis-root . \
   --kind all \
   --workers 8 \
-  > ResonanceAnalysis/logs/feature-extraction-cms-energy-uniform-fourvector-v1.log 2>&1 &
+  > ResonanceAnalysis/logs/feature-extraction-cms-energy-uniform-fourvector-v1-baseline-120-115-110-105.log 2>&1 &
 ```
 
 `--workers 8` means eight independent extractor processes. Monitor
-`ResonanceAnalysis/feature_campaign_status_cms-energy-uniform-fourvector-v1.json`
+`ResonanceAnalysis/feature_campaign_status_cms-energy-uniform-fourvector-v1_baseline-120-115-110-105.json`
 and the per-sample logs under
-`ResonanceAnalysis/logs/features/cms-energy-uniform-fourvector-v1/`. The new
+`ResonanceAnalysis/logs/features/cms-energy-uniform-fourvector-v1/baseline-120-115-110-105/`. The new
 ROOT/JSON pairs are written below
-`ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1/`, and the helper
+`ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1/baseline-120-115-110-105/`, and the helper
 writes
-`ResonanceAnalysis/background_manifest_cms-energy-uniform-fourvector-v1.csv`
+`ResonanceAnalysis/background_manifest_cms-energy-uniform-fourvector-v1_baseline-120-115-110-105.csv`
 with the matching background paths.
 
 ## Full direct and cascade analyses
 
 Do not start these until the feature-extraction command exits successfully,
-`ResonanceAnalysis/background_manifest_cms-energy-uniform-fourvector-v1.csv`
+`ResonanceAnalysis/background_manifest_cms-energy-uniform-fourvector-v1_baseline-120-115-110-105.csv`
 exists, and every non-optional row in that resolved manifest has a compatible
 feature ROOT/JSON pair. The versioned feature status must also report an empty
 `last_run_failures` list. The two topologies can then run in parallel:
@@ -329,19 +315,19 @@ nohup python3 -u Code/resonance_xgboost_analysis.py \
   --analysis-root . \
   --topology direct \
   --mode full \
-  --signal-root-dir ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1 \
-  --background-manifest ResonanceAnalysis/background_manifest_cms-energy-uniform-fourvector-v1.csv \
-  --output-dir ResonanceAnalysis/results/cms-energy-uniform-fourvector-v1/direct \
-  > ResonanceAnalysis/logs/xgboost-direct-cms-energy-uniform-fourvector-v1.log 2>&1 &
+  --signal-root-dir ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1/baseline-120-115-110-105 \
+  --background-manifest ResonanceAnalysis/background_manifest_cms-energy-uniform-fourvector-v1_baseline-120-115-110-105.csv \
+  --output-dir ResonanceAnalysis/results/cms-energy-uniform-fourvector-v1/baseline-120-115-110-105/direct \
+  > ResonanceAnalysis/logs/xgboost-direct-cms-energy-uniform-fourvector-v1-baseline-120-115-110-105.log 2>&1 &
 
 nohup python3 -u Code/resonance_xgboost_analysis.py \
   --analysis-root . \
   --topology cascade \
   --mode full \
-  --signal-root-dir ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1 \
-  --background-manifest ResonanceAnalysis/background_manifest_cms-energy-uniform-fourvector-v1.csv \
-  --output-dir ResonanceAnalysis/results/cms-energy-uniform-fourvector-v1/cascade \
-  > ResonanceAnalysis/logs/xgboost-cascade-cms-energy-uniform-fourvector-v1.log 2>&1 &
+  --signal-root-dir ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1/baseline-120-115-110-105 \
+  --background-manifest ResonanceAnalysis/background_manifest_cms-energy-uniform-fourvector-v1_baseline-120-115-110-105.csv \
+  --output-dir ResonanceAnalysis/results/cms-energy-uniform-fourvector-v1/baseline-120-115-110-105/cascade \
+  > ResonanceAnalysis/logs/xgboost-cascade-cms-energy-uniform-fourvector-v1-baseline-120-115-110-105.log 2>&1 &
 ```
 
 Full mode requires pyhf before training and exits nonzero if any required

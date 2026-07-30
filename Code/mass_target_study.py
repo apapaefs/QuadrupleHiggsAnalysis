@@ -26,9 +26,9 @@ import numpy as np
 
 
 WORKFLOWS = ("resonant", "nonresonant")
-STUDY_VERSION = "four-higgs-mass-target-study-v1"
+STUDY_VERSION = "four-higgs-mass-target-study-v2-shared-baseline"
 BASELINE_TARGETS = {
-    "resonant": (125.0, 125.0, 125.0, 125.0),
+    "resonant": (120.0, 115.0, 110.0, 105.0),
     "nonresonant": (120.0, 115.0, 110.0, 105.0),
 }
 

@@ -35,11 +35,14 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 
 
-METHOD_VERSION = "resonance-mass-aware-xgboost-v1.1-sm-multihiggs-backgrounds"
+METHOD_VERSION = (
+    "resonance-mass-aware-xgboost-v1.2-sm-multihiggs-baseline-mass-targets"
+)
 TREE_SCHEMA = "resonance-hybrid-v1"
-EXTRACTOR_METHOD_VERSION = "resonance-hybrid-v1.2-uniform-fourvector-smearing"
+EXTRACTOR_METHOD_VERSION = "resonance-hybrid-v1.3-baseline-mass-targets"
 EXTRACTOR_PREPROCESSING_VERSION = "resonance-preprocessing-v2"
 EXTRACTOR_SMEARING_MODEL_ID = "cms-energy-uniform-fourvector-v1"
+EXTRACTOR_HIGGS_MASS_TARGETS_GEV = (120.0, 115.0, 110.0, 105.0)
 EXTRACTOR_SMEARING_ETA_PRESELECTION = "finite |eta|<2.5 before smearing"
 EXTRACTOR_SMEARING_PT_THRESHOLD = "smeared pT>20 GeV"
 EXTRACTOR_SMEARING_ACCEPTANCE_ORDER = "raw_abs_eta_then_smear_then_smeared_pt"
@@ -695,6 +698,24 @@ def _summary_metadata(path: Path) -> tuple[int, float, float, int, float, dict[s
         raise AnalysisInputError(
             f"{path}: expected preprocessing_version "
             f"{EXTRACTOR_PREPROCESSING_VERSION!r}"
+        )
+    try:
+        mass_targets = tuple(
+            float(value) for value in summary.get("higgs_mass_targets_gev", ())
+        )
+    except (TypeError, ValueError):
+        mass_targets = ()
+    if mass_targets != EXTRACTOR_HIGGS_MASS_TARGETS_GEV:
+        raise AnalysisInputError(
+            f"{path}: expected Higgs mass targets "
+            f"{EXTRACTOR_HIGGS_MASS_TARGETS_GEV!r}"
+        )
+    if (
+        summary.get("higgs_mass_target_assignment")
+        != "candidate_pt_rank_descending"
+    ):
+        raise AnalysisInputError(
+            f"{path}: expected candidate-pT-ranked Higgs mass targets"
         )
     smearing = summary.get("smearing")
     if not isinstance(smearing, Mapping):
@@ -2900,6 +2921,9 @@ def run_analysis(args: argparse.Namespace) -> int:
         "extractor_method_version": EXTRACTOR_METHOD_VERSION,
         "extractor_preprocessing_version": EXTRACTOR_PREPROCESSING_VERSION,
         "extractor_smearing_model_id": EXTRACTOR_SMEARING_MODEL_ID,
+        "extractor_higgs_mass_targets_gev": list(
+            EXTRACTOR_HIGGS_MASS_TARGETS_GEV
+        ),
         "extractor_smearing_acceptance_order": EXTRACTOR_SMEARING_ACCEPTANCE_ORDER,
         "topology": args.topology,
         "mode": args.mode,
@@ -3058,6 +3082,9 @@ def run_analysis(args: argparse.Namespace) -> int:
             "extractor_method_version": EXTRACTOR_METHOD_VERSION,
             "extractor_preprocessing_version": EXTRACTOR_PREPROCESSING_VERSION,
             "extractor_smearing_model_id": EXTRACTOR_SMEARING_MODEL_ID,
+            "extractor_higgs_mass_targets_gev": list(
+                EXTRACTOR_HIGGS_MASS_TARGETS_GEV
+            ),
             "extractor_smearing_acceptance_order": EXTRACTOR_SMEARING_ACCEPTANCE_ORDER,
             "analysis_fingerprint": analysis_fingerprint,
             "command": shlex.join(sys.argv),
@@ -3436,6 +3463,9 @@ def run_analysis(args: argparse.Namespace) -> int:
         "extractor_method_version": EXTRACTOR_METHOD_VERSION,
         "extractor_preprocessing_version": EXTRACTOR_PREPROCESSING_VERSION,
         "extractor_smearing_model_id": EXTRACTOR_SMEARING_MODEL_ID,
+        "extractor_higgs_mass_targets_gev": list(
+            EXTRACTOR_HIGGS_MASS_TARGETS_GEV
+        ),
         "extractor_smearing_acceptance_order": EXTRACTOR_SMEARING_ACCEPTANCE_ORDER,
         "analysis_fingerprint": analysis_fingerprint,
         "run_fingerprint": run_fingerprint,

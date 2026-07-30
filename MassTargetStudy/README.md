@@ -1,17 +1,18 @@
 # Four-Higgs reconstruction mass-target study
 
 This is a compact, reproducible calibration study for the four mass targets
-used while reconstructing \(hhhh\to8b\). It applies the same target tuples to
-both existing object definitions:
+used while reconstructing \(hhhh\to8b\). Both object definitions now use the
+same nominal tuple:
 
-- the resonant hybrid resolved/merged reconstruction, whose nominal tuple is
-  \((125,125,125,125)\) GeV;
-- the non-resonant resolved-eight-jet reconstruction, whose nominal tuple is
-  \((120,115,110,105)\) GeV.
+- the resonant hybrid resolved/merged reconstruction;
+- the non-resonant resolved-eight-jet reconstruction.
 
-The four entries always correspond to reconstructed Higgs candidates ordered
-by decreasing candidate \(p_T\). They are reconstruction anchors, not four
-different physical Higgs masses.
+In both cases the nominal targets are \((120,115,110,105)\) GeV. The four
+entries correspond to reconstructed Higgs candidates ordered by decreasing
+candidate \(p_T\). They are reconstruction anchors, not four different
+physical Higgs masses. Using one baseline avoids an analysis-dependent
+mass-target convention; the scan remains available as a reconstruction
+systematic.
 
 ## What the small scan measures
 
@@ -23,8 +24,8 @@ frozen 19-tuple grid:
   \((120,115,110,105)\) GeV;
 - independent \(\pm2.5\) GeV shifts of each entry in that staggered tuple.
 
-The nominal tuple of each workflow is always present, including when
-`--preset none` is used with custom points.
+The shared nominal tuple is always present, including when `--preset none` is
+used with custom points.
 
 For every tuple and workflow, the study uses the negative reconstruction
 residual as a one-dimensional signal score: `-best_score` in the resonant

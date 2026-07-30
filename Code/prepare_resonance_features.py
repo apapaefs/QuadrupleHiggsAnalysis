@@ -14,10 +14,16 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-METHOD_VERSION = "resonance-hybrid-v1.2-uniform-fourvector-smearing"
+METHOD_VERSION = "resonance-hybrid-v1.3-baseline-mass-targets"
 PREPROCESSING_VERSION = "resonance-preprocessing-v2"
 SMEARING_MODEL_ID = "cms-energy-uniform-fourvector-v1"
-DEFAULT_FEATURE_BASE = Path("ResonanceAnalysis/features") / SMEARING_MODEL_ID
+DEFAULT_HIGGS_MASS_TARGETS_GEV = (120.0, 115.0, 110.0, 105.0)
+MASS_TARGET_PROFILE_ID = "baseline-120-115-110-105"
+DEFAULT_FEATURE_BASE = (
+    Path("ResonanceAnalysis/features")
+    / SMEARING_MODEL_ID
+    / MASS_TARGET_PROFILE_ID
+)
 
 
 def _resolve(root: Path, value: str) -> Path:
@@ -54,10 +60,21 @@ def _validate_feature_pair(
     expected_events = int(summary.get("events_available", -1))
     if max_events is not None:
         expected_events = min(expected_events, max_events)
+    try:
+        mass_targets = tuple(
+            float(value) for value in summary.get("higgs_mass_targets_gev", ())
+        )
+    except (TypeError, ValueError):
+        mass_targets = ()
     checks = {
         "schema": summary.get("schema") == "resonance-hybrid-v1",
         "method_version": summary.get("method_version") == METHOD_VERSION,
         "preprocessing_version": summary.get("preprocessing_version") == PREPROCESSING_VERSION,
+        "higgs_mass_targets": mass_targets == DEFAULT_HIGGS_MASS_TARGETS_GEV,
+        "higgs_mass_target_assignment": (
+            summary.get("higgs_mass_target_assignment")
+            == "candidate_pt_rank_descending"
+        ),
         "input": Path(str(summary.get("input", ""))).resolve() == input_path.resolve(),
         "events_requested": int(summary.get("events_requested", -1)) == expected_events,
         "c_mistags": int(summary.get("c_mistags", -1)) == c_mistags,
@@ -345,6 +362,8 @@ def _run_job(
         str(job["light_mistags"]),
         "--seed",
         str(_seed(sample_id)),
+        "--higgs-mass-targets",
+        ",".join(f"{target:g}" for target in DEFAULT_HIGGS_MASS_TARGETS_GEV),
     ]
     if max_events is not None:
         command.extend(["--max-events", str(max_events)])
@@ -453,7 +472,8 @@ def main() -> int:
         background_manifest = resolve_arg(args.background_manifest)
         if args.resolved_background_manifest is None:
             resolved_background_manifest = background_manifest.with_name(
-                f"{background_manifest.stem}_{SMEARING_MODEL_ID}.csv"
+                f"{background_manifest.stem}_{SMEARING_MODEL_ID}_"
+                f"{MASS_TARGET_PROFILE_ID}.csv"
             )
         else:
             resolved_background_manifest = resolve_arg(args.resolved_background_manifest)
@@ -468,7 +488,14 @@ def main() -> int:
         raise SystemExit(f"extractor not found: {executable}; build it with make -C Code FourHiggsResonanceAnalysis")
     records: list[dict[str, object]] = []
     failures: list[str] = []
-    log_dir = root / "ResonanceAnalysis" / "logs" / "features" / SMEARING_MODEL_ID
+    log_dir = (
+        root
+        / "ResonanceAnalysis"
+        / "logs"
+        / "features"
+        / SMEARING_MODEL_ID
+        / MASS_TARGET_PROFILE_ID
+    )
     with ThreadPoolExecutor(max_workers=min(args.workers, len(jobs))) as pool:
         futures = {
             pool.submit(
@@ -498,7 +525,10 @@ def main() -> int:
         status = (
             root
             / "ResonanceAnalysis"
-            / f"feature_campaign_status_{SMEARING_MODEL_ID}.json"
+            / (
+                f"feature_campaign_status_{SMEARING_MODEL_ID}_"
+                f"{MASS_TARGET_PROFILE_ID}.json"
+            )
         )
         status.parent.mkdir(parents=True, exist_ok=True)
         previous_records: list[dict[str, object]] = []
@@ -520,6 +550,8 @@ def main() -> int:
             "method_version": METHOD_VERSION,
             "preprocessing_version": PREPROCESSING_VERSION,
             "smearing_model_id": SMEARING_MODEL_ID,
+            "mass_target_profile_id": MASS_TARGET_PROFILE_ID,
+            "higgs_mass_targets_gev": list(DEFAULT_HIGGS_MASS_TARGETS_GEV),
             "samples": merged_records,
             "last_run_failures": failures,
         }

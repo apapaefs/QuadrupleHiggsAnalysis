@@ -32,11 +32,12 @@ constexpr int kHardMaxRecoJets = 10;
 constexpr double kBJetPtCut = 20.0;
 constexpr double kBJetEtaCut = 2.5;
 constexpr double kDuplicateJetDeltaR = 0.05;
-constexpr const char* kMethodVersion = "resonance-hybrid-v1.2-uniform-fourvector-smearing";
+constexpr const char* kMethodVersion =
+    "resonance-hybrid-v1.3-baseline-mass-targets";
 constexpr const char* kPreprocessingVersion = "resonance-preprocessing-v2";
 constexpr const char* kSmearingModelId = "cms-energy-uniform-fourvector-v1";
 const std::array<double, kHiggsCount> kDefaultHiggsMassTargets =
-    {{125.0, 125.0, 125.0, 125.0}};
+    {{120.0, 115.0, 110.0, 105.0}};
 
 enum JetSource {
   kTrueB = 0,
