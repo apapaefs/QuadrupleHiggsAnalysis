@@ -62,6 +62,15 @@ PLOT_D4_RANGE = (-300.0, 300.0)
 CONTOUR_GRID_POINTS_PER_AXIS = 601
 CONTOUR_FIGURE_SIZE_INCHES = (8.2, 6.2)
 PLOT_TITLE_FONTSIZE = 18
+FIDUCIAL_SELECTION_ANNOTATION = (
+    r"$b$-jets with"
+    "\n"
+    r"$p_T>20\,\mathrm{GeV}$ and"
+    "\n"
+    r"$|\eta|<2.5$"
+)
+FIDUCIAL_SELECTION_ANNOTATION_POSITION = (0.98, 0.03)
+FIDUCIAL_SELECTION_ANNOTATION_FONTSIZE = 10
 FIDUCIAL_PLOT_TITLE = (
     r"Fiducial $\sigma(gg\rightarrow hhhh\geq 6b)"
     r"/\sigma(gg\rightarrow hhh\geq 6b)$"
@@ -1447,6 +1456,37 @@ def plot_ratio_contours(
     axis.set_ylabel(r"$d_4$", fontsize=20)
     axis.set_title(title + " at 14 TeV", fontsize=PLOT_TITLE_FONTSIZE)
     axis.tick_params(axis="both", labelsize=15)
+    selection_annotation_metadata = None
+    if not include_atlas:
+        axis.text(
+            *FIDUCIAL_SELECTION_ANNOTATION_POSITION,
+            FIDUCIAL_SELECTION_ANNOTATION,
+            transform=axis.transAxes,
+            horizontalalignment="right",
+            verticalalignment="bottom",
+            fontsize=FIDUCIAL_SELECTION_ANNOTATION_FONTSIZE,
+            linespacing=1.15,
+            zorder=10,
+            bbox={
+                "boxstyle": "round,pad=0.3",
+                "facecolor": "white",
+                "edgecolor": "0.7",
+                "linewidth": 0.6,
+                "alpha": 0.92,
+            },
+        )
+        selection_annotation_metadata = {
+            "text": (
+                "b-jets with pT > 20 GeV and |eta| < 2.5"
+            ),
+            "position_axes_fraction": list(
+                FIDUCIAL_SELECTION_ANNOTATION_POSITION
+            ),
+            "horizontalalignment": "right",
+            "verticalalignment": "bottom",
+            "fontsize": FIDUCIAL_SELECTION_ANNOTATION_FONTSIZE,
+            "box": "rounded white, alpha=0.92",
+        }
     if include_atlas:
         axis.legend(loc="best", fontsize=8, framealpha=0.9)
     fig.canvas.draw()
@@ -1475,6 +1515,7 @@ def plot_ratio_contours(
         "value_field": value_field,
         "atlas_overlay": include_atlas,
         "atlas_reference_curve": atlas_curve_metadata,
+        "fiducial_selection_annotation": selection_annotation_metadata,
         "points": len(values),
         "ratio_min": float(np.min(z)),
         "ratio_max": float(np.max(z)),

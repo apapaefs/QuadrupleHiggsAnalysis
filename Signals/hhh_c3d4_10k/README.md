@@ -119,3 +119,7 @@ curve is digitized in `(kappa3,kappa4)` and plotted after the exact coordinate
 conversion `c3=kappa3-1`, `d4=kappa4-1`.  The plots use the same `8.2 x 6.2`
 inch constrained-layout canvas as the paper's self-coupling contour figure, so
 their axes have the same aspect ratio when placed at equal column width.
+The three plots without the ATLAS overlay include a compact inset stating the
+fiducial b-jet requirements, `pT > 20 GeV` and `|eta| < 2.5`; the inset is
+placed in the open lower-right region beyond the contour branches.  The
+ATLAS-overlay variants omit this inset to keep the comparison uncluttered.

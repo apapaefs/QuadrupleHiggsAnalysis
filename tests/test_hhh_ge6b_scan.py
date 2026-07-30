@@ -515,7 +515,31 @@ BLOCK TRIPCOUP
                 )
             self.assertFalse(first["atlas_overlay"])
             self.assertIsNone(first["atlas_reference_curve"])
+            for metadata in (first, second, third):
+                self.assertEqual(
+                    metadata["fiducial_selection_annotation"]["text"],
+                    "b-jets with pT > 20 GeV and |eta| < 2.5",
+                )
+                self.assertEqual(
+                    metadata["fiducial_selection_annotation"][
+                        "position_axes_fraction"
+                    ],
+                    [0.98, 0.03],
+                )
+                self.assertEqual(
+                    metadata["fiducial_selection_annotation"][
+                        "horizontalalignment"
+                    ],
+                    "right",
+                )
+                self.assertEqual(
+                    metadata["fiducial_selection_annotation"][
+                        "verticalalignment"
+                    ],
+                    "bottom",
+                )
             self.assertTrue(atlas["atlas_overlay"])
+            self.assertIsNone(atlas["fiducial_selection_annotation"])
             self.assertIn(
                 "ATL-PHYS-PUB-2025-003.pdf",
                 atlas["atlas_reference_curve"]["source"],
@@ -615,6 +639,18 @@ BLOCK TRIPCOUP
         self.assertEqual(
             scan.RATIO_LEVEL_STYLES[0.5],
             {"color": "purple", "linestyle": "dashed"},
+        )
+        self.assertEqual(
+            scan.FIDUCIAL_SELECTION_ANNOTATION,
+            (
+                "$b$-jets with\n"
+                "$p_T>20\\,\\mathrm{GeV}$ and\n"
+                "$|\\eta|<2.5$"
+            ),
+        )
+        self.assertEqual(
+            scan.FIDUCIAL_SELECTION_ANNOTATION_POSITION,
+            (0.98, 0.03),
         )
         self.assertEqual(
             scan.FIDUCIAL_PLOT_TITLE,
