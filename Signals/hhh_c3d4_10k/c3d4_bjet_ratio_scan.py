@@ -49,16 +49,20 @@ HHHBB_XSEC_RELATIVE_TOLERANCE = 5.0e-3
 # consolidated_sources.json records analysis_xsec_fb to 12 significant
 # decimal digits, whereas merge_summary.json keeps the full binary value.
 HHHBB_CONSOLIDATED_RELATIVE_TOLERANCE = 5.0e-12
-RATIO_LEVELS = (0.01, 0.05, 0.1, 1.0, 10.0)
+RATIO_LEVELS = (0.01, 0.1, 0.5, 1.0, 10.0)
 RATIO_LEVEL_STYLES = {
     0.01: {"color": "black", "linestyle": "dotted"},
-    0.05: {"color": "blue", "linestyle": "dashed"},
     0.1: {"color": "red", "linestyle": "solid"},
+    0.5: {"color": "blue", "linestyle": "dashed"},
 }
 RATIO_FALLBACK_STYLE = {"color": "black", "linestyle": "solid"}
 PLOT_C3_RANGE = (-20.0, 20.0)
 PLOT_D4_RANGE = (-300.0, 300.0)
 CONTOUR_GRID_POINTS_PER_AXIS = 601
+FIDUCIAL_PLOT_TITLE = (
+    r"Fiducial $\sigma(gg\rightarrow hhhh\geq 6b)"
+    r"/\sigma(gg\rightarrow hhh\geq 6b)$"
+)
 HERWIG_TOTAL = re.compile(r"^Total:\s+(\d+)\s+\d+\s+(\S+)")
 PARENTHETICAL_VALUE = re.compile(
     r"^([+-]?(?:\d+(?:\.\d*)?|\.\d+))"
@@ -1337,6 +1341,7 @@ def plot_ratio_contours(
         "status": "ok",
         "output_pdf": str(output_pdf),
         "output_png": str(output_png),
+        "title": title + " at 14 TeV",
         "value_field": value_field,
         "points": len(values),
         "ratio_min": float(np.min(z)),
@@ -1375,14 +1380,13 @@ def make_plots(paths: AnalysisPaths) -> dict[str, object]:
         rows,
         "ratio_hhhh_over_hhh_plus_hhhbb",
         paths.results_dir / f"{PRIMARY_PLOT_STEM}.pdf",
-        r"$\frac{\sigma(hhhh,\geq6b)}"
-        r"{\sigma(hhh,\geq6b)+\sigma(hhh+b\bar b,\geq6b)}$",
+        FIDUCIAL_PLOT_TITLE,
     )
     diagnostic = plot_ratio_contours(
         rows,
         "ratio_hhhh_over_hhh",
         paths.results_dir / f"{DIAGNOSTIC_PLOT_STEM}.pdf",
-        r"$\frac{\sigma(hhhh,\geq6b)}{\sigma(hhh,\geq6b)}$",
+        FIDUCIAL_PLOT_TITLE,
     )
     payload = {
         "combination_scheme": "additive_unmatched",

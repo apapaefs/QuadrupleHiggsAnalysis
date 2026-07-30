@@ -386,6 +386,8 @@ BLOCK TRIPCOUP
                 self.assertEqual(metadata["status"], "ok")
                 self.assertTrue(Path(metadata["output_pdf"]).is_file())
                 self.assertTrue(Path(metadata["output_png"]).is_file())
+                self.assertNotIn(0.05, metadata["visible_levels"])
+                self.assertIn(0.5, metadata["visible_levels"])
                 self.assertEqual(
                     metadata["interpolation"],
                     "C1 cubic triangular interpolation of log10(pointwise ratio)",
@@ -400,6 +402,23 @@ BLOCK TRIPCOUP
                     "outside the Delaunay convex hull",
                     metadata["extrapolation"],
                 )
+
+    def test_ratio_contour_levels_and_title(self) -> None:
+        self.assertEqual(
+            scan.RATIO_LEVELS,
+            (0.01, 0.1, 0.5, 1.0, 10.0),
+        )
+        self.assertEqual(
+            scan.RATIO_LEVEL_STYLES[0.5],
+            {"color": "blue", "linestyle": "dashed"},
+        )
+        self.assertEqual(
+            scan.FIDUCIAL_PLOT_TITLE,
+            (
+                r"Fiducial $\sigma(gg\rightarrow hhhh\geq 6b)"
+                r"/\sigma(gg\rightarrow hhh\geq 6b)$"
+            ),
+        )
 
 
 if __name__ == "__main__":

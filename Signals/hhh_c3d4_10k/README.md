@@ -96,3 +96,8 @@ The contour plots use a C1-continuous cubic triangular interpolation of the
 logarithm of the measured pointwise ratios.  It reproduces every scan value,
 is masked outside the scan's Delaunay convex hull, and therefore smooths the
 rendered contour geometry without altering or extrapolating the point table.
+The displayed contour levels are `0.01`, `0.1`, `0.5`, `1`, and, when it lies
+within the sampled range, `10`.  The concise plot title labels the denominator
+as fiducial `gg -> hhh`; any use of the primary plot must state in its caption
+that the denominator also includes the additive unmatched `hhh+b bbar`
+contribution.
