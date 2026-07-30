@@ -20,6 +20,7 @@ from typing import Iterable
 
 CAMPAIGN_DIR = Path(__file__).resolve().parent
 REPO_DIR = CAMPAIGN_DIR.parents[1]
+CODE_DIR = REPO_DIR / "Code"
 sys.path.insert(0, str(CAMPAIGN_DIR))
 
 from campaign import (  # noqa: E402
@@ -53,7 +54,7 @@ RATIO_LEVELS = (0.01, 0.1, 0.5, 1.0, 10.0)
 RATIO_LEVEL_STYLES = {
     0.01: {"color": "black", "linestyle": "dotted"},
     0.1: {"color": "red", "linestyle": "solid"},
-    0.5: {"color": "blue", "linestyle": "dashed"},
+    0.5: {"color": "purple", "linestyle": "dashed"},
 }
 RATIO_FALLBACK_STYLE = {"color": "black", "linestyle": "solid"}
 PLOT_C3_RANGE = (-20.0, 20.0)
@@ -63,6 +64,10 @@ CONTOUR_FIGURE_SIZE_INCHES = (8.2, 6.2)
 FIDUCIAL_PLOT_TITLE = (
     r"Fiducial $\sigma(gg\rightarrow hhhh\geq 6b)"
     r"/\sigma(gg\rightarrow hhh\geq 6b)$"
+)
+FIDUCIAL_EXACT6_PLOT_TITLE = (
+    r"Fiducial $\sigma(gg\rightarrow hhhh,\,N_{b\mathrm{-tag}}=6)"
+    r"/\sigma(gg\rightarrow hhh,\,N_{b\mathrm{-tag}}=6)$"
 )
 HERWIG_TOTAL = re.compile(r"^Total:\s+(\d+)\s+\d+\s+(\S+)")
 PARENTHETICAL_VALUE = re.compile(
@@ -76,11 +81,26 @@ PRIMARY_RATIO_STEM = (
 DIAGNOSTIC_RATIO_STEM = (
     "c3d4_hhhh_ge6btag_over_hhh_ge6btag_ratio_points"
 )
+EXACT6_PRIMARY_RATIO_STEM = (
+    "c3d4_hhhh_eq6btag_over_hhh_plus_hhhbb_eq6btag_ratio_points"
+)
 PRIMARY_PLOT_STEM = (
     "c3d4_hhhh_ge6btag_over_hhh_plus_hhhbb_ge6btag_ratio_contours"
 )
 DIAGNOSTIC_PLOT_STEM = (
     "c3d4_hhhh_ge6btag_over_hhh_ge6btag_ratio_contours"
+)
+EXACT6_PRIMARY_PLOT_STEM = (
+    "c3d4_hhhh_eq6btag_over_hhh_plus_hhhbb_eq6btag_ratio_contours"
+)
+ATLAS_PLOT_SUFFIX = "_with_atl_phys_pub_2025_003_limit"
+PLOT_STEMS = (
+    PRIMARY_PLOT_STEM,
+    DIAGNOSTIC_PLOT_STEM,
+    EXACT6_PRIMARY_PLOT_STEM,
+    f"{PRIMARY_PLOT_STEM}{ATLAS_PLOT_SUFFIX}",
+    f"{DIAGNOSTIC_PLOT_STEM}{ATLAS_PLOT_SUFFIX}",
+    f"{EXACT6_PRIMARY_PLOT_STEM}{ATLAS_PLOT_SUFFIX}",
 )
 
 
@@ -807,23 +827,26 @@ def combine_component_rows(
             row[f"sigma_{category}_error_pb"] = error
             row[f"sigma_{category}_fb"] = total * 1.0e3
             row[f"sigma_{category}_error_fb"] = error * 1.0e3
-        denominator = float(row["sigma_ge6_pb"])
-        hhh_ge6 = float(hhh["sigma_ge6_pb"])
-        hhhbb_ge6 = float(hhhbb["sigma_ge6_pb"])
-        row["hhhbb_fraction_ge6"] = (
-            hhhbb_ge6 / denominator
-            if denominator > 0.0
-            else math.nan
-        )
-        row["hhhbb_fraction_ge6_error"] = (
-            math.hypot(
-                hhh_ge6 * float(hhhbb["sigma_ge6_error_pb"]),
-                hhhbb_ge6 * float(hhh["sigma_ge6_error_pb"]),
+        for category in ("exact6", "ge6"):
+            denominator = float(row[f"sigma_{category}_pb"])
+            hhh_value = float(hhh[f"sigma_{category}_pb"])
+            hhhbb_value = float(hhhbb[f"sigma_{category}_pb"])
+            row[f"hhhbb_fraction_{category}"] = (
+                hhhbb_value / denominator
+                if denominator > 0.0
+                else math.nan
             )
-            / denominator**2
-            if denominator > 0.0
-            else math.nan
-        )
+            row[f"hhhbb_fraction_{category}_error"] = (
+                math.hypot(
+                    hhh_value
+                    * float(hhhbb[f"sigma_{category}_error_pb"]),
+                    hhhbb_value
+                    * float(hhh[f"sigma_{category}_error_pb"]),
+                )
+                / denominator**2
+                if denominator > 0.0
+                else math.nan
+            )
         closure = abs(
             float(row["sigma_ge6_pb"])
             - float(row["sigma_exact6_pb"])
@@ -894,6 +917,12 @@ def make_ratio_rows(
             float(combined["sigma_ge6_pb"]),
             float(combined["sigma_ge6_error_pb"]),
         )
+        exact6_primary, exact6_primary_error = ratio_with_error(
+            float(hhhh["sigma_exact6_pb"]),
+            float(hhhh["sigma_exact6_error_pb"]),
+            float(combined["sigma_exact6_pb"]),
+            float(combined["sigma_exact6_error_pb"]),
+        )
         diagnostic, diagnostic_error = ratio_with_error(
             float(hhhh["sigma_ge6_pb"]),
             float(hhhh["sigma_ge6_error_pb"]),
@@ -924,8 +953,38 @@ def make_ratio_rows(
                 "hhhbb_fraction_ge6_error": combined[
                     "hhhbb_fraction_ge6_error"
                 ],
+                "hhhh_sigma_exact6_pb": hhhh["sigma_exact6_pb"],
+                "hhhh_sigma_exact6_error_pb": hhhh[
+                    "sigma_exact6_error_pb"
+                ],
+                "hhh_sigma_exact6_pb": hhh["sigma_exact6_pb"],
+                "hhh_sigma_exact6_error_pb": hhh[
+                    "sigma_exact6_error_pb"
+                ],
+                "hhhbb_sigma_exact6_pb": hhhbb["sigma_exact6_pb"],
+                "hhhbb_sigma_exact6_error_pb": hhhbb[
+                    "sigma_exact6_error_pb"
+                ],
+                "denominator_sigma_exact6_pb": combined[
+                    "sigma_exact6_pb"
+                ],
+                "denominator_sigma_exact6_error_pb": combined[
+                    "sigma_exact6_error_pb"
+                ],
+                "hhhbb_fraction_exact6": combined[
+                    "hhhbb_fraction_exact6"
+                ],
+                "hhhbb_fraction_exact6_error": combined[
+                    "hhhbb_fraction_exact6_error"
+                ],
                 "ratio_hhhh_over_hhh_plus_hhhbb": primary,
                 "ratio_hhhh_over_hhh_plus_hhhbb_error": primary_error,
+                "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6": (
+                    exact6_primary
+                ),
+                "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6_error": (
+                    exact6_primary_error
+                ),
                 "ratio_hhhh_over_hhh": diagnostic,
                 "ratio_hhhh_over_hhh_error": diagnostic_error,
                 "audit_status": (
@@ -996,11 +1055,35 @@ def write_pointwise_ratio_tables(
         "audit_status",
         "audit_issues",
     )
+    exact6_primary_fields = (
+        "index",
+        "c3",
+        "d4",
+        "combination_scheme",
+        "hhhh_sigma_exact6_pb",
+        "hhhh_sigma_exact6_error_pb",
+        "hhh_sigma_exact6_pb",
+        "hhh_sigma_exact6_error_pb",
+        "hhhbb_sigma_exact6_pb",
+        "hhhbb_sigma_exact6_error_pb",
+        "denominator_sigma_exact6_pb",
+        "denominator_sigma_exact6_error_pb",
+        "hhhbb_fraction_exact6",
+        "hhhbb_fraction_exact6_error",
+        "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6",
+        "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6_error",
+        "audit_status",
+        "audit_issues",
+    )
     primary_rows = [
         {field: row[field] for field in primary_fields} for row in rows
     ]
     diagnostic_rows = [
         {field: row[field] for field in diagnostic_fields} for row in rows
+    ]
+    exact6_primary_rows = [
+        {field: row[field] for field in exact6_primary_fields}
+        for row in rows
     ]
     write_rows(
         results_dir / PRIMARY_RATIO_STEM,
@@ -1017,6 +1100,16 @@ def write_pointwise_ratio_tables(
         {
             "ratio": "hhhh_ge6/hhh_ge6",
             "role": "HHH-only diagnostic",
+            "points": EXPECTED_POINTS,
+        },
+    )
+    write_rows(
+        results_dir / EXACT6_PRIMARY_RATIO_STEM,
+        exact6_primary_rows,
+        {
+            "ratio": "hhhh_exact6/(hhh_exact6+hhhbb_exact6)",
+            "combination_scheme": "additive_unmatched",
+            "tag_requirement": "exactly 6",
             "points": EXPECTED_POINTS,
         },
     )
@@ -1093,6 +1186,9 @@ def aggregate_results(
         ratios,
         {
             "primary_ratio": "hhhh_ge6/(hhh_ge6+hhhbb_ge6)",
+            "exact6_primary_ratio": (
+                "hhhh_exact6/(hhh_exact6+hhhbb_exact6)"
+            ),
             "diagnostic_ratio": "hhhh_ge6/hhh_ge6",
             "combination_scheme": "additive_unmatched",
             "points": EXPECTED_POINTS,
@@ -1192,6 +1288,8 @@ def plot_ratio_contours(
     value_field: str,
     output_pdf: Path,
     title: str,
+    *,
+    include_atlas: bool = False,
 ) -> dict[str, object]:
     import matplotlib
 
@@ -1331,12 +1429,25 @@ def plot_ratio_contours(
                         path_effects.Normal(),
                     ]
                 )
+    atlas_curve_metadata = None
+    if include_atlas:
+        if str(CODE_DIR) not in sys.path:
+            sys.path.insert(0, str(CODE_DIR))
+        import c3d4_plot_style
+
+        atlas_curve_metadata = dict(
+            c3d4_plot_style._plot_atlas_phys_pub_2025_003_curve(axis),
+            color="blue",
+            linestyle="solid",
+        )
     axis.set_xlim(PLOT_C3_RANGE)
     axis.set_ylim(PLOT_D4_RANGE)
     axis.set_xlabel(r"$c_3$", fontsize=20)
     axis.set_ylabel(r"$d_4$", fontsize=20)
     axis.set_title(title + " at 14 TeV", fontsize=20)
     axis.tick_params(axis="both", labelsize=15)
+    if include_atlas:
+        axis.legend(loc="best", fontsize=8, framealpha=0.9)
     fig.canvas.draw()
     axes_box = axis.get_position()
     axes_box_aspect_ratio = (
@@ -1360,6 +1471,8 @@ def plot_ratio_contours(
         "layout": "constrained; matches the Fig. 3 plotting canvas",
         "axes_box_aspect_ratio": axes_box_aspect_ratio,
         "value_field": value_field,
+        "atlas_overlay": include_atlas,
+        "atlas_reference_curve": atlas_curve_metadata,
         "points": len(values),
         "ratio_min": float(np.min(z)),
         "ratio_max": float(np.max(z)),
@@ -1405,6 +1518,36 @@ def make_plots(paths: AnalysisPaths) -> dict[str, object]:
         paths.results_dir / f"{DIAGNOSTIC_PLOT_STEM}.pdf",
         FIDUCIAL_PLOT_TITLE,
     )
+    exact6_primary = plot_ratio_contours(
+        rows,
+        "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6",
+        paths.results_dir / f"{EXACT6_PRIMARY_PLOT_STEM}.pdf",
+        FIDUCIAL_EXACT6_PLOT_TITLE,
+    )
+    primary_atlas = plot_ratio_contours(
+        rows,
+        "ratio_hhhh_over_hhh_plus_hhhbb",
+        paths.results_dir
+        / f"{PRIMARY_PLOT_STEM}{ATLAS_PLOT_SUFFIX}.pdf",
+        FIDUCIAL_PLOT_TITLE,
+        include_atlas=True,
+    )
+    diagnostic_atlas = plot_ratio_contours(
+        rows,
+        "ratio_hhhh_over_hhh",
+        paths.results_dir
+        / f"{DIAGNOSTIC_PLOT_STEM}{ATLAS_PLOT_SUFFIX}.pdf",
+        FIDUCIAL_PLOT_TITLE,
+        include_atlas=True,
+    )
+    exact6_primary_atlas = plot_ratio_contours(
+        rows,
+        "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6",
+        paths.results_dir
+        / f"{EXACT6_PRIMARY_PLOT_STEM}{ATLAS_PLOT_SUFFIX}.pdf",
+        FIDUCIAL_EXACT6_PLOT_TITLE,
+        include_atlas=True,
+    )
     payload = {
         "combination_scheme": "additive_unmatched",
         "overlap_caveat": (
@@ -1413,6 +1556,10 @@ def make_plots(paths: AnalysisPaths) -> dict[str, object]:
         ),
         "primary": primary,
         "diagnostic": diagnostic,
+        "exact6_primary": exact6_primary,
+        "primary_atlas": primary_atlas,
+        "diagnostic_atlas": diagnostic_atlas,
+        "exact6_primary_atlas": exact6_primary_atlas,
     }
     atomic_write_json(paths.results_dir / "plot_metadata.json", payload)
     return payload
@@ -1427,10 +1574,12 @@ def result_status(paths: AnalysisPaths) -> dict[str, object]:
         "ratio_points.csv",
         f"{PRIMARY_RATIO_STEM}.csv",
         f"{DIAGNOSTIC_RATIO_STEM}.csv",
-        f"{PRIMARY_PLOT_STEM}.pdf",
-        f"{PRIMARY_PLOT_STEM}.png",
-        f"{DIAGNOSTIC_PLOT_STEM}.pdf",
-        f"{DIAGNOSTIC_PLOT_STEM}.png",
+        f"{EXACT6_PRIMARY_RATIO_STEM}.csv",
+        *[
+            f"{stem}.{suffix}"
+            for stem in PLOT_STEMS
+            for suffix in ("pdf", "png")
+        ],
     ]
     files = {
         name: {
@@ -1476,6 +1625,7 @@ def validate_results(
         "ratio_points.csv",
         f"{PRIMARY_RATIO_STEM}.csv",
         f"{DIAGNOSTIC_RATIO_STEM}.csv",
+        f"{EXACT6_PRIMARY_RATIO_STEM}.csv",
     )
     table_counts = {}
     for name in table_names:
@@ -1496,10 +1646,9 @@ def validate_results(
         if failed:
             issues.append(f"{name} has {len(failed)} failed audit rows")
     for name in (
-        f"{PRIMARY_PLOT_STEM}.pdf",
-        f"{PRIMARY_PLOT_STEM}.png",
-        f"{DIAGNOSTIC_PLOT_STEM}.pdf",
-        f"{DIAGNOSTIC_PLOT_STEM}.png",
+        f"{stem}.{suffix}"
+        for stem in PLOT_STEMS
+        for suffix in ("pdf", "png")
     ):
         path = paths.results_dir / name
         if not path.is_file() or path.stat().st_size <= 0:
@@ -1576,14 +1725,14 @@ def run_smoke_analysis(paths: AnalysisPaths, points: list[Point]) -> dict[str, o
     # A deterministic non-physics mini-grid exercises both triangulated plot
     # paths without pretending that one smoke point defines a contour.
     synthetic = []
-    for index, (c3, d4, primary, diagnostic) in enumerate(
+    for index, (c3, d4, primary, diagnostic, exact6_primary) in enumerate(
         (
-            (-10.0, -200.0, 0.008, 0.012),
-            (0.0, -200.0, 0.04, 0.06),
-            (10.0, -200.0, 0.2, 0.3),
-            (-10.0, 200.0, 0.08, 0.12),
-            (0.0, 200.0, 0.8, 1.2),
-            (10.0, 200.0, 12.0, 15.0),
+            (-10.0, -200.0, 0.008, 0.012, 0.01),
+            (0.0, -200.0, 0.04, 0.06, 0.05),
+            (10.0, -200.0, 0.2, 0.3, 0.25),
+            (-10.0, 200.0, 0.08, 0.12, 0.1),
+            (0.0, 200.0, 0.8, 1.2, 1.0),
+            (10.0, 200.0, 12.0, 15.0, 14.0),
         ),
         start=1,
     ):
@@ -1594,6 +1743,9 @@ def run_smoke_analysis(paths: AnalysisPaths, points: list[Point]) -> dict[str, o
                 "d4": d4,
                 "ratio_hhhh_over_hhh_plus_hhhbb": primary,
                 "ratio_hhhh_over_hhh": diagnostic,
+                "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6": (
+                    exact6_primary
+                ),
             }
         )
     primary_plot = plot_ratio_contours(
@@ -1607,6 +1759,33 @@ def run_smoke_analysis(paths: AnalysisPaths, points: list[Point]) -> dict[str, o
         "ratio_hhhh_over_hhh",
         smoke_dir / "diagnostic_fixture.pdf",
         "Smoke fixture: HHH-only ratio",
+    )
+    exact6_primary_plot = plot_ratio_contours(
+        synthetic,
+        "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6",
+        smoke_dir / "exact6_primary_fixture.pdf",
+        "Smoke fixture: exactly-six primary ratio",
+    )
+    primary_atlas_plot = plot_ratio_contours(
+        synthetic,
+        "ratio_hhhh_over_hhh_plus_hhhbb",
+        smoke_dir / "primary_atlas_fixture.pdf",
+        "Smoke fixture: primary ratio",
+        include_atlas=True,
+    )
+    diagnostic_atlas_plot = plot_ratio_contours(
+        synthetic,
+        "ratio_hhhh_over_hhh",
+        smoke_dir / "diagnostic_atlas_fixture.pdf",
+        "Smoke fixture: HHH-only ratio",
+        include_atlas=True,
+    )
+    exact6_primary_atlas_plot = plot_ratio_contours(
+        synthetic,
+        "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6",
+        smoke_dir / "exact6_primary_atlas_fixture.pdf",
+        "Smoke fixture: exactly-six primary ratio",
+        include_atlas=True,
     )
     payload = {
         "status": "ok",
@@ -1624,6 +1803,10 @@ def run_smoke_analysis(paths: AnalysisPaths, points: list[Point]) -> dict[str, o
         "fixture_plots": {
             "primary": primary_plot,
             "diagnostic": diagnostic_plot,
+            "exact6_primary": exact6_primary_plot,
+            "primary_atlas": primary_atlas_plot,
+            "diagnostic_atlas": diagnostic_atlas_plot,
+            "exact6_primary_atlas": exact6_primary_atlas_plot,
         },
     }
     atomic_write_json(smoke_dir / "smoke_results.json", payload)

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 REPO_DIR = Path(__file__).resolve().parents[1]
@@ -262,11 +264,27 @@ BLOCK TRIPCOUP
         hhh = [component_row(1, 0.0, 0.0, "hhh", 10.0, 1.0)]
         hhhbb = [component_row(1, 0.0, 0.0, "hhhbb", 2.0, 0.5)]
         hhhh = [component_row(1, 0.0, 0.0, "hhhh", 3.0, 0.3)]
+        for row, exact6, exact7, ge8 in (
+            (hhh[0], 4.0, 3.0, 3.0),
+            (hhhbb[0], 0.5, 0.6, 0.9),
+            (hhhh[0], 0.9, 0.9, 1.2),
+        ):
+            row["sigma_exact6_pb"] = exact6
+            row["sigma_exact7_pb"] = exact7
+            row["sigma_ge8_pb"] = ge8
         combined = scan.combine_component_rows(hhh, hhhbb)
         self.assertEqual(combined[0]["combination_scheme"], "additive_unmatched")
         self.assertTrue(math.isclose(float(combined[0]["sigma_ge6_pb"]), 12.0))
         self.assertTrue(
+            math.isclose(float(combined[0]["sigma_exact6_pb"]), 4.5)
+        )
+        self.assertTrue(
             math.isclose(float(combined[0]["hhhbb_fraction_ge6"]), 1.0 / 6.0)
+        )
+        self.assertTrue(
+            math.isclose(
+                float(combined[0]["hhhbb_fraction_exact6"]), 1.0 / 9.0
+            )
         )
         ratios = scan.make_ratio_rows(hhhh, hhh, hhhbb, combined)
         self.assertTrue(
@@ -277,11 +295,32 @@ BLOCK TRIPCOUP
         self.assertTrue(
             math.isclose(float(ratios[0]["ratio_hhhh_over_hhh"]), 0.3)
         )
+        self.assertTrue(
+            math.isclose(
+                float(
+                    ratios[0][
+                        "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6"
+                    ]
+                ),
+                0.2,
+            )
+        )
         self.assertGreater(
             float(ratios[0]["ratio_hhhh_over_hhh_plus_hhhbb_error"]), 0.0
         )
         self.assertGreater(
+            float(
+                ratios[0][
+                    "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6_error"
+                ]
+            ),
+            0.0,
+        )
+        self.assertGreater(
             float(combined[0]["hhhbb_fraction_ge6_error"]), 0.0
+        )
+        self.assertGreater(
+            float(combined[0]["hhhbb_fraction_exact6_error"]), 0.0
         )
 
     def test_exact_join_retains_all_153_authoritative_points(self) -> None:
@@ -321,6 +360,40 @@ BLOCK TRIPCOUP
             {point.coordinate for point in points},
         )
 
+    def test_exact6_pointwise_table_uses_exact6_components(self) -> None:
+        hhh = [component_row(1, 0.0, 0.0, "hhh", 10.0, 1.0)]
+        hhhbb = [component_row(1, 0.0, 0.0, "hhhbb", 2.0, 0.5)]
+        hhhh = [component_row(1, 0.0, 0.0, "hhhh", 3.0, 0.3)]
+        combined = scan.combine_component_rows(hhh, hhhbb)
+        ratios = scan.make_ratio_rows(hhhh, hhh, hhhbb, combined)
+        with tempfile.TemporaryDirectory() as temporary:
+            results_dir = Path(temporary)
+            scan.write_pointwise_ratio_tables(results_dir, ratios)
+            payload = json.loads(
+                (
+                    results_dir
+                    / f"{scan.EXACT6_PRIMARY_RATIO_STEM}.json"
+                ).read_text()
+            )
+            row = payload["rows"][0]
+            self.assertEqual(
+                payload["metadata"]["ratio"],
+                "hhhh_exact6/(hhh_exact6+hhhbb_exact6)",
+            )
+            self.assertEqual(
+                payload["metadata"]["tag_requirement"], "exactly 6"
+            )
+            self.assertIn("hhhh_sigma_exact6_pb", row)
+            self.assertNotIn("hhhh_sigma_ge6_pb", row)
+            self.assertTrue(
+                math.isclose(
+                    row[
+                        "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6"
+                    ],
+                    0.25,
+                )
+            )
+
     def test_zero_denominator_is_masked(self) -> None:
         value, error = scan.ratio_with_error(1.0, 0.1, 0.0, 0.0)
         self.assertTrue(math.isnan(value))
@@ -350,7 +423,7 @@ BLOCK TRIPCOUP
         self.assertIn("set /Herwig/Analysis/HwSim:PTCutJets 10.0", rendered)
         self.assertNotIn("DeltaR", rendered)
 
-    def test_both_ratio_plots_are_created_from_fixture(self) -> None:
+    def test_ratio_and_atlas_overlay_plots_are_created_from_fixture(self) -> None:
         try:
             import matplotlib  # noqa: F401
         except ImportError:
@@ -361,14 +434,15 @@ BLOCK TRIPCOUP
                 "d4": d4,
                 "primary": primary,
                 "diagnostic": diagnostic,
+                "exact6_primary": exact6_primary,
             }
-            for c3, d4, primary, diagnostic in (
-                (-10.0, -200.0, 0.008, 0.012),
-                (0.0, -200.0, 0.04, 0.06),
-                (10.0, -200.0, 0.2, 0.3),
-                (-10.0, 200.0, 0.08, 0.12),
-                (0.0, 200.0, 0.8, 1.2),
-                (10.0, 200.0, 12.0, 15.0),
+            for c3, d4, primary, diagnostic, exact6_primary in (
+                (-10.0, -200.0, 0.008, 0.012, 0.01),
+                (0.0, -200.0, 0.04, 0.06, 0.05),
+                (10.0, -200.0, 0.2, 0.3, 0.25),
+                (-10.0, 200.0, 0.08, 0.12, 0.1),
+                (0.0, 200.0, 0.8, 1.2, 1.0),
+                (10.0, 200.0, 12.0, 15.0, 14.0),
             )
         ]
         with tempfile.TemporaryDirectory() as temporary:
@@ -382,12 +456,29 @@ BLOCK TRIPCOUP
                 base / "diagnostic.pdf",
                 "Diagnostic fixture",
             )
-            for metadata in (first, second):
+            third = scan.plot_ratio_contours(
+                rows,
+                "exact6_primary",
+                base / "exact6_primary.pdf",
+                "Exactly-six fixture",
+            )
+            atlas = scan.plot_ratio_contours(
+                rows,
+                "exact6_primary",
+                base / "exact6_primary_atlas.pdf",
+                "Exactly-six fixture",
+                include_atlas=True,
+            )
+            for metadata in (first, second, third, atlas):
                 self.assertEqual(metadata["status"], "ok")
                 self.assertTrue(Path(metadata["output_pdf"]).is_file())
                 self.assertTrue(Path(metadata["output_png"]).is_file())
                 self.assertNotIn(0.05, metadata["visible_levels"])
                 self.assertIn(0.5, metadata["visible_levels"])
+                self.assertEqual(
+                    metadata["contour_level_styles"]["0.5"],
+                    {"color": "purple", "linestyle": "dashed"},
+                )
                 self.assertEqual(
                     metadata["interpolation"],
                     "C1 cubic triangular interpolation of log10(pointwise ratio)",
@@ -418,6 +509,99 @@ BLOCK TRIPCOUP
                     metadata["axes_box_aspect_ratio"],
                     1.5,
                 )
+            self.assertFalse(first["atlas_overlay"])
+            self.assertIsNone(first["atlas_reference_curve"])
+            self.assertTrue(atlas["atlas_overlay"])
+            self.assertIn(
+                "ATL-PHYS-PUB-2025-003.pdf",
+                atlas["atlas_reference_curve"]["source"],
+            )
+            self.assertEqual(
+                atlas["atlas_reference_curve"]["coordinate_system"],
+                (
+                    "digitized in kappa3,kappa4 and plotted as "
+                    "c3=kappa3-1, d4=kappa4-1"
+                ),
+            )
+
+    def test_make_plots_writes_three_plain_and_three_atlas_variants(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            results_dir = base / "results"
+            results_dir.mkdir()
+            with (results_dir / "ratio_points.csv").open(
+                "w", newline=""
+            ) as stream:
+                writer = csv.DictWriter(
+                    stream,
+                    fieldnames=(
+                        "c3",
+                        "d4",
+                        "ratio_hhhh_over_hhh_plus_hhhbb",
+                        "ratio_hhhh_over_hhh",
+                        "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6",
+                    ),
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "c3": 0.0,
+                        "d4": 0.0,
+                        "ratio_hhhh_over_hhh_plus_hhhbb": 0.1,
+                        "ratio_hhhh_over_hhh": 0.2,
+                        "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6": 0.3,
+                    }
+                )
+            paths = scan.AnalysisPaths(
+                source_repo=base,
+                mg5_process=base,
+                hhh_herwig_dir=base,
+                hhhh_herwig_dir=base,
+                hhhbb_workdir=base,
+                results_dir=results_dir,
+                analyzer=base / "analyzer",
+                points_file=base / "points.csv",
+            )
+            with mock.patch.object(
+                scan,
+                "plot_ratio_contours",
+                side_effect=lambda rows, value_field, output_pdf, title, **kwargs: {
+                    "output_pdf": str(output_pdf),
+                    "value_field": value_field,
+                    "title": title,
+                    "atlas_overlay": kwargs.get("include_atlas", False),
+                },
+            ) as plot:
+                payload = scan.make_plots(paths)
+
+            self.assertEqual(plot.call_count, 6)
+            output_stems = {
+                Path(call.args[2]).stem for call in plot.call_args_list
+            }
+            self.assertEqual(output_stems, set(scan.PLOT_STEMS))
+            self.assertEqual(
+                sum(
+                    call.kwargs.get("include_atlas", False)
+                    for call in plot.call_args_list
+                ),
+                3,
+            )
+            self.assertEqual(
+                {
+                    key
+                    for key, value in payload.items()
+                    if isinstance(value, dict)
+                    and "atlas_overlay" in value
+                },
+                {
+                    "primary",
+                    "diagnostic",
+                    "exact6_primary",
+                    "primary_atlas",
+                    "diagnostic_atlas",
+                    "exact6_primary_atlas",
+                },
+            )
 
     def test_ratio_contour_levels_and_title(self) -> None:
         self.assertEqual(
@@ -426,7 +610,7 @@ BLOCK TRIPCOUP
         )
         self.assertEqual(
             scan.RATIO_LEVEL_STYLES[0.5],
-            {"color": "blue", "linestyle": "dashed"},
+            {"color": "purple", "linestyle": "dashed"},
         )
         self.assertEqual(
             scan.FIDUCIAL_PLOT_TITLE,
@@ -434,6 +618,24 @@ BLOCK TRIPCOUP
                 r"Fiducial $\sigma(gg\rightarrow hhhh\geq 6b)"
                 r"/\sigma(gg\rightarrow hhh\geq 6b)$"
             ),
+        )
+        self.assertEqual(
+            scan.FIDUCIAL_EXACT6_PLOT_TITLE,
+            (
+                r"Fiducial $\sigma(gg\rightarrow hhhh,\,N_{b\mathrm{-tag}}=6)"
+                r"/\sigma(gg\rightarrow hhh,\,N_{b\mathrm{-tag}}=6)$"
+            ),
+        )
+        self.assertEqual(len(scan.PLOT_STEMS), 6)
+        self.assertTrue(
+            all(
+                f"{stem}{scan.ATLAS_PLOT_SUFFIX}" in scan.PLOT_STEMS
+                for stem in (
+                    scan.PRIMARY_PLOT_STEM,
+                    scan.DIAGNOSTIC_PLOT_STEM,
+                    scan.EXACT6_PRIMARY_PLOT_STEM,
+                )
+            )
         )
 
 
