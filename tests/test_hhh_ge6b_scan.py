@@ -386,7 +386,20 @@ BLOCK TRIPCOUP
                 self.assertEqual(metadata["status"], "ok")
                 self.assertTrue(Path(metadata["output_pdf"]).is_file())
                 self.assertTrue(Path(metadata["output_png"]).is_file())
-                self.assertEqual(metadata["extrapolation"], "none beyond triangulation convex hull")
+                self.assertEqual(
+                    metadata["interpolation"],
+                    "C1 cubic triangular interpolation of log10(pointwise ratio)",
+                )
+                self.assertLess(
+                    metadata[
+                        "point_interpolation_max_abs_log10_residual"
+                    ],
+                    1.0e-8,
+                )
+                self.assertIn(
+                    "outside the Delaunay convex hull",
+                    metadata["extrapolation"],
+                )
 
 
 if __name__ == "__main__":

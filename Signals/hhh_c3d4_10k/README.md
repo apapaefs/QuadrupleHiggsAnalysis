@@ -92,5 +92,7 @@ Results are written beneath `Signals/hhh_c3d4_10k/results/`, including:
 - `c3d4_hhhh_ge6btag_over_hhh_ge6btag_ratio_contours.pdf`;
 - matching PNG files, plot metadata, and validation metadata.
 
-The contour plots use a piecewise-linear triangulation of the measured
-pointwise ratios and do not extrapolate beyond the scan's convex hull.
+The contour plots use a C1-continuous cubic triangular interpolation of the
+logarithm of the measured pointwise ratios.  It reproduces every scan value,
+is masked outside the scan's Delaunay convex hull, and therefore smooths the
+rendered contour geometry without altering or extrapolating the point table.

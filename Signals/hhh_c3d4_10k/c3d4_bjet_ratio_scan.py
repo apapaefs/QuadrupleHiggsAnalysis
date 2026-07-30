@@ -58,6 +58,7 @@ RATIO_LEVEL_STYLES = {
 RATIO_FALLBACK_STYLE = {"color": "black", "linestyle": "solid"}
 PLOT_C3_RANGE = (-20.0, 20.0)
 PLOT_D4_RANGE = (-300.0, 300.0)
+CONTOUR_GRID_POINTS_PER_AXIS = 601
 HERWIG_TOTAL = re.compile(r"^Total:\s+(\d+)\s+\d+\s+(\S+)")
 PARENTHETICAL_VALUE = re.compile(
     r"^([+-]?(?:\d+(?:\.\d*)?|\.\d+))"
@@ -1209,7 +1210,54 @@ def plot_ratio_contours(
     x = np.asarray([item[0] for item in values], dtype=float)
     y = np.asarray([item[1] for item in values], dtype=float)
     z = np.asarray([item[2] for item in values], dtype=float)
-    triangulation = mtri.Triangulation(x, y)
+    c3_center = 0.5 * (PLOT_C3_RANGE[0] + PLOT_C3_RANGE[1])
+    d4_center = 0.5 * (PLOT_D4_RANGE[0] + PLOT_D4_RANGE[1])
+    c3_scale = 0.5 * (PLOT_C3_RANGE[1] - PLOT_C3_RANGE[0])
+    d4_scale = 0.5 * (PLOT_D4_RANGE[1] - PLOT_D4_RANGE[0])
+    scaled_x = (x - c3_center) / c3_scale
+    scaled_y = (y - d4_center) / d4_scale
+    point_log_values = np.log10(z)
+    triangulation = mtri.Triangulation(scaled_x, scaled_y)
+    interpolator = mtri.CubicTriInterpolator(
+        triangulation,
+        point_log_values,
+        kind="geom",
+    )
+    interpolated_points = np.ma.asarray(
+        interpolator(scaled_x, scaled_y)
+    )
+    if np.any(np.ma.getmaskarray(interpolated_points)):
+        raise ValueError("cubic interpolation masked one or more scan points")
+    interpolation_residual = float(
+        np.max(
+            np.abs(
+                np.asarray(interpolated_points, dtype=float)
+                - point_log_values
+            )
+        )
+    )
+    if interpolation_residual > 1.0e-8:
+        raise ValueError(
+            "cubic interpolation does not reproduce the pointwise ratios: "
+            f"maximum log10 residual {interpolation_residual:.6g}"
+        )
+
+    grid_scaled_x = np.linspace(
+        (PLOT_C3_RANGE[0] - c3_center) / c3_scale,
+        (PLOT_C3_RANGE[1] - c3_center) / c3_scale,
+        CONTOUR_GRID_POINTS_PER_AXIS,
+    )
+    grid_scaled_y = np.linspace(
+        (PLOT_D4_RANGE[0] - d4_center) / d4_scale,
+        (PLOT_D4_RANGE[1] - d4_center) / d4_scale,
+        CONTOUR_GRID_POINTS_PER_AXIS,
+    )
+    mesh_scaled_x, mesh_scaled_y = np.meshgrid(
+        grid_scaled_x, grid_scaled_y
+    )
+    grid_log_values = interpolator(mesh_scaled_x, mesh_scaled_y)
+    mesh_c3 = c3_center + c3_scale * mesh_scaled_x
+    mesh_d4 = d4_center + d4_scale * mesh_scaled_y
     visible_levels = [
         level
         for level in RATIO_LEVELS
@@ -1226,10 +1274,12 @@ def plot_ratio_contours(
         for level in visible_levels
     }
     if visible_levels:
-        contour = axis.tricontour(
-            triangulation,
-            z,
-            levels=visible_levels,
+        log_levels = np.log10(visible_levels)
+        contour = axis.contour(
+            mesh_c3,
+            mesh_d4,
+            grid_log_values,
+            levels=log_levels,
             colors=[
                 contour_styles[level]["color"] for level in visible_levels
             ],
@@ -1241,7 +1291,10 @@ def plot_ratio_contours(
         )
         axis.clabel(
             contour,
-            fmt={level: f"{level:.2g}" for level in visible_levels},
+            fmt={
+                math.log10(level): f"{level:.2g}"
+                for level in visible_levels
+            },
             inline=True,
             fontsize=11,
         )
@@ -1249,7 +1302,7 @@ def plot_ratio_contours(
     axis.set_ylim(PLOT_D4_RANGE)
     axis.set_xlabel(r"$c_3$", fontsize=20)
     axis.set_ylabel(r"$d_4$", fontsize=20)
-    axis.set_title(title + " at 14 TeV", fontsize=20)
+    axis.set_title(title + " at 14 TeV", fontsize=18)
     axis.tick_params(axis="both", labelsize=15)
     fig.savefig(output_pdf)
     fig.savefig(output_png, dpi=220)
@@ -1267,8 +1320,25 @@ def plot_ratio_contours(
             f"{level:.2g}": contour_styles[level]
             for level in visible_levels
         },
-        "interpolation": "piecewise-linear matplotlib triangulation",
-        "extrapolation": "none beyond triangulation convex hull",
+        "interpolation": (
+            "C1 cubic triangular interpolation of log10(pointwise ratio)"
+        ),
+        "interpolation_kind": "matplotlib CubicTriInterpolator kind=geom",
+        "interpolation_grid_points_per_axis": (
+            CONTOUR_GRID_POINTS_PER_AXIS
+        ),
+        "interpolation_coordinate_scaling": {
+            "c3_center": c3_center,
+            "c3_scale": c3_scale,
+            "d4_center": d4_center,
+            "d4_scale": d4_scale,
+        },
+        "point_interpolation_max_abs_log10_residual": (
+            interpolation_residual
+        ),
+        "extrapolation": (
+            "none; interpolator is masked outside the Delaunay convex hull"
+        ),
     }
 
 
@@ -1279,14 +1349,14 @@ def make_plots(paths: AnalysisPaths) -> dict[str, object]:
         rows,
         "ratio_hhhh_over_hhh_plus_hhhbb",
         paths.results_dir / f"{PRIMARY_PLOT_STEM}.pdf",
-        r"$\sigma(hhhh,\geq6b)/[\sigma(hhh,\geq6b)+"
-        r"\sigma(hhh+b\bar b,\geq6b)]$",
+        r"$\frac{\sigma(hhhh,\geq6b)}"
+        r"{\sigma(hhh,\geq6b)+\sigma(hhh+b\bar b,\geq6b)}$",
     )
     diagnostic = plot_ratio_contours(
         rows,
         "ratio_hhhh_over_hhh",
         paths.results_dir / f"{DIAGNOSTIC_PLOT_STEM}.pdf",
-        r"$\sigma(hhhh,\geq6b)/\sigma(hhh,\geq6b)$",
+        r"$\frac{\sigma(hhhh,\geq6b)}{\sigma(hhh,\geq6b)}$",
     )
     payload = {
         "combination_scheme": "additive_unmatched",
