@@ -654,6 +654,17 @@ interpolation remains the assumption-minimal reference; Clough--Tocher is a
 smooth presentation and robustness comparison rather than additional physics
 information.
 
+At the end of a study, the runner also reports the expected 95% CL constraint
+on \(d_4\) at fixed \(c_3=0\).  This one-dimensional result uses the directly
+scanned \(c_3=0\) points and piecewise-linear interpolation of
+\(\log_{10}[\sigma/\sigma_{95}]\); it therefore does not depend on the optional
+Clough--Tocher presentation smoothing.  The headline uses the primary
+strategy's pyhf shape limit when the shape stage is enabled and its exact cut
+limit otherwise.  All strategy and limit variants, their crossings, allowed
+intervals and scan-boundary flags are written to
+`d4_constraints_c3_0.json`, and the headline interval is retained in
+`study_summary.json` and `method_manifest.json`.
+
 `--no-c3d4-xsec-overlay` still writes the white-background contour with the
 SM, unitarity and ATLAS overlays.  The colored variants require the same MG5
 Chebyshev cross-section surface as the legacy analysis; if that source is
@@ -673,6 +684,12 @@ The retained legacy command is, for example,
 ```bash
 python 4h_analyzer.py --run-c3d4-limit-scan
 ```
+
+This command likewise prints a final expected 95% CL \(d_4\) interval at
+\(c_3=0\).  In the retained workflow the interval is obtained by solving the
+central fitted Chebyshev \(\sigma\times\epsilon\) surface over its full fitted
+\(d_4\) domain; its machine-readable record is stored under
+`metadata.d4_constraint_c3_0` in `c3d4_limit_scan.json`.
 
 The full v2 study is run in the ROOT/Python environment containing ROOT,
 XGBoost, pyhf 0.7.6 and Optuna 4.9.0:

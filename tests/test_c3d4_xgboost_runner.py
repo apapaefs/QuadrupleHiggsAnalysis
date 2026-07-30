@@ -596,6 +596,19 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
             self.assertTrue(manifest["uses_complete_event_samples"])
             self.assertTrue(summary["paper_ready"])
             self.assertTrue(summary["manifest"]["paper_ready"])
+            self.assertIn("d4_constraint_c3_0", manifest)
+            self.assertEqual(
+                summary["d4_constraint_c3_0"],
+                manifest["d4_constraint_c3_0"],
+            )
+            constraint_file = output / "d4_constraints_c3_0.json"
+            self.assertTrue(constraint_file.exists())
+            constraints = json.loads(constraint_file.read_text())
+            self.assertEqual(constraints["fixed_c3"], 0.0)
+            self.assertEqual(
+                constraints["headline"],
+                manifest["d4_constraint_c3_0"],
+            )
 
     def test_fast_sm_run_accepts_a_dynamic_grid_and_skips_tuning(self):
         with tempfile.TemporaryDirectory() as directory, mocked_mode_study_pipeline(

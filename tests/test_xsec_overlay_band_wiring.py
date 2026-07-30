@@ -62,6 +62,26 @@ class HHHHXsecOverlayBandWiringTests(unittest.TestCase):
 
         self.assertIn("hbb_branching_ratio", argument_names)
 
+    def test_limit_scan_records_and_cli_prints_fixed_c3_d4_constraint(self):
+        tree = _module_tree()
+        scan_writer = _function_def(tree, "write_c3d4_limit_scan")
+        called_names = {
+            node.func.id
+            for node in ast.walk(scan_writer)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        string_constants = {
+            node.value
+            for node in ast.walk(scan_writer)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
+
+        self.assertIn("chebyshev_fit_d4_constraint", called_names)
+        self.assertIn("d4_constraint_c3_0", string_constants)
+        analyzer_text = (REPO_DIR / "4h_analyzer.py").read_text()
+        self.assertIn('limit_scan_result["metadata"]["d4_constraint_c3_0"]', analyzer_text)
+        self.assertIn("format_d4_constraint(", analyzer_text)
+
     def test_hhhh_xsec_overlay_uses_requested_perturbative_unitarity_label(self):
         module_text = MODULE_PATH.read_text()
         self.assertIn(r"Perturbative unitarity, $hh \rightarrow hh$", module_text)

@@ -2613,6 +2613,7 @@ def _run_c3d4_xgboost_study_cli_impl(args):
         StudyProgress,
         _resolve_study_mode,
         _validate_study_output_mode,
+        format_d4_constraint,
         run_c3d4_study,
     )
 
@@ -2877,6 +2878,7 @@ def _run_c3d4_xgboost_study_cli_impl(args):
         write_input_report=not args.no_sample_report,
     )
     print("v2 study complete; selected profile =", summary["selected_feature_profile"])
+    print(format_d4_constraint(summary["d4_constraint_c3_0"]))
     return 0
 
 
@@ -3497,6 +3499,7 @@ def _run_local_xgboost_cli():
         write_sample_report,
         write_c3d4_limit_scan,
     )
+    from c3d4_constraints import format_d4_constraint
 
     if args.run_c3d4_limit_scan:
         (
@@ -3829,7 +3832,7 @@ def _run_local_xgboost_cli():
             )
             _print_sm_hhbbbb_summary(hhbbbb_score_rows)
             rows_for_limit = combine_signal_component_rows(scored_rows, hhhbb_score_rows, hhbbbb_score_rows)
-        write_c3d4_limit_scan(
+        limit_scan_result = write_c3d4_limit_scan(
             rows_for_limit,
             output_dir=args.c3d4_scan_outdir,
             background_events=background_events,
@@ -3879,6 +3882,11 @@ def _run_local_xgboost_cli():
                 luminosity=args.luminosity,
                 max_events=args.max_events,
             )
+        print(
+            format_d4_constraint(
+                limit_scan_result["metadata"]["d4_constraint_c3_0"]
+            )
+        )
         return 0
 
     score_inputs = []

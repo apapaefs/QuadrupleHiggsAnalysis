@@ -28,6 +28,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 
+from c3d4_constraints import fixed_c3_scan_constraint, format_d4_constraint
 from c3d4_xgboost_study import (
     NoValidThresholdError,
     background_threshold_scan,
@@ -6374,6 +6375,64 @@ def _run_c3d4_study_impl(
             study_mode=mode_policy.name,
         )
 
+    d4_constraints_c3_0: dict[str, dict[str, Any]] = {}
+    for strategy, result in strategy_results.items():
+        strategy_constraints = {
+            "cut": fixed_c3_scan_constraint(
+                result["aggregate"],
+                limit_key="cut_sigma95_fb",
+                c3=0.0,
+                confidence_level=0.95,
+                strategy=strategy,
+                limit_kind="exact CLs cut",
+            )
+        }
+        if run_shape:
+            strategy_constraints["shape"] = fixed_c3_scan_constraint(
+                result["aggregate"],
+                limit_key="shape_sigma95_fb",
+                c3=0.0,
+                confidence_level=0.95,
+                strategy=strategy,
+                limit_kind="pyhf CLs shape",
+            )
+        d4_constraints_c3_0[strategy] = strategy_constraints
+
+    headline_strategy = (
+        training_strategy
+        if training_strategy in d4_constraints_c3_0
+        else primary_base_strategy
+    )
+    headline_limit_kind = "shape" if run_shape else "cut"
+    headline_d4_constraint_c3_0 = dict(
+        d4_constraints_c3_0[headline_strategy][headline_limit_kind]
+    )
+    headline_d4_constraint_c3_0.update(
+        {
+            "study_mode": mode_policy.name,
+            "result_level": mode_policy.result_level,
+            "physics_result_valid": mode_policy.physics_result_valid,
+            "paper_ready": mode_policy.paper_ready,
+            "selection_reason": (
+                "requested training strategy"
+                if headline_strategy == training_strategy
+                else "requested parameterized strategy unavailable; using pooled baseline"
+            ),
+        }
+    )
+    d4_constraint_file = output_dir / "d4_constraints_c3_0.json"
+    _write_json_atomic(
+        d4_constraint_file,
+        {
+            "confidence_level": 0.95,
+            "fixed_c3": 0.0,
+            "headline_strategy": headline_strategy,
+            "headline_limit_kind": headline_limit_kind,
+            "headline": headline_d4_constraint_c3_0,
+            "strategies": d4_constraints_c3_0,
+        },
+    )
+
     sample_manifests = []
     for sample in [*sm_samples, *grid_samples, *background_samples]:
         item = _sample_manifest(sample, input_hash=input_hashes[str(sample.path)])
@@ -6392,6 +6451,7 @@ def _run_c3d4_study_impl(
             strategy: result.get("map_outputs")
             for strategy, result in strategy_results.items()
         },
+        "d4_constraints_c3_0": str(d4_constraint_file),
     }
     if input_observable_report is not None:
         output_manifest["input_observable_report"] = input_observable_report
@@ -6418,6 +6478,8 @@ def _run_c3d4_study_impl(
             "feature_profile_selection": selection,
             "strategies_completed": list(strategy_results),
             "parameterized_gate": gate,
+            "d4_constraint_c3_0": headline_d4_constraint_c3_0,
+            "d4_constraints_c3_0": d4_constraints_c3_0,
             "inputs": sample_manifests,
             "fold_assignment_sha256": fold_digest,
             "outputs": output_manifest,
@@ -6442,6 +6504,8 @@ def _run_c3d4_study_impl(
             for strategy, result in strategy_results.items()
         },
         "parameterized_gate": gate,
+        "d4_constraint_c3_0": headline_d4_constraint_c3_0,
+        "d4_constraints_c3_0": d4_constraints_c3_0,
     }
     _write_json(output_dir / "study_summary.json", summary)
     progress.emit(
@@ -6453,6 +6517,7 @@ def _run_c3d4_study_impl(
         paper_ready=mode_policy.paper_ready,
         selected_profile=selected_profile,
         strategies=list(strategy_results),
+        d4_constraint_c3_0=headline_d4_constraint_c3_0,
     )
     return summary
 
@@ -7349,6 +7414,7 @@ __all__ = [
     "StudyModePolicy",
     "StudyProgress",
     "ZeroSplitModelError",
+    "format_d4_constraint",
     "replot_c3d4_study_contours",
     "run_c3d4_study",
     "write_c3d4_input_report_from_manifest",

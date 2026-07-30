@@ -23,6 +23,7 @@ from sklearn.metrics import roc_curve
 import pickle
 from tqdm.auto import tqdm
 
+from c3d4_constraints import chebyshev_fit_d4_constraint
 # functions to load root varfiles from HwSim
 from read_root_varfiles import *
 from observable_schemas import LEGACY_SCHEMA_ID, validate_model_contract
@@ -3774,6 +3775,19 @@ def write_c3d4_limit_scan(
         else:
             print("Chebyshev fit skipped:", fit_metadata.get("reason", "unknown reason"))
 
+    d4_constraint_c3_0 = chebyshev_fit_d4_constraint(
+        fit_metadata,
+        target_value=(
+            required_signal_events / float(luminosity)
+            if luminosity > 0.0
+            else float("nan")
+        ),
+        c3=0.0,
+        confidence_level=poisson_confidence_level,
+        strategy="legacy Chebyshev fit",
+        limit_kind=f"Poisson {poisson_method_label}",
+    )
+
     fieldnames = [
         "file",
         "signal_components",
@@ -3909,6 +3923,7 @@ def write_c3d4_limit_scan(
         "hhhh_xsec_overlay": hhhh_xsec_overlay_metadata,
         "hhhh_xsec_atlas_overlay_no_ratio_contours": hhhh_xsec_atlas_overlay_no_ratio_contours_metadata,
         "hhhh_over_hhh_ratio_contours": hhhh_over_hhh_ratio_contours_metadata,
+        "d4_constraint_c3_0": d4_constraint_c3_0,
         "outputs": outputs,
     }
     with open(fit_json, "w") as handle:
