@@ -3745,8 +3745,8 @@ def _run_local_xgboost_cli():
     parser.add_argument("--c3d4-fit-k4-max", type=float, default=701.0, help="Maximum k4=1+d4 used to scale the Chebyshev fit.")
     parser.add_argument("--c3d4-plot-c3-min", type=float, default=-20.0, help="Minimum c3 shown in the fitted limit plot.")
     parser.add_argument("--c3d4-plot-c3-max", type=float, default=20.0, help="Maximum c3 shown in the fitted limit plot.")
-    parser.add_argument("--c3d4-plot-d4-min", type=float, default=-500.0, help="Minimum d4 shown in the fitted limit plot.")
-    parser.add_argument("--c3d4-plot-d4-max", type=float, default=500.0, help="Maximum d4 shown in the fitted limit plot.")
+    parser.add_argument("--c3d4-plot-d4-min", type=float, default=-300.0, help="Minimum d4 shown in the fitted limit plot.")
+    parser.add_argument("--c3d4-plot-d4-max", type=float, default=300.0, help="Maximum d4 shown in the fitted limit plot.")
     parser.add_argument("--c3d4-plot-nbins", type=int, default=301, help="Number of bins per axis for fitted c3/d4 plots.")
     parser.add_argument(
         "--c3d4-contour-interpolation",
