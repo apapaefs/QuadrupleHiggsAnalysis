@@ -46,6 +46,9 @@ ABS_ETA_CUT = 2.5
 SMEARING_SEED = 14101983
 XSEC_RELATIVE_TOLERANCE = 5.0e-4
 HHHBB_XSEC_RELATIVE_TOLERANCE = 5.0e-3
+# consolidated_sources.json records analysis_xsec_fb to 12 significant
+# decimal digits, whereas merge_summary.json keeps the full binary value.
+HHHBB_CONSOLIDATED_RELATIVE_TOLERANCE = 5.0e-12
 RATIO_LEVELS = (0.01, 0.05, 0.1, 1.0, 10.0)
 RATIO_LEVEL_STYLES = {
     0.01: {"color": "black", "linestyle": "dotted"},
@@ -527,9 +530,11 @@ def normalization(sample: SampleInput) -> dict[str, object]:
             f"Stage-2 Herwig records {stage2_events} events, "
             f"expected {sample.expected_events}"
         )
-    if relative_difference > 1.0e-12:
+    if relative_difference > HHHBB_CONSOLIDATED_RELATIVE_TOLERANCE:
         issues.append(
-            "consolidated HHHbb cross section differs from merge summary"
+            "consolidated HHHbb cross section differs from merge summary "
+            f"by {relative_difference:.6g}, exceeding rounded-metadata "
+            f"tolerance {HHHBB_CONSOLIDATED_RELATIVE_TOLERANCE:.6g}"
         )
     if herwig_relative_difference > HHHBB_XSEC_RELATIVE_TOLERANCE:
         issues.append(

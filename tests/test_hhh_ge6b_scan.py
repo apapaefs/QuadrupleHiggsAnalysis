@@ -220,6 +220,44 @@ BLOCK TRIPCOUP
                 normalization["probe_trial_weight_correction_applied"]
             )
 
+    def test_hhhbb_consolidated_rounding_is_not_an_audit_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            merge_summary = base / "merge_summary.json"
+            merge_summary.write_text(
+                """{
+  "merged_xsec_pb": 1.1266428831753292e-4,
+  "merged_xsec_error_pb": 1.0e-7,
+  "total_events": 10000
+}
+"""
+            )
+            herwig_out = base / "stage2.out"
+            herwig_out.write_text(
+                "Total: 10000 10000 0.11266(1)e-06\n"
+            )
+            sample = scan.SampleInput(
+                process="hhhbb",
+                point=campaign.Point(1, "0.0", "0.0", "fixture", 1),
+                run_name="fixture",
+                root_file=base / "unused.root",
+                hbb_power=3,
+                expected_events=10_000,
+                herwig_out=herwig_out,
+                merge_summary=merge_summary,
+                consolidated_xsec_fb=0.112664288318,
+            )
+            normalization = scan.normalization(sample)
+            relative_difference = float(
+                normalization["relative_difference"]
+            )
+            self.assertGreater(relative_difference, 1.0e-12)
+            self.assertLess(
+                relative_difference,
+                scan.HHHBB_CONSOLIDATED_RELATIVE_TOLERANCE,
+            )
+            self.assertEqual(normalization["status"], "ok")
+
     def test_additive_unmatched_denominator_and_ratios(self) -> None:
         hhh = [component_row(1, 0.0, 0.0, "hhh", 10.0, 1.0)]
         hhhbb = [component_row(1, 0.0, 0.0, "hhhbb", 2.0, 0.5)]
