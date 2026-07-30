@@ -6,11 +6,18 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import json
 import math
 from pathlib import Path
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+METHOD_VERSION = "resonance-hybrid-v1.2-uniform-fourvector-smearing"
+PREPROCESSING_VERSION = "resonance-preprocessing-v2"
+SMEARING_MODEL_ID = "cms-energy-uniform-fourvector-v1"
+DEFAULT_FEATURE_BASE = Path("ResonanceAnalysis/features") / SMEARING_MODEL_ID
 
 
 def _resolve(root: Path, value: str) -> Path:
@@ -49,7 +56,8 @@ def _validate_feature_pair(
         expected_events = min(expected_events, max_events)
     checks = {
         "schema": summary.get("schema") == "resonance-hybrid-v1",
-        "method_version": summary.get("method_version") == "resonance-hybrid-v1.1-leading-composition",
+        "method_version": summary.get("method_version") == METHOD_VERSION,
+        "preprocessing_version": summary.get("preprocessing_version") == PREPROCESSING_VERSION,
         "input": Path(str(summary.get("input", ""))).resolve() == input_path.resolve(),
         "events_requested": int(summary.get("events_requested", -1)) == expected_events,
         "c_mistags": int(summary.get("c_mistags", -1)) == c_mistags,
@@ -57,6 +65,90 @@ def _validate_feature_pair(
         "max_reco_jets": int(summary.get("max_reco_true_bjets", -1)) == max_reco_jets,
         "smearing": bool(summary.get("smearing", {}).get("enabled")) == (not no_smear),
         "seed": int(summary.get("smearing", {}).get("seed", -1)) == expected_seed,
+        "smearing_preprocessing_version": (
+            summary.get("smearing", {}).get("preprocessing_version") == PREPROCESSING_VERSION
+        ),
+        "smearing_model_id": summary.get("smearing", {}).get("model_id") == SMEARING_MODEL_ID,
+        "fourvector_scaling": (
+            summary.get("smearing", {}).get("fourvector_scaling") == "uniform_correlated"
+        ),
+        "correlated_mass_scaling": (
+            summary.get("smearing", {}).get("correlated_mass_scaling") is True
+        ),
+        "mass_not_fixed": summary.get("smearing", {}).get("preserves_jet_mass") is False,
+        "one_gaussian_draw": (
+            int(summary.get("smearing", {}).get("gaussian_draws_per_jet", -1)) == 1
+        ),
+        "energy_floor": math.isclose(
+            float(summary.get("smearing", {}).get("energy_floor_gev", math.nan)),
+            1.0e-6,
+            rel_tol=0.0,
+            abs_tol=0.0,
+        ),
+        "eta_preselection": (
+            summary.get("smearing", {}).get("eta_preselection")
+            == "finite |eta|<2.5 before smearing"
+        ),
+        "pt_threshold": (
+            summary.get("smearing", {}).get("pt_threshold") == "smeared pT>20 GeV"
+        ),
+        "smear_before_pt_threshold": (
+            summary.get("smearing", {}).get("smear_before_pt_threshold") is True
+        ),
+        "acceptance_order": (
+            summary.get("smearing", {}).get("acceptance_order")
+            == "raw_abs_eta_then_smear_then_smeared_pt"
+        ),
+        "migration_diagnostics": all(
+            isinstance(summary.get("diagnostics", {}).get(name), int)
+            and summary["diagnostics"][name] >= 0
+            for name in (
+                "true_b_upward_pt_migrations",
+                "true_b_downward_pt_migrations",
+                "non_b_upward_pt_migrations",
+                "non_b_downward_pt_migrations",
+            )
+        ),
+        "upward_migration_pt_bins": all(
+            isinstance(summary.get("diagnostics", {}).get(name), dict)
+            and set(summary["diagnostics"][name])
+            == {"[10,12)", "[12,15)", "[15,20]"}
+            and all(
+                isinstance(value, int) and value >= 0
+                for value in summary["diagnostics"][name].values()
+            )
+            for name in (
+                "true_b_upward_pt_migrations_by_raw_pt_gev",
+                "non_b_upward_pt_migrations_by_raw_pt_gev",
+            )
+        ),
+        "upward_migration_pt_bin_sums": all(
+            isinstance(summary.get("diagnostics", {}).get(total_name), int)
+            and isinstance(summary.get("diagnostics", {}).get(bins_name), dict)
+            and all(
+                isinstance(value, int)
+                for value in summary["diagnostics"][bins_name].values()
+            )
+            and sum(summary["diagnostics"][bins_name].values())
+            == summary["diagnostics"][total_name]
+            for total_name, bins_name in (
+                (
+                    "true_b_upward_pt_migrations",
+                    "true_b_upward_pt_migrations_by_raw_pt_gev",
+                ),
+                (
+                    "non_b_upward_pt_migrations",
+                    "non_b_upward_pt_migrations_by_raw_pt_gev",
+                ),
+            )
+        ),
+        "mass_scaling_diagnostic": math.isfinite(
+            float(
+                summary.get("diagnostics", {}).get(
+                    "max_smearing_mass_scaling_residual_gev", math.nan
+                )
+            )
+        ),
         "tag_efficiencies": summary.get("tag_efficiencies_applied") is False,
     }
     failed = [name for name, passed in checks.items() if not passed]
@@ -130,6 +222,7 @@ def _signal_jobs(
 def _background_jobs(
     analysis_root: Path,
     manifest: Path,
+    output_base: Path,
     only: set[str],
 ) -> list[dict[str, object]]:
     with manifest.open(newline="") as handle:
@@ -148,12 +241,59 @@ def _background_jobs(
                 "id": sample_id,
                 "kind": row.get("role", "background"),
                 "input": _resolve(analysis_root, row["raw_root"]).resolve(),
-                "output": _resolve(analysis_root, row["root_file"]).resolve(),
+                "output": (output_base / f"{sample_id}_resonance.root").resolve(),
                 "c_mistags": int(row.get("c_mistags", 0) or 0),
                 "light_mistags": int(row.get("light_mistags", 0) or 0),
             }
         )
     return jobs
+
+
+def _versioned_background_manifest_text(
+    source_manifest: Path,
+    analysis_root: Path,
+    output_base: Path,
+) -> str:
+    analysis_root = analysis_root.resolve()
+    with source_manifest.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+        fieldnames = list(reader.fieldnames or [])
+    if "root_file" not in fieldnames:
+        raise RuntimeError(f"{source_manifest} has no root_file column")
+    for row in rows:
+        sample_id = row.get("sample_id", "").strip()
+        if not sample_id:
+            raise RuntimeError(f"{source_manifest} contains a row without sample_id")
+        output = (output_base / f"{sample_id}_resonance.root").resolve()
+        try:
+            row["root_file"] = str(output.relative_to(analysis_root))
+        except ValueError:
+            row["root_file"] = str(output)
+    stream = io.StringIO(newline="")
+    writer = csv.DictWriter(stream, fieldnames=fieldnames, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    return stream.getvalue()
+
+
+def _write_versioned_background_manifest(
+    source_manifest: Path,
+    target_manifest: Path,
+    analysis_root: Path,
+    output_base: Path,
+) -> None:
+    content = _versioned_background_manifest_text(
+        source_manifest, analysis_root, output_base
+    )
+    if target_manifest.exists():
+        if target_manifest.read_text() != content:
+            raise RuntimeError(
+                f"refusing to replace incompatible resolved manifest {target_manifest}"
+            )
+        return
+    target_manifest.parent.mkdir(parents=True, exist_ok=True)
+    target_manifest.write_text(content, encoding="utf-8")
 
 
 def _run_job(
@@ -264,7 +404,20 @@ def main() -> int:
     parser.add_argument(
         "--signal-output-dir",
         type=Path,
-        default=Path("ResonanceAnalysis/features"),
+        default=DEFAULT_FEATURE_BASE,
+    )
+    parser.add_argument(
+        "--background-output-dir",
+        type=Path,
+        default=DEFAULT_FEATURE_BASE / "backgrounds",
+    )
+    parser.add_argument(
+        "--resolved-background-manifest",
+        type=Path,
+        help=(
+            "Non-overwriting manifest with root_file paths redirected to the versioned "
+            "background feature directory; defaults beside the input manifest"
+        ),
     )
     parser.add_argument("--executable", type=Path, default=Path("Code/FourHiggsResonanceAnalysis"))
     parser.add_argument("--workers", type=int, default=8)
@@ -282,6 +435,9 @@ def main() -> int:
     resolve_arg = lambda path: path.expanduser().resolve() if path.is_absolute() else (root / path).resolve()
     jobs: list[dict[str, object]] = []
     only = set(args.only)
+    background_manifest: Path | None = None
+    resolved_background_manifest: Path | None = None
+    background_output_dir = resolve_arg(args.background_output_dir)
     if args.kind in {"all", "signals"}:
         jobs.extend(
             _signal_jobs(
@@ -294,7 +450,16 @@ def main() -> int:
             )
         )
     if args.kind in {"all", "backgrounds"}:
-        jobs.extend(_background_jobs(root, resolve_arg(args.background_manifest), only))
+        background_manifest = resolve_arg(args.background_manifest)
+        if args.resolved_background_manifest is None:
+            resolved_background_manifest = background_manifest.with_name(
+                f"{background_manifest.stem}_{SMEARING_MODEL_ID}.csv"
+            )
+        else:
+            resolved_background_manifest = resolve_arg(args.resolved_background_manifest)
+        jobs.extend(
+            _background_jobs(root, background_manifest, background_output_dir, only)
+        )
     if not jobs:
         raise SystemExit("no feature jobs selected")
 
@@ -303,7 +468,7 @@ def main() -> int:
         raise SystemExit(f"extractor not found: {executable}; build it with make -C Code FourHiggsResonanceAnalysis")
     records: list[dict[str, object]] = []
     failures: list[str] = []
-    log_dir = root / "ResonanceAnalysis" / "logs" / "features"
+    log_dir = root / "ResonanceAnalysis" / "logs" / "features" / SMEARING_MODEL_ID
     with ThreadPoolExecutor(max_workers=min(args.workers, len(jobs))) as pool:
         futures = {
             pool.submit(
@@ -330,7 +495,11 @@ def main() -> int:
 
     records.sort(key=lambda item: (str(item["kind"]), str(item["id"])))
     if not args.dry_run:
-        status = root / "ResonanceAnalysis" / "feature_campaign_status.json"
+        status = (
+            root
+            / "ResonanceAnalysis"
+            / f"feature_campaign_status_{SMEARING_MODEL_ID}.json"
+        )
         status.parent.mkdir(parents=True, exist_ok=True)
         previous_records: list[dict[str, object]] = []
         if status.is_file():
@@ -347,12 +516,32 @@ def main() -> int:
         merged_records = sorted(
             merged.values(), key=lambda item: (str(item.get("kind", "")), str(item.get("id", "")))
         )
-        status.write_text(
-            json.dumps({"samples": merged_records, "last_run_failures": failures}, indent=2) + "\n"
-        )
+        status_payload = {
+            "method_version": METHOD_VERSION,
+            "preprocessing_version": PREPROCESSING_VERSION,
+            "smearing_model_id": SMEARING_MODEL_ID,
+            "samples": merged_records,
+            "last_run_failures": failures,
+        }
+        if resolved_background_manifest is not None:
+            status_payload["resolved_background_manifest"] = str(
+                resolved_background_manifest
+            )
+        status.write_text(json.dumps(status_payload, indent=2) + "\n")
         print(f"Status: {status}")
     if failures:
         raise SystemExit("; ".join(failures))
+    if background_manifest is not None and resolved_background_manifest is not None:
+        if args.dry_run:
+            print(f"Resolved background manifest would be: {resolved_background_manifest}")
+        else:
+            _write_versioned_background_manifest(
+                background_manifest,
+                resolved_background_manifest,
+                root,
+                background_output_dir,
+            )
+            print(f"Resolved background manifest: {resolved_background_manifest}")
     return 0
 
 

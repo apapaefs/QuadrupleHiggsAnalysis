@@ -20,6 +20,15 @@ analysis = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = analysis
 SPEC.loader.exec_module(analysis)
 
+PREPARE_MODULE_PATH = Path(__file__).resolve().parents[1] / "prepare_resonance_features.py"
+PREPARE_SPEC = importlib.util.spec_from_file_location(
+    "prepare_resonance_features", PREPARE_MODULE_PATH
+)
+assert PREPARE_SPEC and PREPARE_SPEC.loader
+prepare = importlib.util.module_from_spec(PREPARE_SPEC)
+sys.modules[PREPARE_SPEC.name] = prepare
+PREPARE_SPEC.loader.exec_module(prepare)
+
 
 def synthetic_table(nmerged: np.ndarray | None = None) -> analysis.EventTable:
     nmerged = np.asarray([0, 1, 2, 3, 4] if nmerged is None else nmerged, dtype=int)
@@ -64,6 +73,7 @@ def synthetic_loaded_sample(
     nmerged: np.ndarray | None = None,
     luminosity: float = analysis.LUMINOSITY_FB,
     hbb_branching_ratio: float = analysis.HBB_BRANCHING_RATIO,
+    hbb_power: int = 4,
     eps_b: float = analysis.EPS_B,
     eps_c: float = analysis.EPS_C,
     eps_light: float = analysis.EPS_LIGHT,
@@ -79,7 +89,7 @@ def synthetic_loaded_sample(
         generated_cross_section_fb=1.0 if role == "signal" else 2.0,
         cross_section_source="synthetic",
         k_factor=1.0 if role == "signal" else 2.0,
-        hbb_power=4,
+        hbb_power=hbb_power,
         rate_factor=1.0,
         c_mistags=0,
         light_mistags=0,
@@ -138,6 +148,359 @@ class MassPointTests(unittest.TestCase):
                     "{run_name}.root",
                 )
 
+
+class BackgroundManifestTests(unittest.TestCase):
+    @staticmethod
+    def _write_manifest(
+        directory: Path,
+        hhhbb_power: int = 3,
+    ) -> Path:
+        rows = [
+            {
+                "sample_id": "sm_hhhh",
+                "role": "sm_hhhh",
+                "root_file": "sm_hhhh.root",
+                "cross_section_fb": "0.001",
+                "generated_events": "10",
+                "hbb_power": "4",
+            },
+            {
+                "sample_id": "sm_hhhbb",
+                "role": "sm_hhhbb",
+                "root_file": "sm_hhhbb.root",
+                "cross_section_fb": "0.002",
+                "generated_events": "10",
+                "hbb_power": str(hhhbb_power),
+            },
+            {
+                "sample_id": "sm_hh4b",
+                "role": "sm_hh4b",
+                "root_file": "sm_hh4b.root",
+                "cross_section_fb": "0.003",
+                "generated_events": "10",
+                "hbb_power": "2",
+            },
+        ]
+        for row in rows:
+            (directory / row["root_file"]).touch()
+        manifest = directory / "backgrounds.csv"
+        with manifest.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=tuple(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+        return manifest
+
+    def test_sm_multihiggs_roles_use_their_physical_hbb_powers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            specs, missing = analysis.load_background_specs(
+                self._write_manifest(directory),
+                directory,
+                default_k_factor=2.0,
+            )
+            self.assertEqual(missing, [])
+            self.assertEqual(
+                {spec.role: spec.hbb_power for spec in specs},
+                analysis.SM_BACKGROUND_HBB_POWERS,
+            )
+            analysis.require_full_sm_background_roles(specs)
+            with self.assertRaises(analysis.AnalysisInputError):
+                analysis.require_full_sm_background_roles(specs[:-1])
+
+    def test_sm_hhhbb_rejects_four_higgs_branching_power(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            with self.assertRaisesRegex(
+                analysis.AnalysisInputError,
+                "sm_hhhbb must use hbb_power=3",
+            ):
+                analysis.load_background_specs(
+                    self._write_manifest(directory, hhhbb_power=4),
+                    directory,
+                    default_k_factor=2.0,
+                )
+
+class FeatureCampaignContractTests(unittest.TestCase):
+    def _summary(self, sample_id: str, input_path: Path, method_version: str) -> dict:
+        seed = prepare._seed(sample_id)
+        counter = {"events": 1, "sumw": 1.0, "sumw2": 1.0}
+        return {
+            "schema": "resonance-hybrid-v1",
+            "method_version": method_version,
+            "preprocessing_version": prepare.PREPROCESSING_VERSION,
+            "input": str(input_path.resolve()),
+            "events_available": 1,
+            "events_requested": 1,
+            "c_mistags": 0,
+            "light_mistags": 0,
+            "max_reco_true_bjets": 10,
+            "tag_efficiencies_applied": False,
+            "smearing": {
+                "enabled": True,
+                "seed": seed,
+                "preprocessing_version": prepare.PREPROCESSING_VERSION,
+                "model_id": prepare.SMEARING_MODEL_ID,
+                "fourvector_scaling": "uniform_correlated",
+                "correlated_mass_scaling": True,
+                "preserves_jet_mass": False,
+                "gaussian_draws_per_jet": 1,
+                "energy_floor_gev": 1.0e-6,
+                "eta_preselection": "finite |eta|<2.5 before smearing",
+                "pt_threshold": "smeared pT>20 GeV",
+                "smear_before_pt_threshold": True,
+                "acceptance_order": (
+                    "raw_abs_eta_then_smear_then_smeared_pt"
+                ),
+            },
+            "input_counter": counter,
+            "reconstructable_counter": counter,
+            "categories": {"resolved": counter},
+            "n_merged": {"0": counter},
+            "diagnostics": {
+                "true_b_upward_pt_migrations": 0,
+                "true_b_downward_pt_migrations": 0,
+                "non_b_upward_pt_migrations": 0,
+                "non_b_downward_pt_migrations": 0,
+                "true_b_upward_pt_migrations_by_raw_pt_gev": {
+                    "[10,12)": 0,
+                    "[12,15)": 0,
+                    "[15,20]": 0,
+                },
+                "non_b_upward_pt_migrations_by_raw_pt_gev": {
+                    "[10,12)": 0,
+                    "[12,15)": 0,
+                    "[15,20]": 0,
+                },
+                "max_smearing_mass_scaling_residual_gev": 0.0,
+            },
+        }
+
+    def test_feature_validator_accepts_only_uniform_fourvector_version(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sample_id = "sample"
+            input_path = root / "input.root"
+            output = root / "features.root"
+            summary_path = root / "features.analysis_summary.json"
+            input_path.write_bytes(b"input")
+            output.write_bytes(b"features")
+
+            legacy = self._summary(
+                sample_id, input_path, "resonance-hybrid-v1.1-leading-composition"
+            )
+            legacy["preprocessing_version"] = "resonance-preprocessing-v1"
+            legacy["smearing"] = {
+                "enabled": True,
+                "seed": prepare._seed(sample_id),
+                "preserves_jet_mass": True,
+            }
+            summary_path.write_text(json.dumps(legacy), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "does not match this campaign"):
+                prepare._validate_feature_pair(
+                    sample_id,
+                    input_path,
+                    output,
+                    summary_path,
+                    0,
+                    0,
+                    None,
+                    10,
+                    False,
+                )
+
+            current = self._summary(sample_id, input_path, prepare.METHOD_VERSION)
+            summary_path.write_text(json.dumps(current), encoding="utf-8")
+            accepted = prepare._validate_feature_pair(
+                sample_id,
+                input_path,
+                output,
+                summary_path,
+                0,
+                0,
+                None,
+                10,
+                False,
+            )
+            self.assertEqual(accepted["method_version"], prepare.METHOD_VERSION)
+
+    def test_feature_validator_rejects_incomplete_upward_migration_bins(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sample_id = "sample"
+            input_path = root / "input.root"
+            output = root / "features.root"
+            summary_path = root / "features.analysis_summary.json"
+            input_path.write_bytes(b"input")
+            output.write_bytes(b"features")
+            summary = self._summary(sample_id, input_path, prepare.METHOD_VERSION)
+            summary["diagnostics"]["true_b_upward_pt_migrations"] = 2
+            summary["diagnostics"][
+                "true_b_upward_pt_migrations_by_raw_pt_gev"
+            ]["[15,20]"] = 1
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                RuntimeError, "upward_migration_pt_bin_sums"
+            ):
+                prepare._validate_feature_pair(
+                    sample_id,
+                    input_path,
+                    output,
+                    summary_path,
+                    0,
+                    0,
+                    None,
+                    10,
+                    False,
+                )
+
+    def test_xgboost_summary_accepts_current_extractor_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "features.analysis_summary.json"
+            summary = self._summary(
+                "sample", Path(directory) / "input.root", prepare.METHOD_VERSION
+            )
+            path.write_text(json.dumps(summary), encoding="utf-8")
+
+            metadata = analysis._summary_metadata(path)
+            self.assertEqual(metadata[-1]["method_version"], prepare.METHOD_VERSION)
+            self.assertEqual(
+                analysis.EXTRACTOR_PREPROCESSING_VERSION,
+                prepare.PREPROCESSING_VERSION,
+            )
+            self.assertEqual(
+                analysis.EXTRACTOR_SMEARING_MODEL_ID, prepare.SMEARING_MODEL_ID
+            )
+
+    def test_xgboost_summary_rejects_incompatible_extractor_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "features.analysis_summary.json"
+            current = self._summary(
+                "sample", Path(directory) / "input.root", prepare.METHOD_VERSION
+            )
+            cases = {
+                "method_version": (
+                    lambda summary: summary.__setitem__(
+                        "method_version", "resonance-hybrid-v1.1-leading-composition"
+                    ),
+                    "expected extractor method_version",
+                ),
+                "preprocessing_version": (
+                    lambda summary: summary.__setitem__(
+                        "preprocessing_version", "resonance-preprocessing-v1"
+                    ),
+                    "expected preprocessing_version",
+                ),
+                "smearing_preprocessing_version": (
+                    lambda summary: summary["smearing"].__setitem__(
+                        "preprocessing_version", "resonance-preprocessing-v1"
+                    ),
+                    "incompatible smearing metadata: preprocessing_version",
+                ),
+                "smearing_model_id": (
+                    lambda summary: summary["smearing"].__setitem__(
+                        "model_id", "legacy-fixed-mass-smearing"
+                    ),
+                    "incompatible smearing metadata: model_id",
+                ),
+                "acceptance_order": (
+                    lambda summary: summary["smearing"].__setitem__(
+                        "acceptance_order", "raw_pt_then_smear"
+                    ),
+                    "incompatible smearing metadata: acceptance_order",
+                ),
+            }
+            for label, (mutate, message) in cases.items():
+                with self.subTest(label=label):
+                    summary = json.loads(json.dumps(current))
+                    mutate(summary)
+                    path.write_text(json.dumps(summary), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        analysis.AnalysisInputError, message
+                    ):
+                        analysis._summary_metadata(path)
+
+    def test_cpp_smearing_contract_has_one_draw_and_uniform_scaling(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1] / "FourHiggsResonanceAnalysis.cc"
+        ).read_text()
+        function = source.split("TLorentzVector smearJetCMSUniformFourVector", 1)[1].split(
+            "void combinationsRecursive", 1
+        )[0]
+        self.assertEqual(function.count("random.Gaus("), 1)
+        self.assertIn("std::max(1.0e-6, energy + delta_energy)", function)
+        self.assertIn("const double scale = smeared_energy / energy", function)
+        self.assertIn("!std::isfinite(energy) || energy <= 0.0", function)
+        self.assertIn("output.M() - scale * input.M()", function)
+
+        source_body = source.split("for (event_index = 0;", 1)[1]
+        true_b_body = source_body.split("for (int index = 0; index < safe_number_bjets;", 1)[
+            1
+        ].split("std::sort(true_bjets.begin()", 1)[0]
+        self.assertLess(
+            true_b_body.index("std::fabs(raw.Eta()) >= kBJetEtaCut"),
+            true_b_body.index("smearJetCMSUniformFourVector"),
+        )
+        self.assertLess(
+            true_b_body.index("smearJetCMSUniformFourVector"),
+            true_b_body.index("const bool smeared_passes_pt"),
+        )
+
+        non_b_body = source_body.split("for (int index = 0; index < safe_number_jets;", 1)[
+            1
+        ].split("const auto by_pt", 1)[0]
+        self.assertLess(
+            non_b_body.index("std::fabs(raw.Eta()) >= kBJetEtaCut"),
+            non_b_body.index("smearJetCMSUniformFourVector"),
+        )
+        self.assertLess(
+            non_b_body.index("smearJetCMSUniformFourVector"),
+            non_b_body.index("const bool smeared_passes_pt"),
+        )
+
+    def test_common_mass_target_preserves_historical_scoring_order(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1] / "FourHiggsResonanceAnalysis.cc"
+        ).read_text()
+        consider = source.split("  void consider(", 1)[1].split(
+            "\n};\n\nusing IndexCallback", 1
+        )[0]
+        self.assertIn(
+            "const bool common_target = massTargetsAreCommon(mass_targets)",
+            consider,
+        )
+        self.assertIn("if (!common_target)", consider)
+        self.assertIn("common_target ? proposal : ranked", consider)
+        self.assertIn("candidates = scoring_candidates", consider)
+
+        event_loop = source.split("for (event_index = 0;", 1)[1]
+        self.assertIn(
+            "if (massTargetsAreCommon(options.higgs_mass_targets))",
+            event_loop,
+        )
+        historical_sort = event_loop.split(
+            "if (massTargetsAreCommon(options.higgs_mass_targets))", 1
+        )[1].split("n_merged = 0;", 1)[0]
+        self.assertIn("return first.p4.Pt() > second.p4.Pt();", historical_sort)
+        self.assertNotIn("first.type", historical_sort)
+
+    def test_versioned_background_manifest_redirects_feature_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "background_manifest.csv"
+            source.write_text(
+                "sample_id,root_file,raw_root,c_mistags,light_mistags\n"
+                "bkg,legacy/bkg.root,raw/bkg.root,1,2\n",
+                encoding="utf-8",
+            )
+            output_base = root / "features" / prepare.SMEARING_MODEL_ID / "backgrounds"
+            text = prepare._versioned_background_manifest_text(source, root, output_base)
+            rows = list(csv.DictReader(text.splitlines()))
+            self.assertEqual(rows[0]["raw_root"], "raw/bkg.root")
+            self.assertEqual(
+                rows[0]["root_file"],
+                f"features/{prepare.SMEARING_MODEL_ID}/backgrounds/bkg_resonance.root",
+            )
 
 class FeatureTests(unittest.TestCase):
     def test_truth_audit_branches_are_not_classifier_features(self) -> None:
@@ -214,6 +577,17 @@ class FoldAndNormalizationTests(unittest.TestCase):
         self.assertEqual(produced, 3000.0)
         self.assertTrue(math.isclose(eight_b, 345.1490798665728, rel_tol=0.0, abs_tol=1e-12))
         self.assertTrue(math.isclose(nominal, 94.0498539896, rel_tol=0.0, abs_tol=1e-10))
+
+    def test_sm_multihiggs_backgrounds_apply_only_physical_higgs_decays(self) -> None:
+        hh4b = synthetic_loaded_sample("sm_hh4b", "sm_hh4b", hbb_power=2)
+        hhhbb = synthetic_loaded_sample("sm_hhhbb", "sm_hhhbb", hbb_power=3)
+        hhhh = synthetic_loaded_sample("sm_hhhh", "sm_hhhh", hbb_power=4)
+        yields = [
+            float(np.sum(sample.scenario_weights["nominal"]))
+            for sample in (hh4b, hhhbb, hhhh)
+        ]
+        self.assertAlmostEqual(yields[1] / yields[0], analysis.HBB_BRANCHING_RATIO)
+        self.assertAlmostEqual(yields[2] / yields[1], analysis.HBB_BRANCHING_RATIO)
 
     def test_charm_and_light_factors_are_applied_once(self) -> None:
         table = synthetic_table(np.asarray([0]))

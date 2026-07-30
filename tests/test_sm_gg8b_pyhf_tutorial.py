@@ -35,13 +35,13 @@ INPUTS_AVAILABLE = all(
     path.is_file()
     for path in (
         REPO_ROOT
-        / "Signals/events/HW-gg_hhhh_SM-extended-v2_var.smearCMS.root",
+        / "Signals/events/HW-gg_hhhh_SM-extended-v2-uniform-smear-v1_var.smearCMS.root",
         REPO_ROOT
-        / "Signals/events/HW-gg_hhhh_SM-extended-v2.analysis_summary.json",
+        / "Signals/events/HW-gg_hhhh_SM-extended-v2-uniform-smear-v1.analysis_summary.json",
         REPO_ROOT
-        / "Backgrounds/events/HW-gg_to_8b-extended-v2_var.smearCMS.root",
+        / "Backgrounds/events/HW-gg_to_8b-extended-v2-uniform-smear-v1_var.smearCMS.root",
         REPO_ROOT
-        / "Backgrounds/events/HW-gg_to_8b-extended-v2.analysis_summary.json",
+        / "Backgrounds/events/HW-gg_to_8b-extended-v2-uniform-smear-v1.analysis_summary.json",
     )
 )
 

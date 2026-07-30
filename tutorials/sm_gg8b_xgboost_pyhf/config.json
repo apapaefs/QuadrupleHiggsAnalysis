@@ -45,8 +45,8 @@
     {
       "name": "sm_hhhh_8b",
       "label": 1,
-      "root_path": "Signals/events/HW-gg_hhhh_SM-extended-v2_var.smearCMS.root",
-      "summary_path": "Signals/events/HW-gg_hhhh_SM-extended-v2.analysis_summary.json",
+      "root_path": "Signals/events/HW-gg_hhhh_SM-extended-v2-uniform-smear-v1_var.smearCMS.root",
+      "summary_path": "Signals/events/HW-gg_hhhh_SM-extended-v2-uniform-smear-v1.analysis_summary.json",
       "cross_section_fb": 0.000124288,
       "k_factor": 2.0,
       "rate_factor_kind": "signal_hhhh_8b",
@@ -56,8 +56,8 @@
     {
       "name": "gg8b",
       "label": 0,
-      "root_path": "Backgrounds/events/HW-gg_to_8b-extended-v2_var.smearCMS.root",
-      "summary_path": "Backgrounds/events/HW-gg_to_8b-extended-v2.analysis_summary.json",
+      "root_path": "Backgrounds/events/HW-gg_to_8b-extended-v2-uniform-smear-v1_var.smearCMS.root",
+      "summary_path": "Backgrounds/events/HW-gg_to_8b-extended-v2-uniform-smear-v1.analysis_summary.json",
       "cross_section_fb": 1.03875,
       "k_factor": 2.0,
       "rate_factor_kind": "background_8b",

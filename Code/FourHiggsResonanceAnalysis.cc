@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -31,8 +32,11 @@ constexpr int kHardMaxRecoJets = 10;
 constexpr double kBJetPtCut = 20.0;
 constexpr double kBJetEtaCut = 2.5;
 constexpr double kDuplicateJetDeltaR = 0.05;
-constexpr double kHiggsMass = 125.0;
-constexpr const char* kMethodVersion = "resonance-hybrid-v1.1-leading-composition";
+constexpr const char* kMethodVersion = "resonance-hybrid-v1.2-uniform-fourvector-smearing";
+constexpr const char* kPreprocessingVersion = "resonance-preprocessing-v2";
+constexpr const char* kSmearingModelId = "cms-energy-uniform-fourvector-v1";
+const std::array<double, kHiggsCount> kDefaultHiggsMassTargets =
+    {{125.0, 125.0, 125.0, 125.0}};
 
 enum JetSource {
   kTrueB = 0,
@@ -50,6 +54,8 @@ struct Options {
   int light_mistags = 0;
   unsigned int seed = 14101983U;
   bool smear = true;
+  std::array<double, kHiggsCount> higgs_mass_targets =
+      kDefaultHiggsMassTargets;
 };
 
 struct Counter {
@@ -78,6 +84,15 @@ struct Candidate {
   int second_jet = -1;
 };
 
+bool massTargetsAreCommon(
+    const std::array<double, kHiggsCount>& mass_targets) {
+  return std::all_of(
+      mass_targets.begin() + 1, mass_targets.end(),
+      [&mass_targets](double target) {
+        return target == mass_targets.front();
+      });
+}
+
 struct BestReconstruction {
   bool valid = false;
   double best_score = std::numeric_limits<double>::infinity();
@@ -85,10 +100,33 @@ struct BestReconstruction {
   Long64_t configurations = 0;
   std::array<Candidate, kHiggsCount> candidates = {};
 
-  void consider(const std::array<Candidate, kHiggsCount>& proposal) {
+  void consider(
+      const std::array<Candidate, kHiggsCount>& proposal,
+      const std::array<double, kHiggsCount>& mass_targets) {
+    const bool common_target = massTargetsAreCommon(mass_targets);
+    std::array<Candidate, kHiggsCount> ranked = proposal;
+    if (!common_target) {
+      std::sort(
+          ranked.begin(), ranked.end(),
+          [](const Candidate& first, const Candidate& second) {
+            if (first.p4.Pt() != second.p4.Pt()) {
+              return first.p4.Pt() > second.p4.Pt();
+            }
+            if (first.type != second.type) return first.type > second.type;
+            if (first.first_jet != second.first_jet) {
+              return first.first_jet < second.first_jet;
+            }
+            return first.second_jet < second.second_jet;
+          });
+    }
+    const std::array<Candidate, kHiggsCount>& scoring_candidates =
+        common_target ? proposal : ranked;
+
     double score = 0.0;
-    for (const Candidate& candidate : proposal) {
-      const double residual = (candidate.p4.M() - kHiggsMass) / kHiggsMass;
+    for (int index = 0; index < kHiggsCount; ++index) {
+      const double target = mass_targets[index];
+      const double residual =
+          (scoring_candidates[index].p4.M() - target) / target;
       score += residual * residual;
     }
 
@@ -96,7 +134,7 @@ struct BestReconstruction {
     if (!valid || score < best_score) {
       second_score = best_score;
       best_score = score;
-      candidates = proposal;
+      candidates = scoring_candidates;
       valid = true;
     } else if (score < second_score) {
       second_score = score;
@@ -149,6 +187,66 @@ long long parseLongLong(const char* value, const std::string& option) {
   return parsed;
 }
 
+std::array<double, kHiggsCount> parseHiggsMassTargets(
+    const char* value,
+    const std::string& option) {
+  if (value == nullptr) {
+    throw std::runtime_error("missing value for " + option);
+  }
+  const std::string raw_value(value);
+  if (std::count(raw_value.begin(), raw_value.end(), ',') !=
+      kHiggsCount - 1) {
+    throw std::runtime_error(
+        option + " requires exactly four comma-separated values");
+  }
+  std::array<double, kHiggsCount> targets = {};
+  std::istringstream stream(value);
+  std::string token;
+  for (int index = 0; index < kHiggsCount; ++index) {
+    if (!std::getline(stream, token, ',')) {
+      throw std::runtime_error(
+          option + " requires four comma-separated values");
+    }
+    char* parsed_end = nullptr;
+    const double parsed = std::strtod(token.c_str(), &parsed_end);
+    while (parsed_end != nullptr &&
+           std::isspace(static_cast<unsigned char>(*parsed_end))) {
+      ++parsed_end;
+    }
+    if (parsed_end == token.c_str() || parsed_end == nullptr ||
+        *parsed_end != '\0' || !std::isfinite(parsed) || parsed <= 0.0) {
+      throw std::runtime_error(
+          "invalid positive mass target '" + token + "' in " + option);
+    }
+    targets[index] = parsed;
+  }
+  if (std::getline(stream, token, ',')) {
+    throw std::runtime_error(
+        option + " requires exactly four comma-separated values");
+  }
+  for (int index = 1; index < kHiggsCount; ++index) {
+    if (targets[index] > targets[index - 1]) {
+      throw std::runtime_error(
+          option +
+          " must be non-increasing in descending candidate-pT order");
+    }
+  }
+  return targets;
+}
+
+std::string massTargetsJson(
+    const std::array<double, kHiggsCount>& targets) {
+  std::ostringstream output;
+  output << std::setprecision(17);
+  output << "[";
+  for (int index = 0; index < kHiggsCount; ++index) {
+    if (index != 0) output << ",";
+    output << targets[index];
+  }
+  output << "]";
+  return output.str();
+}
+
 void printUsage(const char* executable) {
   std::cerr
       << "Usage: " << executable << " INPUT.root|INPUT.input [options]\n"
@@ -158,6 +256,8 @@ void printUsage(const char* executable) {
       << "  --max-reco-jets N        Use the leading N accepted true-b jets (4-10; default 10)\n"
       << "  --c-mistags N            Require exactly N charm mistag objects (default 0)\n"
       << "  --light-mistags N        Require exactly N light mistag objects (default 0)\n"
+      << "  --higgs-mass-targets A,B,C,D\n"
+      << "                           Targets by descending candidate pT (default 125,125,125,125)\n"
       << "  --seed N                 Deterministic smearing seed (default 14101983)\n"
       << "  --no-smear               Disable CMS-style jet-energy smearing\n";
 }
@@ -197,6 +297,12 @@ Options parseOptions(int argc, char* argv[]) {
     } else if (option == "--light-mistags") {
       if (++argument >= argc) throw std::runtime_error("missing value for --light-mistags");
       options.light_mistags = static_cast<int>(parseLongLong(argv[argument], "--light-mistags"));
+    } else if (option == "--higgs-mass-targets") {
+      if (++argument >= argc) {
+        throw std::runtime_error("missing value for --higgs-mass-targets");
+      }
+      options.higgs_mass_targets =
+          parseHiggsMassTargets(argv[argument], "--higgs-mass-targets");
     } else if (option == "--seed") {
       if (++argument >= argc) throw std::runtime_error("missing value for --seed");
       const long long seed = parseLongLong(argv[argument], "--seed");
@@ -313,16 +419,21 @@ bool overlaps(const TLorentzVector& candidate, const std::vector<Jet>& jets) {
   return false;
 }
 
-TLorentzVector smearJetCMSPreservingMass(const TLorentzVector& input,
-                                         TRandom3& random,
-                                         bool enabled,
-                                         double& mass_difference) {
+TLorentzVector smearJetCMSUniformFourVector(const TLorentzVector& input,
+                                           TRandom3& random,
+                                           bool enabled,
+                                           double& mass_scaling_residual) {
   if (!enabled) {
-    mass_difference = 0.0;
+    mass_scaling_residual = 0.0;
     return input;
   }
 
   const double energy = input.E();
+  // Uniform four-vector scaling divides by the input energy, so reject an
+  // invalid event record rather than silently producing non-finite features.
+  if (!std::isfinite(energy) || energy <= 0.0) {
+    throw std::runtime_error("cannot smear a jet with non-finite or non-positive energy");
+  }
   const double eta = input.Eta();
   double sigma_energy = 0.0;
   if (std::fabs(eta) <= 3.0) {
@@ -331,24 +442,24 @@ TLorentzVector smearJetCMSPreservingMass(const TLorentzVector& input,
     sigma_energy = std::sqrt(std::pow(0.130 * energy, 2) + energy * std::pow(2.7, 2));
   }
 
-  const double mass_squared = std::max(0.0, input.M2());
-  const double mass = std::sqrt(mass_squared);
-  const double smeared_energy =
-      std::max(mass + 1.0e-9, energy + random.Gaus(0.0, sigma_energy));
-  const double smeared_momentum =
-      std::sqrt(std::max(0.0, smeared_energy * smeared_energy - mass_squared));
-  const double original_momentum = input.P();
-
+  // Draw exactly one energy fluctuation and apply the same factor to all four
+  // components.  The jet direction is unchanged and its mass scales in
+  // correlation with the energy, m'=(E'/E)m.
+  const double delta_energy = random.Gaus(0.0, sigma_energy);
+  const double smeared_energy = std::max(1.0e-6, energy + delta_energy);
+  const double scale = smeared_energy / energy;
   TLorentzVector output;
-  if (original_momentum > 0.0) {
-    const double scale = smeared_momentum / original_momentum;
-    output.SetPxPyPzE(scale * input.Px(), scale * input.Py(), scale * input.Pz(),
-                     smeared_energy);
-  } else {
-    output.SetPxPyPzE(0.0, 0.0, 0.0, smeared_energy);
-  }
-  mass_difference = std::fabs(output.M() - mass);
+  output.SetPxPyPzE(scale * input.Px(), scale * input.Py(), scale * input.Pz(),
+                   smeared_energy);
+  mass_scaling_residual = std::fabs(output.M() - scale * input.M());
   return output;
+}
+
+int upwardMigrationRawPtBin(double raw_pt) {
+  if (raw_pt >= 10.0 && raw_pt < 12.0) return 0;
+  if (raw_pt >= 12.0 && raw_pt < 15.0) return 1;
+  if (raw_pt >= 15.0 && raw_pt <= kBJetPtCut) return 2;
+  return -1;
 }
 
 void combinationsRecursive(const std::vector<int>& values,
@@ -404,7 +515,8 @@ void pairings(const std::vector<int>& selected, const PairingCallback& callback)
 BestReconstruction reconstruct(const std::vector<Jet>& jets,
                                const std::vector<int>& fixed_mistag_indices,
                                int c_mistags,
-                               int light_mistags) {
+                               int light_mistags,
+                               const std::array<double, kHiggsCount>& mass_targets) {
   std::vector<int> true_single_indices;
   std::vector<int> double_b_indices;
   for (std::size_t index = 0; index < jets.size(); ++index) {
@@ -452,7 +564,9 @@ BestReconstruction reconstruct(const std::vector<Jet>& jets,
             candidate.first_jet = pair[0];
             candidate.second_jet = pair[1];
           }
-          if (candidate_index == kHiggsCount) best.consider(proposal);
+          if (candidate_index == kHiggsCount) {
+            best.consider(proposal, mass_targets);
+          }
         });
       });
     });
@@ -560,6 +674,9 @@ double fraction(double numerator, double denominator) {
 int main(int argc, char* argv[]) {
   try {
     const Options options = parseOptions(argc, argv);
+    std::cout << "Higgs mass targets by descending candidate pT: "
+              << massTargetsJson(options.higgs_mass_targets)
+              << " GeV" << std::endl;
     const bool need_mistag_branches = options.c_mistags + options.light_mistags > 0;
     const std::vector<std::string> files = inputFiles(options.input);
 
@@ -703,7 +820,13 @@ int main(int argc, char* argv[]) {
     Long64_t jet_array_overflow_events = 0;
     Long64_t failed_mistag_population_events = 0;
     Long64_t failed_reconstruction_events = 0;
-    double max_smearing_mass_difference = 0.0;
+    Long64_t true_b_upward_pt_migrations = 0;
+    Long64_t true_b_downward_pt_migrations = 0;
+    Long64_t non_b_upward_pt_migrations = 0;
+    Long64_t non_b_downward_pt_migrations = 0;
+    std::array<Long64_t, 3> true_b_upward_pt_migrations_by_raw_pt = {};
+    std::array<Long64_t, 3> non_b_upward_pt_migrations_by_raw_pt = {};
+    double max_smearing_mass_scaling_residual = 0.0;
     TRandom3 random(options.seed);
 
     for (event_index = 0; event_index < events_to_run; ++event_index) {
@@ -719,7 +842,28 @@ int main(int argc, char* argv[]) {
       for (int index = 0; index < safe_number_bjets; ++index) {
         TLorentzVector raw;
         raw.SetPxPyPzE(bjets[1][index], bjets[2][index], bjets[3][index], bjets[0][index]);
-        if (raw.Pt() <= kBJetPtCut || std::fabs(raw.Eta()) >= kBJetEtaCut) continue;
+        if (!std::isfinite(raw.Eta()) || std::fabs(raw.Eta()) >= kBJetEtaCut) continue;
+
+        double mass_scaling_residual = 0.0;
+        Jet jet;
+        // Smear every eta-accepted stored jet exactly once before applying the
+        // analysis-level pT threshold, including jets that migrate below it.
+        jet.p4 = smearJetCMSUniformFourVector(
+            raw, random, options.smear, mass_scaling_residual);
+        max_smearing_mass_scaling_residual =
+            std::max(max_smearing_mass_scaling_residual, mass_scaling_residual);
+        const double raw_pt = raw.Pt();
+        const bool raw_passes_pt = raw_pt > kBJetPtCut;
+        const bool smeared_passes_pt = jet.p4.Pt() > kBJetPtCut;
+        if (!raw_passes_pt && smeared_passes_pt) {
+          ++true_b_upward_pt_migrations;
+          const int raw_pt_bin = upwardMigrationRawPtBin(raw_pt);
+          if (raw_pt_bin >= 0) {
+            ++true_b_upward_pt_migrations_by_raw_pt[static_cast<std::size_t>(raw_pt_bin)];
+          }
+        }
+        if (raw_passes_pt && !smeared_passes_pt) ++true_b_downward_pt_migrations;
+        if (!smeared_passes_pt) continue;
 
         const int stored_multiplicity = b_hadron_multiplicity[index];
         if (stored_multiplicity < 1) {
@@ -730,13 +874,9 @@ int main(int argc, char* argv[]) {
               "; refusing to infer a fallback multiplicity");
         }
         const int capped_multiplicity = std::min(2, stored_multiplicity);
-        double mass_difference = 0.0;
-        Jet jet;
-        jet.p4 = smearJetCMSPreservingMass(raw, random, options.smear, mass_difference);
         jet.tag_multiplicity = capped_multiplicity;
         jet.source = kTrueB;
         jet.original_index = index;
-        max_smearing_mass_difference = std::max(max_smearing_mass_difference, mass_difference);
         true_bjets.push_back(jet);
       }
       std::sort(true_bjets.begin(), true_bjets.end(),
@@ -761,17 +901,31 @@ int main(int argc, char* argv[]) {
         for (int index = 0; index < safe_number_jets; ++index) {
           TLorentzVector raw;
           raw.SetPxPyPzE(jets[1][index], jets[2][index], jets[3][index], jets[0][index]);
-          if (raw.Pt() <= kBJetPtCut || std::fabs(raw.Eta()) >= kBJetEtaCut ||
-              overlaps(raw, true_bjets)) {
-            continue;
-          }
-          double mass_difference = 0.0;
+          if (!std::isfinite(raw.Eta()) || std::fabs(raw.Eta()) >= kBJetEtaCut) continue;
+
+          double mass_scaling_residual = 0.0;
           Jet jet;
-          jet.p4 = smearJetCMSPreservingMass(raw, random, options.smear, mass_difference);
+          // As for true-b jets, consume one Gaussian draw before the smeared
+          // pT requirement so upward and downward threshold migrations enter.
+          jet.p4 = smearJetCMSUniformFourVector(
+              raw, random, options.smear, mass_scaling_residual);
+          max_smearing_mass_scaling_residual =
+              std::max(max_smearing_mass_scaling_residual, mass_scaling_residual);
+          const double raw_pt = raw.Pt();
+          const bool raw_passes_pt = raw_pt > kBJetPtCut;
+          const bool smeared_passes_pt = jet.p4.Pt() > kBJetPtCut;
+          if (!raw_passes_pt && smeared_passes_pt) {
+            ++non_b_upward_pt_migrations;
+            const int raw_pt_bin = upwardMigrationRawPtBin(raw_pt);
+            if (raw_pt_bin >= 0) {
+              ++non_b_upward_pt_migrations_by_raw_pt[static_cast<std::size_t>(raw_pt_bin)];
+            }
+          }
+          if (raw_passes_pt && !smeared_passes_pt) ++non_b_downward_pt_migrations;
+          if (!smeared_passes_pt || overlaps(jet.p4, true_bjets)) continue;
           jet.tag_multiplicity = 1;
           jet.source = charm_tag[index] > 0.0 ? kCharmMistag : kLightMistag;
           jet.original_index = index;
-          max_smearing_mass_difference = std::max(max_smearing_mass_difference, mass_difference);
           if (jet.source == kCharmMistag) {
             c_candidates.push_back(jet);
           } else {
@@ -822,16 +976,20 @@ int main(int argc, char* argv[]) {
 
       BestReconstruction reconstruction =
           reconstruct(candidate_jets, fixed_mistag_indices,
-                      options.c_mistags, options.light_mistags);
+                      options.c_mistags, options.light_mistags,
+                      options.higgs_mass_targets);
       if (!reconstruction.valid) {
         ++failed_reconstruction_events;
         continue;
       }
-      std::sort(reconstruction.candidates.begin(), reconstruction.candidates.end(),
-                [](const Candidate& first, const Candidate& second) {
-                  return first.p4.Pt() > second.p4.Pt();
-                });
-
+      if (massTargetsAreCommon(options.higgs_mass_targets)) {
+        // Preserve the historical common-target output ordering exactly.
+        std::sort(
+            reconstruction.candidates.begin(), reconstruction.candidates.end(),
+            [](const Candidate& first, const Candidate& second) {
+              return first.p4.Pt() > second.p4.Pt();
+            });
+      }
       n_merged = 0;
       std::vector<int> used_indices;
       for (const Candidate& candidate : reconstruction.candidates) {
@@ -923,6 +1081,8 @@ int main(int argc, char* argv[]) {
     observable_schema.Write();
     TNamed method_version("method_version", kMethodVersion);
     method_version.Write();
+    TNamed preprocessing_version("preprocessing_version", kPreprocessingVersion);
+    preprocessing_version.Write();
     TNamed branch_schema("branch_schema_json", branchSchemaJson());
     branch_schema.Write();
     const std::vector<std::string> feature_names = featureNames();
@@ -945,12 +1105,30 @@ int main(int argc, char* argv[]) {
     category_definition.Write();
     TNamed pair_order("pair_order_json", "[\"12\",\"13\",\"14\",\"23\",\"24\",\"34\"]");
     pair_order.Write();
+    TNamed mass_targets(
+        "higgs_mass_targets_gev_json",
+        massTargetsJson(options.higgs_mass_targets).c_str());
+    mass_targets.Write();
+    TNamed mass_target_assignment(
+        "higgs_mass_target_assignment",
+        "candidate_pt_rank_descending");
+    mass_target_assignment.Write();
     std::ostringstream smearing_description;
     smearing_description
         << "{\"enabled\":" << (options.smear ? "true" : "false")
         << ",\"seed\":" << options.seed
-        << ",\"acceptance_order\":\"raw jets before smearing\""
-        << ",\"model\":\"CMS energy resolution used by FourHiggs8bAnalysis_smear_CMS.cc; direction and invariant mass preserved\"}";
+        << ",\"preprocessing_version\":\"" << kPreprocessingVersion << "\""
+        << ",\"model_id\":\"" << kSmearingModelId << "\""
+        << ",\"fourvector_scaling\":\"uniform_correlated\""
+        << ",\"correlated_mass_scaling\":true"
+        << ",\"preserves_jet_mass\":false"
+        << ",\"gaussian_draws_per_jet\":1"
+        << ",\"energy_floor_gev\":1e-6"
+        << ",\"eta_preselection\":\"finite |eta|<2.5 before smearing\""
+        << ",\"pt_threshold\":\"smeared pT>20 GeV\""
+        << ",\"smear_before_pt_threshold\":true"
+        << ",\"acceptance_order\":\"raw_abs_eta_then_smear_then_smeared_pt\""
+        << ",\"model\":\"CMS energy resolution with p'^mu=(E'/E)p^mu and correlated mass scaling\"}";
     TNamed smearing_metadata("smearing_json", smearing_description.str().c_str());
     smearing_metadata.Write();
     TNamed tagging_metadata(
@@ -977,8 +1155,13 @@ int main(int argc, char* argv[]) {
     summary << "{\n"
             << "  \"schema\": \"resonance-hybrid-v1\",\n"
             << "  \"method_version\": \"" << kMethodVersion << "\",\n"
+            << "  \"preprocessing_version\": \"" << kPreprocessingVersion << "\",\n"
             << "  \"input\": \"" << jsonEscape(options.input) << "\",\n"
             << "  \"output_root\": \"" << jsonEscape(options.output_root) << "\",\n"
+            << "  \"higgs_mass_targets_gev\": "
+            << massTargetsJson(options.higgs_mass_targets) << ",\n"
+            << "  \"higgs_mass_target_assignment\": "
+            << "\"candidate_pt_rank_descending\",\n"
             << "  \"events_available\": " << available_events << ",\n"
             << "  \"events_requested\": " << events_to_run << ",\n"
             << "  \"pt_cut_gev\": " << kBJetPtCut << ",\n"
@@ -990,7 +1173,17 @@ int main(int argc, char* argv[]) {
             << "  \"weight_definition\": \"raw evweight\",\n"
             << "  \"smearing\": {\"enabled\": " << (options.smear ? "true" : "false")
             << ", \"seed\": " << options.seed
-            << ", \"preserves_jet_mass\": true, \"acceptance_order\": \"raw jets before smearing\"},\n"
+            << ", \"preprocessing_version\": \"" << kPreprocessingVersion << "\""
+            << ", \"model_id\": \"" << kSmearingModelId << "\""
+            << ", \"fourvector_scaling\": \"uniform_correlated\""
+            << ", \"correlated_mass_scaling\": true"
+            << ", \"preserves_jet_mass\": false"
+            << ", \"gaussian_draws_per_jet\": 1"
+            << ", \"energy_floor_gev\": 1e-6"
+            << ", \"eta_preselection\": \"finite |eta|<2.5 before smearing\""
+            << ", \"pt_threshold\": \"smeared pT>20 GeV\""
+            << ", \"smear_before_pt_threshold\": true"
+            << ", \"acceptance_order\": \"raw_abs_eta_then_smear_then_smeared_pt\"},\n"
             << "  \"input_counter\": ";
     writeCounter(summary, input_counter, 0);
     summary << ",\n  \"reconstructable_counter\": ";
@@ -1020,8 +1213,20 @@ int main(int argc, char* argv[]) {
             << "    \"jet_array_overflow_events\": " << jet_array_overflow_events << ",\n"
             << "    \"failed_mistag_population_events\": " << failed_mistag_population_events << ",\n"
             << "    \"failed_reconstruction_events\": " << failed_reconstruction_events << ",\n"
-            << "    \"max_smearing_mass_difference_gev\": "
-            << max_smearing_mass_difference << "\n"
+            << "    \"true_b_upward_pt_migrations\": " << true_b_upward_pt_migrations << ",\n"
+            << "    \"true_b_downward_pt_migrations\": " << true_b_downward_pt_migrations << ",\n"
+            << "    \"non_b_upward_pt_migrations\": " << non_b_upward_pt_migrations << ",\n"
+            << "    \"non_b_downward_pt_migrations\": " << non_b_downward_pt_migrations << ",\n"
+            << "    \"true_b_upward_pt_migrations_by_raw_pt_gev\": "
+            << "{\"[10,12)\": " << true_b_upward_pt_migrations_by_raw_pt[0]
+            << ", \"[12,15)\": " << true_b_upward_pt_migrations_by_raw_pt[1]
+            << ", \"[15,20]\": " << true_b_upward_pt_migrations_by_raw_pt[2] << "},\n"
+            << "    \"non_b_upward_pt_migrations_by_raw_pt_gev\": "
+            << "{\"[10,12)\": " << non_b_upward_pt_migrations_by_raw_pt[0]
+            << ", \"[12,15)\": " << non_b_upward_pt_migrations_by_raw_pt[1]
+            << ", \"[15,20]\": " << non_b_upward_pt_migrations_by_raw_pt[2] << "},\n"
+            << "    \"max_smearing_mass_scaling_residual_gev\": "
+            << max_smearing_mass_scaling_residual << "\n"
             << "  }\n"
             << "}\n";
     summary.close();

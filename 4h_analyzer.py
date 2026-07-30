@@ -31,7 +31,15 @@ DEFAULT_SIGNAL_K_FACTOR = 2.0
 DEFAULT_BACKGROUND_K_FACTOR = 2.0
 DEFAULT_BACKGROUND_CSV = _REPO_DIR / "Backgrounds" / "processes.csv"
 DEFAULT_BACKGROUND_HERWIG_TEMPLATE = _REPO_DIR / "Backgrounds" / "HW-AlpGen8Q-LHEWriter-Reweighted.in"
-EXTENDED_V2_TAG = "extended-v2"
+LEGACY_EXTENDED_V2_TAG = "extended-v2"
+EXTENDED_V2_TAG = "extended-v2-uniform-smear-v1"
+JET_SMEARING_MODEL_ID = "cms-energy-uniform-fourvector-v1"
+JET_SMEARING_ACCEPTANCE_ORDER = "raw_abs_eta_then_smear_then_smeared_pt"
+JET_SMEARING_FOURVECTOR_SCALING = "uniform_correlated"
+JET_SMEARING_SEED = 14101983
+JET_SMEARING_MIN_ENERGY_GEV = 1.0e-6
+JET_SMEARING_MAX_MASS_RESIDUAL_GEV = 1.0e-8
+_VERSIONED_ANALYSIS_TAGS = (EXTENDED_V2_TAG, LEGACY_EXTENDED_V2_TAG)
 _SHAPE_THREAD_ENVIRONMENT = (
     "OMP_NUM_THREADS",
     "OPENBLAS_NUM_THREADS",
@@ -58,7 +66,9 @@ def _configure_v2_mode_defaults(args):
 
     if args.study_outdir is None:
         suffix = "" if args.study_mode == "full" else f"_{args.study_mode}"
-        args.study_outdir = _REPO_DIR / f"xgboost_c3d4_study_v2{suffix}"
+        args.study_outdir = (
+            _REPO_DIR / f"xgboost_c3d4_study_v2_uniform-smear-v1{suffix}"
+        )
     if args.training_strategy is None:
         args.training_strategy = (
             "sm-crossfit-v2"
@@ -72,9 +82,11 @@ def _canonical_sample_name(filename):
     """Return the production sample name, removing variable-tree and schema tags."""
 
     sample_name = _Path(filename).name.split("_var.smear", 1)[0]
-    tagged_suffix = f"-{EXTENDED_V2_TAG}"
-    if sample_name.endswith(tagged_suffix):
-        sample_name = sample_name[: -len(tagged_suffix)]
+    for analysis_tag in _VERSIONED_ANALYSIS_TAGS:
+        tagged_suffix = f"-{analysis_tag}"
+        if sample_name.endswith(tagged_suffix):
+            sample_name = sample_name[: -len(tagged_suffix)]
+            break
     return sample_name
 
 
@@ -82,9 +94,12 @@ def _var_root_matches_analysis_tag(path, analysis_tag=None):
     """Keep tagged and untagged observable files in disjoint discovery sets."""
 
     name = _Path(path).name
-    tagged_marker = f"-{EXTENDED_V2_TAG}_var.smear"
+    tagged_markers = tuple(
+        f"-{versioned_tag}_var.smear"
+        for versioned_tag in _VERSIONED_ANALYSIS_TAGS
+    )
     if analysis_tag is None:
-        return tagged_marker not in name
+        return not any(marker in name for marker in tagged_markers)
     return f"-{analysis_tag}_var.smear" in name
 
 
@@ -1267,6 +1282,52 @@ def _metadata_for_background_files(background_files, csv_file=DEFAULT_BACKGROUND
     return metadata
 
 
+def _validate_explicit_background_composition(
+    background_inputs,
+    csv_file,
+    c_mistags,
+    light_mistags,
+    *,
+    analysis_tag=None,
+):
+    """Reject CSV-known explicit inputs that one global selection cannot model."""
+
+    var_roots, raw_roots = _discover_analysis_inputs(
+        background_inputs, analysis_tag=analysis_tag
+    )
+    candidates = _unique_paths(
+        [
+            *var_roots,
+            *(
+                _analysis_output_root(path, analysis_tag)
+                for path in raw_roots
+            ),
+        ]
+    )
+    metadata = _metadata_for_background_files(candidates, csv_file)
+    compositions = {
+        (int(sample["c_mistags"]), int(sample["light_mistags"]))
+        for sample in metadata
+        if "c_mistags" in sample and "light_mistags" in sample
+    }
+    expected = (int(c_mistags), int(light_mistags))
+    if len(compositions) > 1:
+        raise SystemExit(
+            "Explicit --background inputs have heterogeneous mistag compositions "
+            f"{sorted(compositions)}, but explicit inputs use one global analyzer "
+            "selection. Omit --background to use the per-process Backgrounds CSV "
+            "selection, or supply only samples with one composition."
+        )
+    if compositions and compositions != {expected}:
+        observed = next(iter(compositions))
+        raise SystemExit(
+            "Explicit --background input composition "
+            f"{observed} does not match the global analyzer composition {expected}. "
+            "Set --analysis-c-mistags/--analysis-light-mistags consistently, or omit "
+            "--background to use the per-process Backgrounds CSV selection."
+        )
+
+
 def _training_inputs_from_cli(args, ensure_analysis=False):
     if ensure_analysis:
         signal_inputs = args.signal or [_REPO_DIR / "Signals" / "events"]
@@ -1283,6 +1344,12 @@ def _training_inputs_from_cli(args, ensure_analysis=False):
             light_mistags=0,
         )
         if args.background:
+            _validate_explicit_background_composition(
+                args.background,
+                args.background_csv,
+                args.analysis_c_mistags,
+                args.analysis_light_mistags,
+            )
             background_files = _ensure_analysis_var_roots(
                 args.background,
                 executable=args.analysis_exe,
@@ -2034,6 +2101,8 @@ def _extended_v2_output_is_current(
     output_root = _Path(output_root)
     if not output_root.exists():
         return False
+    if not _var_root_matches_analysis_tag(output_root, EXTENDED_V2_TAG):
+        return False
     summary_file = _analysis_summary_file_for_var_root(output_root)
     if not summary_file.exists():
         return False
@@ -2088,6 +2157,19 @@ def _extended_v2_output_is_current(
             names = root_file.Get("Data3_feature_names_json")
             units = root_file.Get("Data3_feature_units_json")
             pairing_count = root_file.Get("Data3_pairing_count")
+            output_tag = root_file.Get("analysis_output_tag")
+            smearing_model = root_file.Get("jet_smearing_model_id")
+            smearing_acceptance = root_file.Get("jet_smearing_acceptance_order")
+            smearing_scaling = root_file.Get("jet_smearing_fourvector_scaling")
+            smearing_seed = root_file.Get("jet_smearing_seed")
+            smearing_floor = root_file.Get("jet_smearing_min_energy_gev")
+            smearing_draws = root_file.Get("jet_smearing_gaussian_draws_per_jet")
+            smearing_correlated_mass = root_file.Get(
+                "jet_smearing_correlated_mass_scaling"
+            )
+            smearing_mass_residual = root_file.Get(
+                "max_smearing_mass_scaling_residual_gev"
+            )
             feature_leaf = data3.GetLeaf("features")
             if not schema or str(schema.GetTitle()) != EXTENDED_SCHEMA_ID:
                 return False
@@ -2099,6 +2181,47 @@ def _extended_v2_output_is_current(
                 return False
             if not pairing_count or int(pairing_count.GetVal()) != PAIRING_COUNT:
                 return False
+            if not output_tag or str(output_tag.GetTitle()) != EXTENDED_V2_TAG:
+                return False
+            if not smearing_model or str(smearing_model.GetTitle()) != JET_SMEARING_MODEL_ID:
+                return False
+            if (
+                not smearing_acceptance
+                or str(smearing_acceptance.GetTitle())
+                != JET_SMEARING_ACCEPTANCE_ORDER
+            ):
+                return False
+            if (
+                not smearing_scaling
+                or str(smearing_scaling.GetTitle())
+                != JET_SMEARING_FOURVECTOR_SCALING
+            ):
+                return False
+            if not smearing_seed or int(smearing_seed.GetVal()) != JET_SMEARING_SEED:
+                return False
+            if not smearing_floor or not math.isclose(
+                float(smearing_floor.GetVal()),
+                JET_SMEARING_MIN_ENERGY_GEV,
+                rel_tol=0.0,
+                abs_tol=1.0e-15,
+            ):
+                return False
+            if not smearing_draws or int(smearing_draws.GetVal()) != 1:
+                return False
+            if (
+                not smearing_correlated_mass
+                or int(smearing_correlated_mass.GetVal()) != 1
+            ):
+                return False
+            if not smearing_mass_residual:
+                return False
+            root_mass_residual = float(smearing_mass_residual.GetVal())
+            if (
+                not math.isfinite(root_mass_residual)
+                or root_mass_residual < 0.0
+                or root_mass_residual > JET_SMEARING_MAX_MASS_RESIDUAL_GEV
+            ):
+                return False
             if not feature_leaf or int(feature_leaf.GetLenStatic()) != len(EXTENDED_FEATURE_NAMES):
                 return False
         finally:
@@ -2107,6 +2230,57 @@ def _extended_v2_output_is_current(
         summary = json.loads(summary_file.read_text())
         if summary.get("observable_schema") != EXTENDED_SCHEMA_ID:
             return False
+        if summary.get("analysis_output_tag") != EXTENDED_V2_TAG:
+            return False
+        if summary.get("jet_smearing_model_id") != JET_SMEARING_MODEL_ID:
+            return False
+        if (
+            summary.get("jet_smearing_acceptance_order")
+            != JET_SMEARING_ACCEPTANCE_ORDER
+        ):
+            return False
+        if (
+            summary.get("jet_smearing_fourvector_scaling")
+            != JET_SMEARING_FOURVECTOR_SCALING
+        ):
+            return False
+        if summary.get("jet_smearing_correlated_mass_scaling") is not True:
+            return False
+        if summary.get("jet_smearing_preserves_jet_mass") is not False:
+            return False
+        if int(summary.get("jet_smearing_gaussian_draws_per_jet", -1)) != 1:
+            return False
+        if int(summary.get("jet_smearing_seed", -1)) != JET_SMEARING_SEED:
+            return False
+        summary_smearing_floor = float(summary["jet_smearing_min_energy_gev"])
+        if not math.isclose(
+            summary_smearing_floor,
+            JET_SMEARING_MIN_ENERGY_GEV,
+            rel_tol=0.0,
+            abs_tol=1.0e-15,
+        ):
+            return False
+        summary_mass_residual = float(
+            summary["max_smearing_mass_scaling_residual_gev"]
+        )
+        if (
+            not math.isfinite(summary_mass_residual)
+            or summary_mass_residual < 0.0
+            or summary_mass_residual > JET_SMEARING_MAX_MASS_RESIDUAL_GEV
+            or not math.isclose(
+                summary_mass_residual,
+                root_mass_residual,
+                rel_tol=1.0e-12,
+                abs_tol=1.0e-15,
+            )
+        ):
+            return False
+        if raw_root is not None:
+            summary_input = _Path(summary["input_file"]).expanduser()
+            if not summary_input.is_absolute():
+                summary_input = _REPO_DIR / summary_input
+            if summary_input.resolve() != _Path(raw_root).expanduser().resolve():
+                return False
         if expected_c_mistags is not None and int(summary.get("c_mistags", -1)) != int(
             expected_c_mistags
         ):
@@ -2120,24 +2294,68 @@ def _extended_v2_output_is_current(
             light_mistags = int(expected_light_mistags or 0)
             if int(summary.get("required_true_bjets", -1)) != 8 - c_mistags - light_mistags:
                 return False
+
+        migration_names = (
+            "true_b_upward_pt_migrations",
+            "true_b_downward_pt_migrations",
+            "non_b_upward_pt_migrations",
+            "non_b_downward_pt_migrations",
+            "true_b_upward_pt_migrations_raw_pt_10_12_gev",
+            "true_b_upward_pt_migrations_raw_pt_12_15_gev",
+            "true_b_upward_pt_migrations_raw_pt_15_20_gev",
+            "non_b_upward_pt_migrations_raw_pt_10_12_gev",
+            "non_b_upward_pt_migrations_raw_pt_12_15_gev",
+            "non_b_upward_pt_migrations_raw_pt_15_20_gev",
+        )
+        migrations = {}
+        for name in migration_names:
+            value = summary.get(name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                return False
+            migrations[name] = value
+        if migrations["true_b_upward_pt_migrations"] != sum(
+            migrations[f"true_b_upward_pt_migrations_raw_pt_{pt_bin}_gev"]
+            for pt_bin in ("10_12", "12_15", "15_20")
+        ):
+            return False
+        if migrations["non_b_upward_pt_migrations"] != sum(
+            migrations[f"non_b_upward_pt_migrations_raw_pt_{pt_bin}_gev"]
+            for pt_bin in ("10_12", "12_15", "15_20")
+        ):
+            return False
+
         total_weight_in = float(summary["total_weight_in"])
-        feature_entries = int(summary["feature_tree_mc_events_out"])
-        feature_weight = float(summary["feature_tree_weight_out"])
-        feature_efficiency = float(summary["feature_tree_efficiency"])
+        if not math.isfinite(total_weight_in) or total_weight_in <= 0.0:
+            return False
+        stage_values = {}
+        for stage in ("preselection", "feature_tree", "analysis"):
+            entries = float(summary[f"{stage}_mc_events_out"])
+            weight = float(summary[f"{stage}_weight_out"])
+            efficiency = float(summary[f"{stage}_efficiency"])
+            if (
+                not math.isfinite(entries)
+                or entries < 0.0
+                or not entries.is_integer()
+                or not math.isfinite(weight)
+                or not math.isfinite(efficiency)
+                or not math.isclose(
+                    efficiency,
+                    weight / total_weight_in,
+                    rel_tol=1.0e-12,
+                    abs_tol=1.0e-15,
+                )
+            ):
+                return False
+            stage_values[stage] = (int(entries), weight, efficiency)
+        if stage_values["feature_tree"][0] != data3_entries:
+            return False
         completion = _extended_v2_completion_evidence(
             output_root,
             summary,
             raw_root=raw_root,
             root_module=ROOT,
         )
-        return bool(
-            total_weight_in > 0.0
-            and math.isfinite(total_weight_in)
-            and feature_entries == data3_entries
-            and math.isfinite(feature_weight)
-            and math.isfinite(feature_efficiency)
-            and completion["verified"]
-        )
+        return bool(completion["verified"])
     except Exception:
         return False
 
@@ -2516,6 +2734,13 @@ def _run_c3d4_xgboost_study_cli_impl(args):
     )
 
     if args.background:
+        _validate_explicit_background_composition(
+            args.background,
+            args.background_csv,
+            args.analysis_c_mistags,
+            args.analysis_light_mistags,
+            analysis_tag=analysis_tag,
+        )
         background_files = _ensure_analysis_var_roots(
             args.background,
             executable=args.analysis_exe,
@@ -2956,7 +3181,8 @@ def _run_local_xgboost_cli():
         default=None,
         help=(
             "Output directory for the versioned study. Mode-specific defaults keep smoke and "
-            "preview products separate from xgboost_c3d4_study_v2."
+            "preview products separate from "
+            "xgboost_c3d4_study_v2_uniform-smear-v1."
         ),
     )
     parser.add_argument(

@@ -212,7 +212,10 @@ class ObservableSchemaTests(unittest.TestCase):
         )
 
     def test_canonical_tagged_basename(self):
-        tagged = "/analysis/HW-run_gg_4h_4_0.0_0.0-extended-v2_var.smearCMS.root"
+        tagged = (
+            "/analysis/HW-run_gg_4h_4_0.0_0.0-"
+            "extended-v2-uniform-smear-v1_var.smearCMS.root"
+        )
         untagged = "/analysis/HW-run_gg_4h_4_0.0_0.0_var.smearCMS.root"
         self.assertEqual(
             schemas.strip_extended_v2_tag(tagged),
@@ -224,6 +227,15 @@ class ObservableSchemaTests(unittest.TestCase):
         )
         self.assertEqual(
             schemas.canonical_sample_basename(untagged),
+            "HW-run_gg_4h_4_0.0_0.0",
+        )
+        legacy_tagged = (
+            "/analysis/HW-run_gg_4h_4_0.0_0.0-"
+            "extended-v2_var.smearCMS.root"
+        )
+        self.assertEqual(schemas.strip_extended_v2_tag(legacy_tagged), untagged)
+        self.assertEqual(
+            schemas.canonical_sample_basename(legacy_tagged),
             "HW-run_gg_4h_4_0.0_0.0",
         )
 
@@ -309,7 +321,7 @@ class RootContractTests(unittest.TestCase):
         root_file = _extended_root_file()
         fake_root = _FakeRoot(root_file)
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "sample-extended-v2_var.smearCMS.root"
+            path = Path(directory) / "sample-extended-v2-uniform-smear-v1_var.smearCMS.root"
             path.touch()
 
             info = reader.inspect_ROOT_varfile(
@@ -346,7 +358,7 @@ class RootContractTests(unittest.TestCase):
         names[0], names[1] = names[1], names[0]
         fake_root = _FakeRoot(_extended_root_file(feature_names=names))
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "sample-extended-v2_var.smearCMS.root"
+            path = Path(directory) / "sample-extended-v2-uniform-smear-v1_var.smearCMS.root"
             path.touch()
             with self.assertRaisesRegex(reader.RootVariableFileError, "feature 0"):
                 reader.inspect_ROOT_varfile(

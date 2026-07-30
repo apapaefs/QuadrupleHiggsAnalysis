@@ -36,6 +36,156 @@ def _cpp_string_vector(source: str, function_name: str) -> tuple[str, ...]:
 
 
 class ExtendedObservablesCppTests(unittest.TestCase):
+    def test_cms_smearing_uniformly_scales_the_massive_four_vector(self) -> None:
+        source = ANALYZER_SOURCE.read_text()
+        energy_smearing = source.split(
+            "double smearedJetEnergyCMS(const PseudoJet& jet) {", 1
+        )[1].split("\n}\n\nPseudoJet smearJetCMSLegacyMassless", 1)[0]
+        legacy_mapping = source.split(
+            "PseudoJet smearJetCMSLegacyMassless(const PseudoJet& jet) {", 1
+        )[1].split("\n}\n\nPseudoJet smearJetCMSUniformFourVector", 1)[0]
+        uniform_mapping = source.split(
+            "PseudoJet smearJetCMSUniformFourVector", 2
+        )[-1].split("\n}\n\nstd::string makeOutputName", 1)[0]
+
+        self.assertEqual(energy_smearing.count("rnd.Gaus("), 1)
+        self.assertIn("!std::isfinite(energy) || energy <= 0.0", energy_smearing)
+        self.assertIn("std::max(kMinimumSmearedEnergy", energy_smearing)
+        self.assertIn("energy + rnd.Gaus(0.0, sigma_energy)", energy_smearing)
+        self.assertIn("SetPtEtaPhiE", legacy_mapping)
+        self.assertIn("smeared_energy / std::cosh(jet.eta())", legacy_mapping)
+        self.assertIn("const double scale = smeared_energy / energy;", uniform_mapping)
+        self.assertIn("scale * jet.px()", uniform_mapping)
+        self.assertIn("scale * jet.py()", uniform_mapping)
+        self.assertIn("scale * jet.pz()", uniform_mapping)
+        self.assertIn("output.m() - scale * jet.m()", uniform_mapping)
+        self.assertNotIn("SetPtEtaPhiE", uniform_mapping)
+
+    def test_smearing_model_and_output_tag_are_versioned(self) -> None:
+        source = ANALYZER_SOURCE.read_text()
+        self.assertIn(
+            'kExtendedOutputTag = "extended-v2-uniform-smear-v1"', source
+        )
+        self.assertIn(
+            'kJetSmearingModelId = "cms-energy-uniform-fourvector-v1"', source
+        )
+        self.assertIn(
+            'kJetSmearingFourVectorScaling = "uniform_correlated"', source
+        )
+        self.assertIn(
+            'tag == std::string("-") + kExtendedOutputTag', source
+        )
+        self.assertIn(
+            'tag == std::string("-") + kLegacyExtendedOutputTag', source
+        )
+        self.assertIn('TNamed analysis_output_tag("analysis_output_tag"', source)
+        self.assertIn('TNamed jet_smearing_model_id("jet_smearing_model_id"', source)
+        self.assertIn(
+            'TNamed jet_smearing_fourvector_scaling("jet_smearing_fourvector_scaling"',
+            source,
+        )
+        self.assertIn('TParameter<Long64_t>("jet_smearing_seed"', source)
+        self.assertIn(
+            'TParameter<double>("max_smearing_mass_scaling_residual_gev"', source
+        )
+
+    def test_v2_pt_cut_is_applied_after_smearing_with_finite_guards(self) -> None:
+        source = ANALYZER_SOURCE.read_text()
+        candidate_block = source.split(
+            "std::vector<PseudoJet> true_bjets_unsorted;", 1
+        )[1].split("std::vector<PseudoJet> true_bjets =", 1)[0]
+        tagged_block = candidate_block.split("if (write_extended_v2) {", 1)[1].split(
+            "    } else {", 1
+        )[0]
+        true_b_block = tagged_block.split(
+            "for (int jj = 0; jj < numbJets; ++jj)", 1
+        )[1].split("for (int jj = 0; jj < numJets; ++jj)", 1)[0]
+        non_b_block = tagged_block.split(
+            "for (int jj = 0; jj < numJets; ++jj)", 1
+        )[1]
+
+        for block, candidate in (
+            (true_b_block, "bjet_candidate"),
+            (non_b_block, "jet_candidate"),
+        ):
+            raw_eta_position = block.index(f"const double raw_eta = {candidate}.eta()")
+            raw_pt_position = block.index(f"const double raw_pt = {candidate}.perp()")
+            finite_position = block.index("!std::isfinite(raw_eta)")
+            smear_position = block.index("smearJetCMSUniformFourVector")
+            smeared_pt_position = block.index("const double smeared_pt = smeared.perp()")
+            finite_smeared_position = block.index("std::isfinite(smeared_pt)")
+            self.assertLess(raw_eta_position, finite_position)
+            self.assertLess(raw_pt_position, finite_position)
+            self.assertLess(finite_position, smear_position)
+            self.assertLess(smear_position, smeared_pt_position)
+            self.assertLess(smeared_pt_position, finite_smeared_position)
+
+        non_b_position = tagged_block.index("for (int jj = 0; jj < numJets; ++jj)")
+        true_b_selection = source.index("std::vector<PseudoJet> true_bjets =")
+        self.assertLess(source.index("std::vector<NonBJetCandidate> tagged_non_b_candidates"), true_b_selection)
+        self.assertLess(
+            source.index("for (int jj = 0; jj < numJets; ++jj)", source.index(tagged_block)),
+            true_b_selection,
+        )
+        self.assertGreater(non_b_position, 0)
+
+    def test_legacy_preprocessing_keeps_raw_pt_then_massless_smearing(self) -> None:
+        source = ANALYZER_SOURCE.read_text()
+        legacy_true_b = source.split(
+            "// Preserve the historical untagged preprocessing", 1
+        )[1].split("std::vector<PseudoJet> true_bjets =", 1)[0]
+        self.assertLess(
+            legacy_true_b.index("raw_pt <= kBJetPtCut"),
+            legacy_true_b.index("smearJetCMSLegacyMassless"),
+        )
+        self.assertIn("!std::isfinite(raw_eta)", legacy_true_b)
+        self.assertIn("!std::isfinite(raw_pt)", legacy_true_b)
+
+    def test_dormant_jet_efficiency_interpolation_starts_at_20_gev(self) -> None:
+        source = ANALYZER_SOURCE.read_text()
+        efficiency = source.split("bool jetEfficiencyAccept", 2)[-1].split(
+            "\n}\n\ndouble btagWeight", 1
+        )[0]
+        self.assertIn("(jet.perp() - 20.0) / (50.0 - 20.0)", efficiency)
+
+    def test_object_level_pt_migrations_are_recorded_in_the_summary(self) -> None:
+        source = ANALYZER_SOURCE.read_text()
+        for population in ("true_b", "non_b"):
+            for direction in ("upward", "downward"):
+                counter = f"{population}_{direction}_pt_migrations"
+                self.assertIn(f"long long {counter} = 0;", source)
+                self.assertIn(f'\\"{counter}\\": ', source)
+            for raw_pt_bin in ("10_12", "12_15", "15_20"):
+                counter = (
+                    f"{population}_upward_pt_migrations_"
+                    f"raw_pt_{raw_pt_bin}_gev"
+                )
+                self.assertIn(f"long long {counter} = 0;", source)
+                self.assertIn(f'\\"{counter}\\": ', source)
+            self.assertEqual(
+                source.count(f"++{population}_upward_pt_migrations;"), 1
+            )
+        self.assertIn(
+            '"max_smearing_mass_scaling_residual_gev"', source
+        )
+
+    def test_mass_target_override_isolated_from_legacy_data2(self) -> None:
+        source = ANALYZER_SOURCE.read_text()
+        legacy_reconstruction = source.rsplit(
+            "Reconstruction findBestReconstruction", 1
+        )[1].split("std::array<double, kHiggsCount> sortedDeltaM", 1)[0]
+        self.assertIn("kDefaultHiggsMassTargets[h]", legacy_reconstruction)
+        self.assertNotIn("higgs_mass_targets", legacy_reconstruction)
+
+        extended_fill = source.split(
+            "const ExtendedReconstruction extended_reconstruction", 1
+        )[1].split("fillExtendedFeatures", 1)[0]
+        self.assertIn("higgs_mass_targets", extended_fill)
+        option_guard = source.split(
+            'cmdOptionExists(argv, argv + argc, "--higgs-mass-targets")', 1
+        )[1].split("const int required_true_bjets", 1)[0]
+        self.assertIn("!write_extended_v2", option_guard)
+
     def test_root_metadata_matches_authoritative_schema(self) -> None:
         schemas = _load_schema_module()
         source = ANALYZER_SOURCE.read_text()

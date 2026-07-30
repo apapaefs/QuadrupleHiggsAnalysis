@@ -22,6 +22,7 @@
 *.o
 __pycache__/
 Code/FourHiggs8bAnalysis_smear_CMS
+Code/FourHiggsResonanceAnalysis
 
 # Machine-local generator installations and generated validation campaigns
 /MG5_aMC_v3_5_15/
@@ -32,6 +33,7 @@ Code/FourHiggs8bAnalysis_smear_CMS
 tutorials/sm_gg8b_xgboost_pyhf/tutorial_outputs/
 tutorials/sm_gg8b_xgboost_pyhf/*.executed.ipynb
 tutorials/sm_gg8b_xgboost_pyhf/.ipynb_checkpoints/
+/MassTargetStudy/results/
 
 # Local OS/editor artifacts
 .DS_Store

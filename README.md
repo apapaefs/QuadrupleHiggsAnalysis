@@ -12,6 +12,9 @@ and c3/d4 limit plotting.
   `*_var.smearCMS.root` variable trees.
 - `Code/xgboost_root_varfiles_module.py`: XGBoost training, scoring, and limit
   plotting helpers.
+- `Code/mass_target_study.py`: held-out 19-point reconstruction-target scan
+  for both resonant and non-resonant analyses; see
+  [MassTargetStudy/README.md](MassTargetStudy/README.md).
 
 ## Forced-Splitting Production on Tiresias
 

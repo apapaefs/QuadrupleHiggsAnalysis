@@ -35,9 +35,14 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 
 
-METHOD_VERSION = "resonance-mass-aware-xgboost-v1"
+METHOD_VERSION = "resonance-mass-aware-xgboost-v1.1-sm-multihiggs-backgrounds"
 TREE_SCHEMA = "resonance-hybrid-v1"
-EXTRACTOR_METHOD_VERSION = "resonance-hybrid-v1.1-leading-composition"
+EXTRACTOR_METHOD_VERSION = "resonance-hybrid-v1.2-uniform-fourvector-smearing"
+EXTRACTOR_PREPROCESSING_VERSION = "resonance-preprocessing-v2"
+EXTRACTOR_SMEARING_MODEL_ID = "cms-energy-uniform-fourvector-v1"
+EXTRACTOR_SMEARING_ETA_PRESELECTION = "finite |eta|<2.5 before smearing"
+EXTRACTOR_SMEARING_PT_THRESHOLD = "smeared pT>20 GeV"
+EXTRACTOR_SMEARING_ACCEPTANCE_ORDER = "raw_abs_eta_then_smear_then_smeared_pt"
 DEFAULT_TREE = "ResonanceFeatures"
 DEFAULT_SEED = 12345
 N_FOLDS = 5
@@ -63,6 +68,12 @@ TAGGING_SCENARIOS = {
     "nominal": EPS_BB_NOMINAL,
     "conservative": EPS_BB_CONSERVATIVE,
 }
+SM_BACKGROUND_HBB_POWERS = {
+    "sm_hhhh": 4,
+    "sm_hhhbb": 3,
+    "sm_hh4b": 2,
+}
+REQUIRED_FULL_SM_BACKGROUND_ROLES = tuple(SM_BACKGROUND_HBB_POWERS)
 
 # Fixed by construction; every fold and topology uses this recorded contract.
 FIXED_XGBOOST_PARAMS: dict[str, Any] = {
@@ -557,13 +568,15 @@ def load_background_specs(
         expected_text = row.get("generated_events", "").strip()
         if not expected_text:
             raise AnalysisInputError(f"{sample_id}: generated_events is required as an entry check")
-        hbb_default = 4 if role == "sm_hhhh" else 0
+        hbb_default = SM_BACKGROUND_HBB_POWERS.get(role, 0)
         hbb_power = _nonnegative_int(
             row.get("hbb_power", hbb_default) or hbb_default,
             f"{sample_id} hbb_power",
         )
-        if role == "sm_hhhh" and hbb_power != 4:
-            raise AnalysisInputError(f"{sample_id}: SM hhhh must use hbb_power=4")
+        if role in SM_BACKGROUND_HBB_POWERS and hbb_power != hbb_default:
+            raise AnalysisInputError(
+                f"{sample_id}: {role} must use hbb_power={hbb_default}"
+            )
         k_factor = float(row.get("k_factor", default_k_factor) or default_k_factor)
         rate_factor = float(row.get("rate_factor", 1.0) or 1.0)
         if not math.isfinite(k_factor) or k_factor <= 0.0:
@@ -621,12 +634,50 @@ def load_background_specs(
                 optional=optional,
             )
         )
-    present_sm = [spec for spec in specs if spec.role == "sm_hhhh"]
-    if len(present_sm) != 1:
+    role_counts = {
+        role: sum(spec.role == role for spec in specs)
+        for role in REQUIRED_FULL_SM_BACKGROUND_ROLES
+    }
+    if role_counts["sm_hhhh"] != 1:
         raise AnalysisInputError(
-            f"background manifest must contain exactly one available sm_hhhh row; found {len(present_sm)}"
+            "background manifest must contain exactly one available sm_hhhh row; "
+            f"found {role_counts['sm_hhhh']}"
+        )
+    repeated_roles = {
+        role: count
+        for role, count in role_counts.items()
+        if role != "sm_hhhh" and count > 1
+    }
+    if repeated_roles:
+        raise AnalysisInputError(
+            "background manifest contains repeated SM multihiggs roles: "
+            + ", ".join(
+                f"{role}={count}" for role, count in sorted(repeated_roles.items())
+            )
         )
     return specs, missing_optional
+
+
+def require_full_sm_background_roles(specs: Sequence[SampleSpec]) -> None:
+    """Require every irreducible SM multihiggs component in physics-result modes."""
+
+    role_counts = {
+        role: sum(spec.role == role for spec in specs)
+        for role in REQUIRED_FULL_SM_BACKGROUND_ROLES
+    }
+    invalid = {
+        role: count
+        for role, count in role_counts.items()
+        if count != 1
+    }
+    if invalid:
+        detail = ", ".join(
+            f"{role}={count}" for role, count in sorted(invalid.items())
+        )
+        raise AnalysisInputError(
+            "full resonant analyses require exactly one available row for each "
+            f"SM multihiggs background role ({detail})"
+        )
 
 
 def _summary_metadata(path: Path) -> tuple[int, float, float, int, float, dict[str, Any]]:
@@ -639,6 +690,33 @@ def _summary_metadata(path: Path) -> tuple[int, float, float, int, float, dict[s
     if summary.get("method_version") != EXTRACTOR_METHOD_VERSION:
         raise AnalysisInputError(
             f"{path}: expected extractor method_version {EXTRACTOR_METHOD_VERSION!r}"
+        )
+    if summary.get("preprocessing_version") != EXTRACTOR_PREPROCESSING_VERSION:
+        raise AnalysisInputError(
+            f"{path}: expected preprocessing_version "
+            f"{EXTRACTOR_PREPROCESSING_VERSION!r}"
+        )
+    smearing = summary.get("smearing")
+    if not isinstance(smearing, Mapping):
+        raise AnalysisInputError(f"{path}: missing smearing metadata")
+    expected_smearing_metadata = {
+        "enabled": True,
+        "preprocessing_version": EXTRACTOR_PREPROCESSING_VERSION,
+        "model_id": EXTRACTOR_SMEARING_MODEL_ID,
+        "eta_preselection": EXTRACTOR_SMEARING_ETA_PRESELECTION,
+        "pt_threshold": EXTRACTOR_SMEARING_PT_THRESHOLD,
+        "smear_before_pt_threshold": True,
+        "acceptance_order": EXTRACTOR_SMEARING_ACCEPTANCE_ORDER,
+    }
+    incompatible_smearing = [
+        name
+        for name, expected in expected_smearing_metadata.items()
+        if smearing.get(name) != expected
+    ]
+    if incompatible_smearing:
+        raise AnalysisInputError(
+            f"{path}: incompatible smearing metadata: "
+            + ", ".join(incompatible_smearing)
         )
     if summary.get("tag_efficiencies_applied") is not False:
         raise AnalysisInputError(f"{path}: tagging must not be pre-applied")
@@ -2793,6 +2871,8 @@ def run_analysis(args: argparse.Namespace) -> int:
     background_specs, missing_optional = load_background_specs(
         background_manifest, analysis_root, args.background_k_factor
     )
+    if not smoke:
+        require_full_sm_background_roles(background_specs)
     sample_ids = [spec.sample_id for spec in (*signal_specs, *background_specs)]
     if len(sample_ids) != len(set(sample_ids)):
         duplicates = sorted(
@@ -2818,6 +2898,9 @@ def run_analysis(args: argparse.Namespace) -> int:
         "method_version": METHOD_VERSION,
         "tree_schema": TREE_SCHEMA,
         "extractor_method_version": EXTRACTOR_METHOD_VERSION,
+        "extractor_preprocessing_version": EXTRACTOR_PREPROCESSING_VERSION,
+        "extractor_smearing_model_id": EXTRACTOR_SMEARING_MODEL_ID,
+        "extractor_smearing_acceptance_order": EXTRACTOR_SMEARING_ACCEPTANCE_ORDER,
         "topology": args.topology,
         "mode": args.mode,
         "tree_name": args.tree_name,
@@ -2835,9 +2918,15 @@ def run_analysis(args: argparse.Namespace) -> int:
         "point_order": "signal_manifest",
         "signal_files": [str(spec.root_file) for spec in signal_specs],
         "background_samples": [
-            {"sample_id": spec.sample_id, "root_file": str(spec.root_file)}
+            {
+                "sample_id": spec.sample_id,
+                "role": spec.role,
+                "hbb_power": spec.hbb_power,
+                "root_file": str(spec.root_file),
+            }
             for spec in background_specs
         ],
+        "required_sm_background_roles": list(REQUIRED_FULL_SM_BACKGROUND_ROLES),
         "luminosity_fb_inverse": args.luminosity,
         "hbb_branching_ratio": args.hbb_branching_ratio,
         "eps_b": args.eps_b,
@@ -2967,6 +3056,9 @@ def run_analysis(args: argparse.Namespace) -> int:
             "status": "normalization_only",
             "topology": args.topology,
             "extractor_method_version": EXTRACTOR_METHOD_VERSION,
+            "extractor_preprocessing_version": EXTRACTOR_PREPROCESSING_VERSION,
+            "extractor_smearing_model_id": EXTRACTOR_SMEARING_MODEL_ID,
+            "extractor_smearing_acceptance_order": EXTRACTOR_SMEARING_ACCEPTANCE_ORDER,
             "analysis_fingerprint": analysis_fingerprint,
             "command": shlex.join(sys.argv),
             "configuration": configuration,
@@ -3342,6 +3434,9 @@ def run_analysis(args: argparse.Namespace) -> int:
         "topology": args.topology,
         "tree_schema": TREE_SCHEMA,
         "extractor_method_version": EXTRACTOR_METHOD_VERSION,
+        "extractor_preprocessing_version": EXTRACTOR_PREPROCESSING_VERSION,
+        "extractor_smearing_model_id": EXTRACTOR_SMEARING_MODEL_ID,
+        "extractor_smearing_acceptance_order": EXTRACTOR_SMEARING_ACCEPTANCE_ORDER,
         "analysis_fingerprint": analysis_fingerprint,
         "run_fingerprint": run_fingerprint,
         "command": shlex.join(sys.argv),
@@ -3386,7 +3481,7 @@ def run_analysis(args: argparse.Namespace) -> int:
         "missing_optional_backgrounds": missing_optional,
         "background_provenance": background_provenance,
         "provenance_warnings": provenance_warnings,
-        "future_background_roles": ["sm_hhhbb", "sm_hh4b"],
+        "required_sm_background_roles": list(REQUIRED_FULL_SM_BACKGROUND_ROLES),
         "normalization_audit_passed": True,
         "models_resumed": models_resumed,
         "resumed_point_count": resumed_point_count,

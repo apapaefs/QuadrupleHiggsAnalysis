@@ -1,0 +1,11 @@
+sample_id,class,workflow,raw_root,c_mistags,light_mistags,max_reco_jets,class_weight
+direct_m600,signal,resonant,HerwigSignalPoints/mass_scan_10k/direct/events/HW-gg_iota0_hhhh-miota_0600.root,0,0,10,1
+direct_m1500,signal,resonant,HerwigSignalPoints/mass_scan_10k/direct/events/HW-gg_iota0_hhhh-miota_1500.root,0,0,10,1
+direct_m3000,signal,resonant,HerwigSignalPoints/mass_scan_10k/direct/events/HW-gg_iota0_hhhh-miota_3000.root,0,0,10,1
+cascade_m800_m375,signal,resonant,HerwigSignalPoints/mass_scan_10k/cascade/events/HW-gg_iota0_eta0eta0_hhhh-miota_0800-meta_0375.root,0,0,10,1
+cascade_m2000_m925,signal,resonant,HerwigSignalPoints/mass_scan_10k/cascade/events/HW-gg_iota0_eta0eta0_hhhh-miota_2000-meta_0925.root,0,0,10,1
+cascade_m4000_m1800,signal,resonant,HerwigSignalPoints/mass_scan_10k/cascade/events/HW-gg_iota0_eta0eta0_hhhh-miota_4000-meta_1800.root,0,0,10,1
+nonres_sm,signal,nonresonant,HerwigSignalPoints/c3d4_10k/events/HW-run_gg_4h_4_0.0_0.0.root,0,0,8,1
+nonres_c3m1_d40,signal,nonresonant,HerwigSignalPoints/c3d4_10k/events/HW-run_gg_4h_4_-1.0_0.0.root,0,0,8,1
+nonres_c330_d4700,signal,nonresonant,HerwigSignalPoints/c3d4_10k/events/HW-run_gg_4h_4_30.0_700.0.root,0,0,8,1
+qcd_8b,background,both,ResonanceAnalysis/raw_backgrounds/HW-gg_to_8b-bhadmult-v1.root,0,0,8,1

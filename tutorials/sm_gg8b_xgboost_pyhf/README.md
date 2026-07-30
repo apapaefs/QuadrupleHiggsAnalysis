@@ -38,16 +38,16 @@ snapshot or any historical XGBoost artifact.
 ```bash
 mkdir -p Signals/events Backgrounds/events
 
-scp tiresias:/home/apapaefs/Projects/QuadrupleHiggsAnalysis/Signals/events/HW-gg_hhhh_SM-extended-v2_var.smearCMS.root Signals/events/
-scp tiresias:/home/apapaefs/Projects/QuadrupleHiggsAnalysis/Signals/events/HW-gg_hhhh_SM-extended-v2.analysis_summary.json Signals/events/
-scp tiresias:/home/apapaefs/Projects/QuadrupleHiggsAnalysis/Backgrounds/events/HW-gg_to_8b-extended-v2_var.smearCMS.root Backgrounds/events/
-scp tiresias:/home/apapaefs/Projects/QuadrupleHiggsAnalysis/Backgrounds/events/HW-gg_to_8b-extended-v2.analysis_summary.json Backgrounds/events/
+scp tiresias:/home/apapaefs/Projects/QuadrupleHiggsAnalysis/Signals/events/HW-gg_hhhh_SM-extended-v2-uniform-smear-v1_var.smearCMS.root Signals/events/
+scp tiresias:/home/apapaefs/Projects/QuadrupleHiggsAnalysis/Signals/events/HW-gg_hhhh_SM-extended-v2-uniform-smear-v1.analysis_summary.json Signals/events/
+scp tiresias:/home/apapaefs/Projects/QuadrupleHiggsAnalysis/Backgrounds/events/HW-gg_to_8b-extended-v2-uniform-smear-v1_var.smearCMS.root Backgrounds/events/
+scp tiresias:/home/apapaefs/Projects/QuadrupleHiggsAnalysis/Backgrounds/events/HW-gg_to_8b-extended-v2-uniform-smear-v1.analysis_summary.json Backgrounds/events/
 
 shasum -a 256 \
-  Signals/events/HW-gg_hhhh_SM-extended-v2_var.smearCMS.root \
-  Signals/events/HW-gg_hhhh_SM-extended-v2.analysis_summary.json \
-  Backgrounds/events/HW-gg_to_8b-extended-v2_var.smearCMS.root \
-  Backgrounds/events/HW-gg_to_8b-extended-v2.analysis_summary.json
+  Signals/events/HW-gg_hhhh_SM-extended-v2-uniform-smear-v1_var.smearCMS.root \
+  Signals/events/HW-gg_hhhh_SM-extended-v2-uniform-smear-v1.analysis_summary.json \
+  Backgrounds/events/HW-gg_to_8b-extended-v2-uniform-smear-v1_var.smearCMS.root \
+  Backgrounds/events/HW-gg_to_8b-extended-v2-uniform-smear-v1.analysis_summary.json
 ```
 
 The expected hashes are:
