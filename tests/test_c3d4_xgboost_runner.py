@@ -1363,7 +1363,7 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
             legacy_contours=True,
             luminosity=3000.0,
             contour_c3_range=(-20.0, 20.0),
-            contour_d4_range=(-500.0, 500.0),
+            contour_d4_range=(-300.0, 300.0),
             contour_grid_bins=301,
             contour_interpolation="linear",
             xsec_source_dir=runner.DEFAULT_HHHH_XSEC_SOURCE_DIR,
@@ -1517,6 +1517,10 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
                 plot["watermark"], "PRELIMINARY - SINGLE-BIN CUT RESULT"
             )
             self.assertTrue(plot["include_atlas"])
+            self.assertEqual(
+                plot["legend_fontsize"],
+                runner.DEFAULT_CONTOUR_LEGEND_FONTSIZE,
+            )
             self.assertGreater(Path(plot["png"]).stat().st_size, 0)
             self.assertGreater(Path(plot["pdf"]).stat().st_size, 0)
 

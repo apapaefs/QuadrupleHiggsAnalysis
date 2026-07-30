@@ -78,10 +78,11 @@ SHAPE_CHECKPOINT_VERSION = 2
 SHAPE_ORCHESTRATION_VERSION = "parallel-checkpoint-postfit-signal-v2"
 PYHF_POI_BRACKET_MULTIPLIER = 10.0
 COUPLING_HOLDOUT_VERSION = "balanced-hash-fivefold-v1"
-LEGACY_CONTOUR_STYLE_VERSION = "legacy-c3d4-overlay-v1"
+LEGACY_CONTOUR_STYLE_VERSION = "legacy-c3d4-overlay-v2"
 DEFAULT_CONTOUR_C3_RANGE = (-20.0, 20.0)
-DEFAULT_CONTOUR_D4_RANGE = (-500.0, 500.0)
+DEFAULT_CONTOUR_D4_RANGE = (-300.0, 300.0)
 DEFAULT_CONTOUR_GRID_BINS = 301
+DEFAULT_CONTOUR_LEGEND_FONTSIZE = 8.0
 EXPECTED_C3D4_SIGNAL_POINT_COUNT = 57
 CONTOUR_INTERPOLATION_METHODS = ("linear", "clough-tocher")
 OPTUNA_TUNED_PARAMETER_NAMES = (
@@ -4282,7 +4283,7 @@ def _draw_legacy_style_exclusion_plot(
     _draw_plot_watermark(axis, watermark)
     handles, labels = axis.get_legend_handles_labels()
     if handles:
-        axis.legend(loc="best", fontsize=10)
+        axis.legend(loc="best", fontsize=DEFAULT_CONTOUR_LEGEND_FONTSIZE)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=220)
     fig.savefig(path.with_suffix(".pdf"))
@@ -4301,6 +4302,7 @@ def _draw_legacy_style_exclusion_plot(
         "atlas_reference_curve": atlas_metadata,
         "process_title": process_title,
         "limit_label": limit_label,
+        "legend_fontsize": DEFAULT_CONTOUR_LEGEND_FONTSIZE,
         "watermark": watermark,
     }
 
