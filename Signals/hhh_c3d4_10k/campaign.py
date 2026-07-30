@@ -28,7 +28,7 @@ from ForcedSplitting.mg5_grid import prepare_mg5_grid  # noqa: E402
 EXPECTED_POINTS = 153
 PRODUCTION_EVENTS = 10_000
 PRODUCTION_CPUS = 64
-ANALYSIS_ID = "hhh-hhhh-ge6b-v1"
+ANALYSIS_ID = "hhh-hhhh-ge6b-pairing-v3"
 FLOAT_PATTERN = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
 INTEGRATED_WEIGHT = re.compile(
     rf"Integrated weight\s*\(pb\)\s*:\s*({FLOAT_PATTERN})",

@@ -22,7 +22,25 @@ The analysis applies the repository's
 truth-b jets with smeared `pT > 20 GeV` and raw `|eta| < 2.5`, and evaluates
 the probabilities for exactly 6, exactly 7, and at least 8 tags analytically
 with a per-jet efficiency of 0.85.  There are no mistags, jet-pair separation
-cuts, Higgs reconstruction cuts, or classifiers.
+cuts, Higgs reconstruction cuts, or classifiers in the baseline selection.
+
+The paired companion selection takes the six highest-smeared-`pT` tagged
+b-jets in each analytic tag configuration and minimizes
+
+```text
+|m_bb,1 - 120 GeV| + |m_bb,2 - 115 GeV| + |m_bb,3 - 110 GeV|
+```
+
+over the 15 canonical pairings.  Within each pairing, the three dijet
+candidates are ordered by descending pair `pT`; the 120, 115, and 110 GeV
+targets are assigned in that order, as in the ATLAS HHH reconstruction.
+The analyzer sums exactly over all possible top-six tagged sets; it does not
+sample tag decisions.  A single upper cut on this score is
+calibrated with the inclusive SM HHH sample at `(c3,d4)=(0,0)` to retain at
+least 90% of its baseline `>=6`-tag weighted yield, then frozen for every HHH,
+HHHbb, and HHHH point.  The finite-sample uncertainty on the calibrated
+threshold is not evaluated or propagated; the metadata records this
+limitation.
 
 ## Normalization
 
@@ -76,6 +94,11 @@ cd ~/Projects/QuadrupleHiggsAnalysis-hhh-ge6b
 ./Signals/hhh_c3d4_10k/run_campaign.sh validate
 ```
 
+`analyze` first creates or validates `results/pairing_calibration.json`, then
+applies its fixed score threshold to every process.  Changing the calibration
+or analyzer ID invalidates the affected caches without regenerating or
+reshowering events.
+
 Use `--cpus N` to override the shared budget.  MG5 uses one point at a time
 with `nb_core=N`; Herwig and the ROOT analysis use up to `N` single-threaded
 workers with `OMP_NUM_THREADS=1`.
@@ -99,9 +122,12 @@ Results are written beneath `Signals/hhh_c3d4_10k/results/`, including:
 - `c3d4_hhhh_ge6btag_over_hhh_plus_hhhbb_ge6btag_ratio_contours.pdf`;
 - `c3d4_hhhh_ge6btag_over_hhh_ge6btag_ratio_contours.pdf`;
 - `c3d4_hhhh_eq6btag_over_hhh_plus_hhhbb_eq6btag_ratio_contours.pdf`;
+- paired-cut companions for the combined denominator, the HHH-only
+  diagnostic, and the exactly-six ratio, with `pairing90` in their filenames;
 - a corresponding
   `_with_atl_phys_pub_2025_003_limit.pdf` variant of each of those three
-  plots, overlaying the digitized Figure 7 no-systematics
+  baseline plots and each of the three paired plots, overlaying the digitized
+  Figure 7 no-systematics
   `ATL-PHYS-PUB-2025-003` limit;
 - matching PNG files, plot metadata, and validation metadata.
 
@@ -119,7 +145,9 @@ curve is digitized in `(kappa3,kappa4)` and plotted after the exact coordinate
 conversion `c3=kappa3-1`, `d4=kappa4-1`.  The plots use the same `8.2 x 6.2`
 inch constrained-layout canvas as the paper's self-coupling contour figure, so
 their axes have the same aspect ratio when placed at equal column width.
-The three plots without the ATLAS overlay include a compact inset stating the
+The six plots without the ATLAS overlay include a compact inset stating the
 fiducial b-jet requirements, `pT > 20 GeV` and `|eta| < 2.5`; the inset is
 placed in the open lower-right region beyond the contour branches.  The
 ATLAS-overlay variants omit this inset to keep the comparison uncluttered.
+Each paired plot has a second title line giving its calibrated score cut and
+the 90% SM-HHH target efficiency.

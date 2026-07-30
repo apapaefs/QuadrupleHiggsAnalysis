@@ -7,6 +7,7 @@ import argparse
 import concurrent.futures
 import csv
 import gzip
+import itertools
 import json
 import math
 import os
@@ -45,6 +46,17 @@ BTAG_EFFICIENCY = 0.85
 PT_CUT_GEV = 20.0
 ABS_ETA_CUT = 2.5
 SMEARING_SEED = 14101983
+PAIRING_TARGET_EFFICIENCY = 0.90
+PAIRING_SCORE_ID = "atlas-3h-l1-mass-residual-v1"
+PAIRING_SCORE_DEFINITION = "min_pairings(sum_i |m_bb_i-target_i|)"
+PAIRING_MASS_TARGETS_GEV = (120.0, 115.0, 110.0)
+PAIRING_SELECTED_TAGGED_JETS = 6
+PAIRING_CANONICAL_PAIRINGS = 15
+PAIRING_SELECTED_JET_ORDER = "six highest-smeared-pT tagged b-jets"
+PAIRING_TARGET_ASSIGNMENT = (
+    "candidate pairs ordered by descending pair pT; "
+    "targets 120, 115, and 110 GeV assigned in that order"
+)
 XSEC_RELATIVE_TOLERANCE = 5.0e-4
 HHHBB_XSEC_RELATIVE_TOLERANCE = 5.0e-3
 # consolidated_sources.json records analysis_xsec_fb to 12 significant
@@ -79,12 +91,21 @@ FIDUCIAL_EXACT6_PLOT_TITLE = (
     r"Fiducial $\sigma(gg\rightarrow hhhh)/\sigma(gg\rightarrow hhh)$, "
     r"$N_{b\mathrm{-tag}}=6$"
 )
+FIDUCIAL_PAIRED_PLOT_TITLE = FIDUCIAL_PLOT_TITLE
+FIDUCIAL_PAIRED_EXACT6_PLOT_TITLE = FIDUCIAL_EXACT6_PLOT_TITLE
 HERWIG_TOTAL = re.compile(r"^Total:\s+(\d+)\s+\d+\s+(\S+)")
 PARENTHETICAL_VALUE = re.compile(
     r"^([+-]?(?:\d+(?:\.\d*)?|\.\d+))"
     r"(?:\((\d+)\))?([eE][+-]?\d+)?$"
 )
-CATEGORIES = ("exact6", "exact7", "ge8", "ge6")
+BASE_CATEGORIES = ("exact6", "exact7", "ge8", "ge6")
+PAIRED_CATEGORIES = (
+    "paired_exact6",
+    "paired_exact7",
+    "paired_ge8",
+    "paired_ge6",
+)
+CATEGORIES = BASE_CATEGORIES + PAIRED_CATEGORIES
 PRIMARY_RATIO_STEM = (
     "c3d4_hhhh_ge6btag_over_hhh_plus_hhhbb_ge6btag_ratio_points"
 )
@@ -93,6 +114,18 @@ DIAGNOSTIC_RATIO_STEM = (
 )
 EXACT6_PRIMARY_RATIO_STEM = (
     "c3d4_hhhh_eq6btag_over_hhh_plus_hhhbb_eq6btag_ratio_points"
+)
+PAIRED_PRIMARY_RATIO_STEM = (
+    "c3d4_hhhh_ge6btag_pairing90_over_hhh_plus_hhhbb_"
+    "ge6btag_pairing90_ratio_points"
+)
+PAIRED_DIAGNOSTIC_RATIO_STEM = (
+    "c3d4_hhhh_ge6btag_pairing90_over_hhh_"
+    "ge6btag_pairing90_ratio_points"
+)
+PAIRED_EXACT6_PRIMARY_RATIO_STEM = (
+    "c3d4_hhhh_eq6btag_pairing90_over_hhh_plus_hhhbb_"
+    "eq6btag_pairing90_ratio_points"
 )
 PRIMARY_PLOT_STEM = (
     "c3d4_hhhh_ge6btag_over_hhh_plus_hhhbb_ge6btag_ratio_contours"
@@ -103,14 +136,35 @@ DIAGNOSTIC_PLOT_STEM = (
 EXACT6_PRIMARY_PLOT_STEM = (
     "c3d4_hhhh_eq6btag_over_hhh_plus_hhhbb_eq6btag_ratio_contours"
 )
+PAIRED_PRIMARY_PLOT_STEM = (
+    "c3d4_hhhh_ge6btag_pairing90_over_hhh_plus_hhhbb_"
+    "ge6btag_pairing90_ratio_contours"
+)
+PAIRED_DIAGNOSTIC_PLOT_STEM = (
+    "c3d4_hhhh_ge6btag_pairing90_over_hhh_"
+    "ge6btag_pairing90_ratio_contours"
+)
+PAIRED_EXACT6_PRIMARY_PLOT_STEM = (
+    "c3d4_hhhh_eq6btag_pairing90_over_hhh_plus_hhhbb_"
+    "eq6btag_pairing90_ratio_contours"
+)
 ATLAS_PLOT_SUFFIX = "_with_atl_phys_pub_2025_003_limit"
+ATLAS_LEGEND_LABEL = (
+    "ATLAS limit, ATL-PHYS-PUB-2025-003 (no syst.)"
+)
 PLOT_STEMS = (
     PRIMARY_PLOT_STEM,
     DIAGNOSTIC_PLOT_STEM,
     EXACT6_PRIMARY_PLOT_STEM,
+    PAIRED_PRIMARY_PLOT_STEM,
+    PAIRED_DIAGNOSTIC_PLOT_STEM,
+    PAIRED_EXACT6_PRIMARY_PLOT_STEM,
     f"{PRIMARY_PLOT_STEM}{ATLAS_PLOT_SUFFIX}",
     f"{DIAGNOSTIC_PLOT_STEM}{ATLAS_PLOT_SUFFIX}",
     f"{EXACT6_PRIMARY_PLOT_STEM}{ATLAS_PLOT_SUFFIX}",
+    f"{PAIRED_PRIMARY_PLOT_STEM}{ATLAS_PLOT_SUFFIX}",
+    f"{PAIRED_DIAGNOSTIC_PLOT_STEM}{ATLAS_PLOT_SUFFIX}",
+    f"{PAIRED_EXACT6_PRIMARY_PLOT_STEM}{ATLAS_PLOT_SUFFIX}",
 )
 
 
@@ -201,6 +255,81 @@ def binomial_tag_probabilities(
         "ge8": ge8,
         "ge6": exact6 + exact7 + ge8,
     }
+
+
+def top_six_tag_configuration_probabilities(
+    truth_bjets: int, efficiency: float = BTAG_EFFICIENCY
+) -> dict[str, float]:
+    """Sum analytic probabilities over all possible top-six tagged sets."""
+    totals = {
+        "exact6": 0.0,
+        "exact7": 0.0,
+        "ge8": 0.0,
+        "ge6": 0.0,
+    }
+    if truth_bjets < PAIRING_SELECTED_TAGGED_JETS:
+        return totals
+    for indices in itertools.combinations(
+        range(truth_bjets), PAIRING_SELECTED_TAGGED_JETS
+    ):
+        sixth_rank = indices[-1]
+        higher_untagged = (
+            sixth_rank - (PAIRING_SELECTED_TAGGED_JETS - 1)
+        )
+        lower_jets = truth_bjets - sixth_rank - 1
+        top_six_probability = (
+            efficiency**PAIRING_SELECTED_TAGGED_JETS
+            * (1.0 - efficiency) ** higher_untagged
+        )
+        exact6 = top_six_probability * binomial_probability(
+            lower_jets, 0, efficiency
+        )
+        exact7 = top_six_probability * binomial_probability(
+            lower_jets, 1, efficiency
+        )
+        ge8 = max(0.0, top_six_probability - exact6 - exact7)
+        totals["exact6"] += exact6
+        totals["exact7"] += exact7
+        totals["ge8"] += ge8
+        totals["ge6"] += top_six_probability
+    return totals
+
+
+def weighted_quantile_cut(
+    score_weights: Iterable[tuple[float, float]],
+    target_efficiency: float,
+) -> tuple[float, float]:
+    """Return the inclusive weighted score cut and achieved retention."""
+    if not 0.0 < target_efficiency <= 1.0:
+        raise ValueError("target efficiency must be in (0,1]")
+    entries = sorted(
+        (float(score), float(weight))
+        for score, weight in score_weights
+    )
+    if not entries:
+        raise ValueError("weighted quantile requires at least one entry")
+    if any(
+        not math.isfinite(score)
+        or not math.isfinite(weight)
+        or weight < 0.0
+        for score, weight in entries
+    ):
+        raise ValueError("weighted quantile entries must be finite and nonnegative")
+    total = sum(weight for _, weight in entries)
+    if total <= 0.0:
+        raise ValueError("weighted quantile has nonpositive total weight")
+    target = target_efficiency * total
+    cumulative = 0.0
+    cut = math.nan
+    for score, weight in entries:
+        cumulative += weight
+        if cumulative >= target:
+            cut = score
+            break
+    achieved = (
+        sum(weight for score, weight in entries if score <= cut) / total
+    )
+    return cut, achieved
 
 
 def parse_parenthetical_number(text: str) -> tuple[float, float]:
@@ -392,16 +521,12 @@ def cache_path(paths: AnalysisPaths, sample: SampleInput) -> Path:
     )
 
 
-def analysis_cache_is_current(path: Path, sample: SampleInput) -> bool:
-    if not path.is_file():
-        return False
-    try:
-        payload = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return False
+def analyzer_input_metadata_is_current(
+    payload: dict[str, object], sample: SampleInput
+) -> bool:
     stat = sample.root_file.stat()
     return (
-        payload.get("format_version") == 1
+        payload.get("format_version") == 2
         and payload.get("analysis_id") == ANALYSIS_ID
         and payload.get("process") == sample.process
         and Path(payload.get("input_file", "")).resolve()
@@ -424,12 +549,113 @@ def analysis_cache_is_current(path: Path, sample: SampleInput) -> bool:
     )
 
 
+def analysis_cache_is_current(
+    path: Path, sample: SampleInput, pairing_cut_gev: float
+) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    pairing = payload.get("pairing", {})
+    categories = payload.get("tag_categories", {})
+    return (
+        analyzer_input_metadata_is_current(payload, sample)
+        and isinstance(pairing, dict)
+        and pairing.get("score_id") == PAIRING_SCORE_ID
+        and pairing.get("definition") == PAIRING_SCORE_DEFINITION
+        and pairing.get("cut_enabled") is True
+        and pairing.get("calibration_mode") is False
+        and math.isclose(
+            float(pairing.get("cut_gev", math.nan)),
+            pairing_cut_gev,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        )
+        and int(pairing.get("selected_tagged_jets", -1))
+        == PAIRING_SELECTED_TAGGED_JETS
+        and pairing.get("selected_jet_order")
+        == PAIRING_SELECTED_JET_ORDER
+        and pairing.get("target_assignment")
+        == PAIRING_TARGET_ASSIGNMENT
+        and tuple(
+            float(value)
+            for value in pairing.get("mass_targets_gev", [])
+        )
+        == PAIRING_MASS_TARGETS_GEV
+        and int(pairing.get("canonical_pairings", -1))
+        == PAIRING_CANONICAL_PAIRINGS
+        and isinstance(categories, dict)
+        and all(category in categories for category in CATEGORIES)
+    )
+
+
+def pairing_calibration_path(paths: AnalysisPaths) -> Path:
+    return paths.results_dir / "pairing_calibration.json"
+
+
+def pairing_calibration_is_current(
+    path: Path, sample: SampleInput
+) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    pairing = payload.get("pairing", {})
+    if not isinstance(pairing, dict):
+        return False
+    cut = float(pairing.get("calibrated_cut_gev", math.nan))
+    achieved = float(
+        pairing.get("calibration_achieved_efficiency", math.nan)
+    )
+    return (
+        analyzer_input_metadata_is_current(payload, sample)
+        and pairing.get("score_id") == PAIRING_SCORE_ID
+        and pairing.get("definition") == PAIRING_SCORE_DEFINITION
+        and pairing.get("cut_enabled") is False
+        and pairing.get("calibration_mode") is True
+        and pairing.get("selected_jet_order")
+        == PAIRING_SELECTED_JET_ORDER
+        and pairing.get("target_assignment")
+        == PAIRING_TARGET_ASSIGNMENT
+        and tuple(
+            float(value)
+            for value in pairing.get("mass_targets_gev", [])
+        )
+        == PAIRING_MASS_TARGETS_GEV
+        and int(pairing.get("selected_tagged_jets", -1))
+        == PAIRING_SELECTED_TAGGED_JETS
+        and int(pairing.get("canonical_pairings", -1))
+        == PAIRING_CANONICAL_PAIRINGS
+        and math.isclose(
+            float(
+                pairing.get(
+                    "calibration_target_efficiency", math.nan
+                )
+            ),
+            PAIRING_TARGET_EFFICIENCY,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        )
+        and math.isfinite(cut)
+        and cut >= 0.0
+        and math.isfinite(achieved)
+        and achieved >= PAIRING_TARGET_EFFICIENCY
+        and achieved <= 1.0
+    )
+
+
 def run_analyzer(
     paths: AnalysisPaths,
     sample: SampleInput,
     force: bool = False,
     max_events: int | None = None,
     output: Path | None = None,
+    pairing_cut_gev: float | None = None,
+    pairing_target_efficiency: float | None = None,
 ) -> Path:
     if not paths.analyzer.is_file():
         raise FileNotFoundError(f"missing analyzer executable: {paths.analyzer}")
@@ -437,7 +663,10 @@ def run_analyzer(
     if (
         output is None
         and not force
-        and analysis_cache_is_current(target, sample)
+        and pairing_cut_gev is not None
+        and analysis_cache_is_current(
+            target, sample, pairing_cut_gev
+        )
     ):
         return target
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -462,6 +691,15 @@ def run_analyzer(
     ]
     if max_events is not None:
         command.extend(["--max-events", str(max_events)])
+    if pairing_cut_gev is not None:
+        command.extend(["--pairing-cut", repr(pairing_cut_gev)])
+    if pairing_target_efficiency is not None:
+        command.extend(
+            [
+                "--pairing-target-efficiency",
+                repr(pairing_target_efficiency),
+            ]
+        )
     environment = dict(os.environ)
     environment["OMP_NUM_THREADS"] = "1"
     completed = subprocess.run(
@@ -473,7 +711,17 @@ def run_analyzer(
         stderr=subprocess.STDOUT,
         check=False,
     )
-    log = paths.results_dir / "logs" / sample.process / f"{sample.run_name}.log"
+    log_suffix = (
+        ".pairing-calibration.log"
+        if pairing_target_efficiency is not None
+        else ".log"
+    )
+    log = (
+        paths.results_dir
+        / "logs"
+        / sample.process
+        / f"{sample.run_name}{log_suffix}"
+    )
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text(
         "$ " + " ".join(command) + "\n" + completed.stdout
@@ -485,6 +733,70 @@ def run_analyzer(
         )
     temporary.replace(target)
     return target
+
+
+def ensure_pairing_calibration(
+    paths: AnalysisPaths,
+    sm_hhh_sample: SampleInput,
+    force: bool,
+    *,
+    output: Path | None = None,
+) -> dict[str, object]:
+    target = output or pairing_calibration_path(paths)
+    if (
+        force
+        or output is not None
+        or not pairing_calibration_is_current(target, sm_hhh_sample)
+    ):
+        run_analyzer(
+            paths,
+            sm_hhh_sample,
+            force=True,
+            output=target,
+            pairing_target_efficiency=PAIRING_TARGET_EFFICIENCY,
+        )
+    payload = json.loads(target.read_text())
+    if not pairing_calibration_is_current(target, sm_hhh_sample):
+        raise RuntimeError(
+            f"pairing calibration output failed audit: {target}"
+        )
+    pairing = payload["pairing"]
+    return {
+        "analysis_file": str(target),
+        "analysis_id": payload["analysis_id"],
+        "source_process": payload["process"],
+        "source_run_name": sm_hhh_sample.run_name,
+        "source_coordinate": [
+            float(sm_hhh_sample.point.c3),
+            float(sm_hhh_sample.point.d4),
+        ],
+        "score_id": pairing["score_id"],
+        "definition": pairing["definition"],
+        "mass_targets_gev": pairing["mass_targets_gev"],
+        "selected_tagged_jets": pairing["selected_tagged_jets"],
+        "selected_jet_order": pairing["selected_jet_order"],
+        "target_assignment": pairing["target_assignment"],
+        "canonical_pairings": pairing["canonical_pairings"],
+        "target_efficiency": pairing[
+            "calibration_target_efficiency"
+        ],
+        "achieved_efficiency": pairing[
+            "calibration_achieved_efficiency"
+        ],
+        "cut_gev": pairing["calibrated_cut_gev"],
+        "cut_operator": pairing["cut_operator"],
+        "weighted_ge6_sum": payload["tag_categories"]["ge6"][
+            "weighted_sum"
+        ],
+        "calibration_entry_weight_sum": pairing[
+            "calibration_entry_weight_sum"
+        ],
+        "calibration_entries": pairing["calibration_entries"],
+        "pairing_score_evaluations": pairing[
+            "pairing_score_evaluations"
+        ],
+        "threshold_uncertainty_propagated": False,
+    }
 
 
 def normalization(sample: SampleInput) -> dict[str, object]:
@@ -614,9 +926,13 @@ def cross_section_with_error(
 
 
 def make_cross_section_row(
-    sample: SampleInput, analysis_json: Path
+    sample: SampleInput,
+    analysis_json: Path,
+    pairing_cut_gev: float,
 ) -> dict[str, object]:
     analysis = json.loads(analysis_json.read_text())
+    pairing_payload = analysis.get("pairing", {})
+    pairing = pairing_payload if isinstance(pairing_payload, dict) else {}
     norm = normalization(sample)
     branching_factor = HBB_BRANCHING_RATIO**sample.hbb_power
     audit_issues = list(norm["issues"])
@@ -653,6 +969,50 @@ def make_cross_section_row(
         audit_issues.append("invalid ROOT event-weight sums")
     if float(analysis["maximum_probability_closure_residual"]) > 1.0e-12:
         audit_issues.append("per-event tag-probability closure failed")
+    if (
+        float(
+            analysis.get(
+                "maximum_top6_ge6_probability_closure_residual",
+                math.inf,
+            )
+        )
+        > 1.0e-12
+        or float(
+            analysis.get(
+                "maximum_top6_component_probability_closure_residual",
+                math.inf,
+            )
+        )
+        > 1.0e-12
+    ):
+        audit_issues.append("top-six tag-configuration closure failed")
+    if (
+        not isinstance(pairing_payload, dict)
+        or pairing.get("score_id") != PAIRING_SCORE_ID
+        or pairing.get("definition") != PAIRING_SCORE_DEFINITION
+        or pairing.get("cut_enabled") is not True
+        or pairing.get("calibration_mode") is not False
+        or not math.isclose(
+            float(pairing.get("cut_gev", math.nan)),
+            pairing_cut_gev,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        )
+        or tuple(
+            float(value)
+            for value in pairing.get("mass_targets_gev", [])
+        )
+        != PAIRING_MASS_TARGETS_GEV
+        or int(pairing.get("selected_tagged_jets", -1))
+        != PAIRING_SELECTED_TAGGED_JETS
+        or pairing.get("selected_jet_order")
+        != PAIRING_SELECTED_JET_ORDER
+        or pairing.get("target_assignment")
+        != PAIRING_TARGET_ASSIGNMENT
+        or int(pairing.get("canonical_pairings", -1))
+        != PAIRING_CANONICAL_PAIRINGS
+    ):
+        audit_issues.append("pairing selection metadata does not match")
 
     sample_definitions = {
         "hhh": "inclusive full-loop gg->hhh, Herwig shower",
@@ -707,6 +1067,22 @@ def make_cross_section_row(
             0.3 if sample.process == "hhhbb" else ""
         ),
         "analysis_id": analysis["analysis_id"],
+        "pairing_score_id": pairing.get("score_id", ""),
+        "pairing_score_definition": pairing.get("definition", ""),
+        "pairing_mass_targets_gev": "|".join(
+            f"{value:g}" for value in PAIRING_MASS_TARGETS_GEV
+        ),
+        "pairing_selected_tagged_jets": PAIRING_SELECTED_TAGGED_JETS,
+        "pairing_selected_jet_order": pairing.get(
+            "selected_jet_order", ""
+        ),
+        "pairing_target_assignment": pairing.get(
+            "target_assignment", ""
+        ),
+        "pairing_cut_gev": pairing_cut_gev,
+        "pairing_cut_operator": "<=",
+        "pairing_target_hhh_efficiency": PAIRING_TARGET_EFFICIENCY,
+        "pairing_threshold_uncertainty_propagated": False,
         "audit_status": "ok" if not audit_issues else "failed",
         "audit_issues": "; ".join(audit_issues),
     }
@@ -747,6 +1123,34 @@ def make_cross_section_row(
         row["audit_issues"] = (
             str(row["audit_issues"]) + "; tag component closure failed"
         ).strip("; ")
+    paired_closure = abs(
+        float(row["sigma_paired_ge6_pb"])
+        - float(row["sigma_paired_exact6_pb"])
+        - float(row["sigma_paired_exact7_pb"])
+        - float(row["sigma_paired_ge8_pb"])
+    )
+    row["sigma_paired_tag_component_closure_pb"] = paired_closure
+    if paired_closure > max(
+        1.0e-18,
+        1.0e-10 * abs(float(row["sigma_paired_ge6_pb"])),
+    ):
+        row["audit_status"] = "failed"
+        row["audit_issues"] = (
+            str(row["audit_issues"])
+            + "; paired tag component closure failed"
+        ).strip("; ")
+    row["pairing_retention_ge6"] = (
+        float(row["acceptance_paired_ge6"])
+        / float(row["acceptance_ge6"])
+        if float(row["acceptance_ge6"]) > 0.0
+        else math.nan
+    )
+    row["pairing_retention_exact6"] = (
+        float(row["acceptance_paired_exact6"])
+        / float(row["acceptance_exact6"])
+        if float(row["acceptance_exact6"]) > 0.0
+        else math.nan
+    )
     return row
 
 
@@ -789,6 +1193,13 @@ def combine_component_rows(
             "hhhbb_probe_trial_weight_correction_applied": hhhbb[
                 "probe_trial_weight_correction_applied"
             ],
+            "pairing_score_id": hhh["pairing_score_id"],
+            "pairing_cut_gev": hhh["pairing_cut_gev"],
+            "pairing_cut_operator": hhh["pairing_cut_operator"],
+            "pairing_target_hhh_efficiency": hhh[
+                "pairing_target_hhh_efficiency"
+            ],
+            "pairing_threshold_uncertainty_propagated": False,
             "hhh_audit_status": hhh["audit_status"],
             "hhhbb_audit_status": hhhbb["audit_status"],
             "audit_status": (
@@ -837,7 +1248,12 @@ def combine_component_rows(
             row[f"sigma_{category}_error_pb"] = error
             row[f"sigma_{category}_fb"] = total * 1.0e3
             row[f"sigma_{category}_error_fb"] = error * 1.0e3
-        for category in ("exact6", "ge6"):
+        for category in (
+            "exact6",
+            "ge6",
+            "paired_exact6",
+            "paired_ge6",
+        ):
             denominator = float(row[f"sigma_{category}_pb"])
             hhh_value = float(hhh[f"sigma_{category}_pb"])
             hhhbb_value = float(hhhbb[f"sigma_{category}_pb"])
@@ -871,6 +1287,22 @@ def combine_component_rows(
             row["audit_issues"] = (
                 str(row["audit_issues"])
                 + "; combined tag component closure failed"
+            ).strip("; ")
+        paired_closure = abs(
+            float(row["sigma_paired_ge6_pb"])
+            - float(row["sigma_paired_exact6_pb"])
+            - float(row["sigma_paired_exact7_pb"])
+            - float(row["sigma_paired_ge8_pb"])
+        )
+        row["sigma_paired_tag_component_closure_pb"] = paired_closure
+        if paired_closure > max(
+            1.0e-18,
+            1.0e-10 * abs(float(row["sigma_paired_ge6_pb"])),
+        ):
+            row["audit_status"] = "failed"
+            row["audit_issues"] = (
+                str(row["audit_issues"])
+                + "; combined paired tag component closure failed"
             ).strip("; ")
         combined.append(row)
     return combined
@@ -939,6 +1371,28 @@ def make_ratio_rows(
             float(hhh["sigma_ge6_pb"]),
             float(hhh["sigma_ge6_error_pb"]),
         )
+        paired_primary, paired_primary_error = ratio_with_error(
+            float(hhhh["sigma_paired_ge6_pb"]),
+            float(hhhh["sigma_paired_ge6_error_pb"]),
+            float(combined["sigma_paired_ge6_pb"]),
+            float(combined["sigma_paired_ge6_error_pb"]),
+        )
+        paired_exact6_primary, paired_exact6_primary_error = (
+            ratio_with_error(
+                float(hhhh["sigma_paired_exact6_pb"]),
+                float(hhhh["sigma_paired_exact6_error_pb"]),
+                float(combined["sigma_paired_exact6_pb"]),
+                float(
+                    combined["sigma_paired_exact6_error_pb"]
+                ),
+            )
+        )
+        paired_diagnostic, paired_diagnostic_error = ratio_with_error(
+            float(hhhh["sigma_paired_ge6_pb"]),
+            float(hhhh["sigma_paired_ge6_error_pb"]),
+            float(hhh["sigma_paired_ge6_pb"]),
+            float(hhh["sigma_paired_ge6_error_pb"]),
+        )
         output.append(
             {
                 "index": hhhh["index"],
@@ -997,6 +1451,93 @@ def make_ratio_rows(
                 ),
                 "ratio_hhhh_over_hhh": diagnostic,
                 "ratio_hhhh_over_hhh_error": diagnostic_error,
+                "pairing_score_id": hhhh["pairing_score_id"],
+                "pairing_cut_gev": hhhh["pairing_cut_gev"],
+                "pairing_cut_operator": hhhh[
+                    "pairing_cut_operator"
+                ],
+                "pairing_target_hhh_efficiency": hhhh[
+                    "pairing_target_hhh_efficiency"
+                ],
+                "pairing_threshold_uncertainty_propagated": False,
+                "hhhh_sigma_paired_ge6_pb": hhhh[
+                    "sigma_paired_ge6_pb"
+                ],
+                "hhhh_sigma_paired_ge6_error_pb": hhhh[
+                    "sigma_paired_ge6_error_pb"
+                ],
+                "hhh_sigma_paired_ge6_pb": hhh[
+                    "sigma_paired_ge6_pb"
+                ],
+                "hhh_sigma_paired_ge6_error_pb": hhh[
+                    "sigma_paired_ge6_error_pb"
+                ],
+                "hhhbb_sigma_paired_ge6_pb": hhhbb[
+                    "sigma_paired_ge6_pb"
+                ],
+                "hhhbb_sigma_paired_ge6_error_pb": hhhbb[
+                    "sigma_paired_ge6_error_pb"
+                ],
+                "denominator_sigma_paired_ge6_pb": combined[
+                    "sigma_paired_ge6_pb"
+                ],
+                "denominator_sigma_paired_ge6_error_pb": combined[
+                    "sigma_paired_ge6_error_pb"
+                ],
+                "hhhbb_fraction_paired_ge6": combined[
+                    "hhhbb_fraction_paired_ge6"
+                ],
+                "hhhbb_fraction_paired_ge6_error": combined[
+                    "hhhbb_fraction_paired_ge6_error"
+                ],
+                "hhhh_sigma_paired_exact6_pb": hhhh[
+                    "sigma_paired_exact6_pb"
+                ],
+                "hhhh_sigma_paired_exact6_error_pb": hhhh[
+                    "sigma_paired_exact6_error_pb"
+                ],
+                "hhh_sigma_paired_exact6_pb": hhh[
+                    "sigma_paired_exact6_pb"
+                ],
+                "hhh_sigma_paired_exact6_error_pb": hhh[
+                    "sigma_paired_exact6_error_pb"
+                ],
+                "hhhbb_sigma_paired_exact6_pb": hhhbb[
+                    "sigma_paired_exact6_pb"
+                ],
+                "hhhbb_sigma_paired_exact6_error_pb": hhhbb[
+                    "sigma_paired_exact6_error_pb"
+                ],
+                "denominator_sigma_paired_exact6_pb": combined[
+                    "sigma_paired_exact6_pb"
+                ],
+                "denominator_sigma_paired_exact6_error_pb": combined[
+                    "sigma_paired_exact6_error_pb"
+                ],
+                "hhhbb_fraction_paired_exact6": combined[
+                    "hhhbb_fraction_paired_exact6"
+                ],
+                "hhhbb_fraction_paired_exact6_error": combined[
+                    "hhhbb_fraction_paired_exact6_error"
+                ],
+                "ratio_hhhh_paired_ge6_over_hhh_plus_hhhbb_paired_ge6": (
+                    paired_primary
+                ),
+                "ratio_hhhh_paired_ge6_over_hhh_plus_hhhbb_paired_ge6_error": (
+                    paired_primary_error
+                ),
+                "ratio_hhhh_paired_exact6_over_hhh_plus_hhhbb_paired_exact6": (
+                    paired_exact6_primary
+                ),
+                "ratio_hhhh_paired_exact6_over_hhh_plus_hhhbb_paired_exact6_error": (
+                    paired_exact6_primary_error
+                ),
+                "ratio_hhhh_paired_ge6_over_hhh_paired_ge6": (
+                    paired_diagnostic
+                ),
+                "ratio_hhhh_paired_ge6_over_hhh_paired_ge6_error": (
+                    paired_diagnostic_error
+                ),
                 "audit_status": (
                     "ok"
                     if all(
@@ -1030,7 +1571,9 @@ def write_rows(
 
 
 def write_pointwise_ratio_tables(
-    results_dir: Path, rows: list[dict[str, object]]
+    results_dir: Path,
+    rows: list[dict[str, object]],
+    pairing_calibration: dict[str, object],
 ) -> None:
     primary_fields = (
         "index",
@@ -1085,6 +1628,74 @@ def write_pointwise_ratio_tables(
         "audit_status",
         "audit_issues",
     )
+    paired_primary_fields = (
+        "index",
+        "c3",
+        "d4",
+        "combination_scheme",
+        "pairing_score_id",
+        "pairing_cut_gev",
+        "pairing_cut_operator",
+        "pairing_target_hhh_efficiency",
+        "pairing_threshold_uncertainty_propagated",
+        "hhhh_sigma_paired_ge6_pb",
+        "hhhh_sigma_paired_ge6_error_pb",
+        "hhh_sigma_paired_ge6_pb",
+        "hhh_sigma_paired_ge6_error_pb",
+        "hhhbb_sigma_paired_ge6_pb",
+        "hhhbb_sigma_paired_ge6_error_pb",
+        "denominator_sigma_paired_ge6_pb",
+        "denominator_sigma_paired_ge6_error_pb",
+        "hhhbb_fraction_paired_ge6",
+        "hhhbb_fraction_paired_ge6_error",
+        "ratio_hhhh_paired_ge6_over_hhh_plus_hhhbb_paired_ge6",
+        "ratio_hhhh_paired_ge6_over_hhh_plus_hhhbb_paired_ge6_error",
+        "audit_status",
+        "audit_issues",
+    )
+    paired_diagnostic_fields = (
+        "index",
+        "c3",
+        "d4",
+        "pairing_score_id",
+        "pairing_cut_gev",
+        "pairing_cut_operator",
+        "pairing_target_hhh_efficiency",
+        "pairing_threshold_uncertainty_propagated",
+        "hhhh_sigma_paired_ge6_pb",
+        "hhhh_sigma_paired_ge6_error_pb",
+        "hhh_sigma_paired_ge6_pb",
+        "hhh_sigma_paired_ge6_error_pb",
+        "ratio_hhhh_paired_ge6_over_hhh_paired_ge6",
+        "ratio_hhhh_paired_ge6_over_hhh_paired_ge6_error",
+        "audit_status",
+        "audit_issues",
+    )
+    paired_exact6_primary_fields = (
+        "index",
+        "c3",
+        "d4",
+        "combination_scheme",
+        "pairing_score_id",
+        "pairing_cut_gev",
+        "pairing_cut_operator",
+        "pairing_target_hhh_efficiency",
+        "pairing_threshold_uncertainty_propagated",
+        "hhhh_sigma_paired_exact6_pb",
+        "hhhh_sigma_paired_exact6_error_pb",
+        "hhh_sigma_paired_exact6_pb",
+        "hhh_sigma_paired_exact6_error_pb",
+        "hhhbb_sigma_paired_exact6_pb",
+        "hhhbb_sigma_paired_exact6_error_pb",
+        "denominator_sigma_paired_exact6_pb",
+        "denominator_sigma_paired_exact6_error_pb",
+        "hhhbb_fraction_paired_exact6",
+        "hhhbb_fraction_paired_exact6_error",
+        "ratio_hhhh_paired_exact6_over_hhh_plus_hhhbb_paired_exact6",
+        "ratio_hhhh_paired_exact6_over_hhh_plus_hhhbb_paired_exact6_error",
+        "audit_status",
+        "audit_issues",
+    )
     primary_rows = [
         {field: row[field] for field in primary_fields} for row in rows
     ]
@@ -1093,6 +1704,18 @@ def write_pointwise_ratio_tables(
     ]
     exact6_primary_rows = [
         {field: row[field] for field in exact6_primary_fields}
+        for row in rows
+    ]
+    paired_primary_rows = [
+        {field: row[field] for field in paired_primary_fields}
+        for row in rows
+    ]
+    paired_diagnostic_rows = [
+        {field: row[field] for field in paired_diagnostic_fields}
+        for row in rows
+    ]
+    paired_exact6_primary_rows = [
+        {field: row[field] for field in paired_exact6_primary_fields}
         for row in rows
     ]
     write_rows(
@@ -1123,16 +1746,87 @@ def write_pointwise_ratio_tables(
             "points": EXPECTED_POINTS,
         },
     )
+    pairing_metadata = {
+        "score_id": pairing_calibration["score_id"],
+        "definition": pairing_calibration["definition"],
+        "mass_targets_gev": pairing_calibration[
+            "mass_targets_gev"
+        ],
+        "selected_tagged_jets": pairing_calibration[
+            "selected_tagged_jets"
+        ],
+        "selected_jet_order": pairing_calibration[
+            "selected_jet_order"
+        ],
+        "target_assignment": pairing_calibration[
+            "target_assignment"
+        ],
+        "cut_gev": pairing_calibration["cut_gev"],
+        "cut_operator": pairing_calibration["cut_operator"],
+        "target_hhh_efficiency": pairing_calibration[
+            "target_efficiency"
+        ],
+        "achieved_hhh_efficiency": pairing_calibration[
+            "achieved_efficiency"
+        ],
+        "calibration_coordinate": pairing_calibration[
+            "source_coordinate"
+        ],
+        "threshold_uncertainty_propagated": False,
+    }
+    write_rows(
+        results_dir / PAIRED_PRIMARY_RATIO_STEM,
+        paired_primary_rows,
+        {
+            "ratio": (
+                "hhhh_paired_ge6/"
+                "(hhh_paired_ge6+hhhbb_paired_ge6)"
+            ),
+            "combination_scheme": "additive_unmatched",
+            "pairing": pairing_metadata,
+            "points": EXPECTED_POINTS,
+        },
+    )
+    write_rows(
+        results_dir / PAIRED_DIAGNOSTIC_RATIO_STEM,
+        paired_diagnostic_rows,
+        {
+            "ratio": "hhhh_paired_ge6/hhh_paired_ge6",
+            "role": "HHH-only diagnostic",
+            "pairing": pairing_metadata,
+            "points": EXPECTED_POINTS,
+        },
+    )
+    write_rows(
+        results_dir / PAIRED_EXACT6_PRIMARY_RATIO_STEM,
+        paired_exact6_primary_rows,
+        {
+            "ratio": (
+                "hhhh_paired_exact6/"
+                "(hhh_paired_exact6+hhhbb_paired_exact6)"
+            ),
+            "combination_scheme": "additive_unmatched",
+            "tag_requirement": "exactly 6",
+            "pairing": pairing_metadata,
+            "points": EXPECTED_POINTS,
+        },
+    )
 
 
 def aggregate_results(
     paths: AnalysisPaths,
     inputs: dict[str, list[SampleInput]],
+    pairing_calibration: dict[str, object],
 ) -> dict[str, list[dict[str, object]]]:
+    pairing_cut_gev = float(pairing_calibration["cut_gev"])
     process_rows: dict[str, list[dict[str, object]]] = {}
     for process in ("hhh", "hhhbb", "hhhh"):
         process_rows[process] = [
-            make_cross_section_row(sample, cache_path(paths, sample))
+            make_cross_section_row(
+                sample,
+                cache_path(paths, sample),
+                pairing_cut_gev,
+            )
             for sample in inputs[process]
         ]
         write_rows(
@@ -1147,6 +1841,7 @@ def aggregate_results(
                 "jet_pt_cut_gev": PT_CUT_GEV,
                 "jet_abs_eta_cut": ABS_ETA_CUT,
                 "smearing_seed": SMEARING_SEED,
+                "pairing_calibration": pairing_calibration,
                 "points": EXPECTED_POINTS,
                 },
                 **(
@@ -1182,6 +1877,7 @@ def aggregate_results(
                 "inclusive showered hhh can contain g->bb; "
                 "this is an additive estimate, not a matched prediction"
             ),
+            "pairing_calibration": pairing_calibration,
             "points": EXPECTED_POINTS,
         },
     )
@@ -1200,11 +1896,25 @@ def aggregate_results(
                 "hhhh_exact6/(hhh_exact6+hhhbb_exact6)"
             ),
             "diagnostic_ratio": "hhhh_ge6/hhh_ge6",
+            "paired_primary_ratio": (
+                "hhhh_paired_ge6/"
+                "(hhh_paired_ge6+hhhbb_paired_ge6)"
+            ),
+            "paired_exact6_primary_ratio": (
+                "hhhh_paired_exact6/"
+                "(hhh_paired_exact6+hhhbb_paired_exact6)"
+            ),
+            "paired_diagnostic_ratio": (
+                "hhhh_paired_ge6/hhh_paired_ge6"
+            ),
+            "pairing_calibration": pairing_calibration,
             "combination_scheme": "additive_unmatched",
             "points": EXPECTED_POINTS,
         },
     )
-    write_pointwise_ratio_tables(paths.results_dir, ratios)
+    write_pointwise_ratio_tables(
+        paths.results_dir, ratios, pairing_calibration
+    )
     process_rows["combined"] = combined
     process_rows["ratios"] = ratios
     return process_rows
@@ -1249,10 +1959,33 @@ def analyze_all(
             + "\n".join(normalization_failures[:30])
         )
 
+    sm_hhh_sample = next(
+        sample
+        for sample in inputs["hhh"]
+        if sample.point.coordinate == (0.0, 0.0)
+    )
+    pairing_calibration = ensure_pairing_calibration(
+        paths, sm_hhh_sample, force
+    )
+    pairing_cut_gev = float(pairing_calibration["cut_gev"])
+    print(
+        "Pairing calibration: "
+        f"score <= {pairing_cut_gev:.8g} GeV retains "
+        f"{float(pairing_calibration['achieved_efficiency']):.6%} "
+        "of SM HHH >=6-tag weight",
+        flush=True,
+    )
+
     failures: list[str] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=cpus) as executor:
         future_to_sample = {
-            executor.submit(run_analyzer, paths, sample, force): sample
+            executor.submit(
+                run_analyzer,
+                paths,
+                sample,
+                force,
+                pairing_cut_gev=pairing_cut_gev,
+            ): sample
             for sample in jobs
         }
         for index, future in enumerate(
@@ -1274,7 +2007,9 @@ def analyze_all(
             f"{len(failures)} analyzer job(s) failed:\n"
             + "\n".join(failures[:20])
         )
-    result_rows = aggregate_results(paths, inputs)
+    result_rows = aggregate_results(
+        paths, inputs, pairing_calibration
+    )
     failed_rows = [
         f"{process} index={row['index']}"
         for process, rows in result_rows.items()
@@ -1300,6 +2035,8 @@ def plot_ratio_contours(
     title: str,
     *,
     include_atlas: bool = False,
+    pairing_cut_gev: float | None = None,
+    pairing_target_efficiency: float | None = None,
 ) -> dict[str, object]:
     import matplotlib
 
@@ -1449,18 +2186,33 @@ def plot_ratio_contours(
             c3d4_plot_style._plot_atlas_phys_pub_2025_003_curve(axis),
             color="blue",
             linestyle="solid",
+            display_label=ATLAS_LEGEND_LABEL,
         )
+        axis.lines[-1].set_label(ATLAS_LEGEND_LABEL)
     axis.set_xlim(PLOT_C3_RANGE)
     axis.set_ylim(PLOT_D4_RANGE)
     axis.set_xlabel(r"$c_3$", fontsize=20)
     axis.set_ylabel(r"$d_4$", fontsize=20)
-    axis.set_title(title + " at 14 TeV", fontsize=PLOT_TITLE_FONTSIZE)
+    display_title = title + " at 14 TeV"
+    if pairing_cut_gev is not None:
+        pairing_subtitle = (
+            rf"ATLAS pairing: $D_{{3H}}\leq {pairing_cut_gev:.1f}"
+            + r"\,\mathrm{GeV}$"
+        )
+        if pairing_target_efficiency is not None:
+            pairing_subtitle += (
+                rf" ({100.0 * pairing_target_efficiency:.0f}% "
+                + r"SM $hhh$)"
+            )
+        display_title += "\n" + pairing_subtitle
+    axis.set_title(display_title, fontsize=PLOT_TITLE_FONTSIZE)
     axis.tick_params(axis="both", labelsize=15)
     selection_annotation_metadata = None
     if not include_atlas:
+        selection_annotation = FIDUCIAL_SELECTION_ANNOTATION
         axis.text(
             *FIDUCIAL_SELECTION_ANNOTATION_POSITION,
-            FIDUCIAL_SELECTION_ANNOTATION,
+            selection_annotation,
             transform=axis.transAxes,
             horizontalalignment="right",
             verticalalignment="bottom",
@@ -1476,9 +2228,7 @@ def plot_ratio_contours(
             },
         )
         selection_annotation_metadata = {
-            "text": (
-                "b-jets with pT > 20 GeV and |eta| < 2.5"
-            ),
+            "text": "b-jets with pT > 20 GeV and |eta| < 2.5",
             "position_axes_fraction": list(
                 FIDUCIAL_SELECTION_ANNOTATION_POSITION
             ),
@@ -1487,8 +2237,15 @@ def plot_ratio_contours(
             "fontsize": FIDUCIAL_SELECTION_ANNOTATION_FONTSIZE,
             "box": "rounded white, alpha=0.92",
         }
+        if pairing_cut_gev is not None:
+            selection_annotation_metadata["pairing_cut_gev"] = (
+                pairing_cut_gev
+            )
+            selection_annotation_metadata[
+                "pairing_target_efficiency"
+            ] = pairing_target_efficiency
     if include_atlas:
-        axis.legend(loc="best", fontsize=8, framealpha=0.9)
+        axis.legend(loc="upper right", fontsize=8, framealpha=0.9)
     fig.canvas.draw()
     axes_box = axis.get_position()
     axes_box_aspect_ratio = (
@@ -1503,7 +2260,7 @@ def plot_ratio_contours(
         "status": "ok",
         "output_pdf": str(output_pdf),
         "output_png": str(output_png),
-        "title": title + " at 14 TeV",
+        "title": display_title,
         "title_fontsize": PLOT_TITLE_FONTSIZE,
         "figure_size_inches": list(CONTOUR_FIGURE_SIZE_INCHES),
         "figure_aspect_ratio": (
@@ -1516,6 +2273,8 @@ def plot_ratio_contours(
         "atlas_overlay": include_atlas,
         "atlas_reference_curve": atlas_curve_metadata,
         "fiducial_selection_annotation": selection_annotation_metadata,
+        "pairing_cut_gev": pairing_cut_gev,
+        "pairing_target_efficiency": pairing_target_efficiency,
         "points": len(values),
         "ratio_min": float(np.min(z)),
         "ratio_max": float(np.max(z)),
@@ -1549,6 +2308,14 @@ def plot_ratio_contours(
 def make_plots(paths: AnalysisPaths) -> dict[str, object]:
     ratio_csv = paths.results_dir / "ratio_points.csv"
     rows: list[dict[str, object]] = read_csv_rows(ratio_csv)
+    calibration_payload = json.loads(
+        pairing_calibration_path(paths).read_text()
+    )
+    pairing_metadata = calibration_payload["pairing"]
+    pairing_cut_gev = float(pairing_metadata["calibrated_cut_gev"])
+    pairing_target_efficiency = float(
+        pairing_metadata["calibration_target_efficiency"]
+    )
     primary = plot_ratio_contours(
         rows,
         "ratio_hhhh_over_hhh_plus_hhhbb",
@@ -1566,6 +2333,34 @@ def make_plots(paths: AnalysisPaths) -> dict[str, object]:
         "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6",
         paths.results_dir / f"{EXACT6_PRIMARY_PLOT_STEM}.pdf",
         FIDUCIAL_EXACT6_PLOT_TITLE,
+    )
+    paired_primary = plot_ratio_contours(
+        rows,
+        "ratio_hhhh_paired_ge6_over_hhh_plus_hhhbb_paired_ge6",
+        paths.results_dir / f"{PAIRED_PRIMARY_PLOT_STEM}.pdf",
+        FIDUCIAL_PAIRED_PLOT_TITLE,
+        pairing_cut_gev=pairing_cut_gev,
+        pairing_target_efficiency=pairing_target_efficiency,
+    )
+    paired_diagnostic = plot_ratio_contours(
+        rows,
+        "ratio_hhhh_paired_ge6_over_hhh_paired_ge6",
+        paths.results_dir / f"{PAIRED_DIAGNOSTIC_PLOT_STEM}.pdf",
+        FIDUCIAL_PAIRED_PLOT_TITLE,
+        pairing_cut_gev=pairing_cut_gev,
+        pairing_target_efficiency=pairing_target_efficiency,
+    )
+    paired_exact6_primary = plot_ratio_contours(
+        rows,
+        (
+            "ratio_hhhh_paired_exact6_over_hhh_plus_hhhbb_"
+            "paired_exact6"
+        ),
+        paths.results_dir
+        / f"{PAIRED_EXACT6_PRIMARY_PLOT_STEM}.pdf",
+        FIDUCIAL_PAIRED_EXACT6_PLOT_TITLE,
+        pairing_cut_gev=pairing_cut_gev,
+        pairing_target_efficiency=pairing_target_efficiency,
     )
     primary_atlas = plot_ratio_contours(
         rows,
@@ -1591,6 +2386,42 @@ def make_plots(paths: AnalysisPaths) -> dict[str, object]:
         FIDUCIAL_EXACT6_PLOT_TITLE,
         include_atlas=True,
     )
+    paired_primary_atlas = plot_ratio_contours(
+        rows,
+        "ratio_hhhh_paired_ge6_over_hhh_plus_hhhbb_paired_ge6",
+        paths.results_dir
+        / f"{PAIRED_PRIMARY_PLOT_STEM}{ATLAS_PLOT_SUFFIX}.pdf",
+        FIDUCIAL_PAIRED_PLOT_TITLE,
+        include_atlas=True,
+        pairing_cut_gev=pairing_cut_gev,
+        pairing_target_efficiency=pairing_target_efficiency,
+    )
+    paired_diagnostic_atlas = plot_ratio_contours(
+        rows,
+        "ratio_hhhh_paired_ge6_over_hhh_paired_ge6",
+        paths.results_dir
+        / f"{PAIRED_DIAGNOSTIC_PLOT_STEM}{ATLAS_PLOT_SUFFIX}.pdf",
+        FIDUCIAL_PAIRED_PLOT_TITLE,
+        include_atlas=True,
+        pairing_cut_gev=pairing_cut_gev,
+        pairing_target_efficiency=pairing_target_efficiency,
+    )
+    paired_exact6_primary_atlas = plot_ratio_contours(
+        rows,
+        (
+            "ratio_hhhh_paired_exact6_over_hhh_plus_hhhbb_"
+            "paired_exact6"
+        ),
+        paths.results_dir
+        / (
+            f"{PAIRED_EXACT6_PRIMARY_PLOT_STEM}"
+            f"{ATLAS_PLOT_SUFFIX}.pdf"
+        ),
+        FIDUCIAL_PAIRED_EXACT6_PLOT_TITLE,
+        include_atlas=True,
+        pairing_cut_gev=pairing_cut_gev,
+        pairing_target_efficiency=pairing_target_efficiency,
+    )
     payload = {
         "combination_scheme": "additive_unmatched",
         "overlap_caveat": (
@@ -1600,9 +2431,31 @@ def make_plots(paths: AnalysisPaths) -> dict[str, object]:
         "primary": primary,
         "diagnostic": diagnostic,
         "exact6_primary": exact6_primary,
+        "paired_primary": paired_primary,
+        "paired_diagnostic": paired_diagnostic,
+        "paired_exact6_primary": paired_exact6_primary,
         "primary_atlas": primary_atlas,
         "diagnostic_atlas": diagnostic_atlas,
         "exact6_primary_atlas": exact6_primary_atlas,
+        "paired_primary_atlas": paired_primary_atlas,
+        "paired_diagnostic_atlas": paired_diagnostic_atlas,
+        "paired_exact6_primary_atlas": (
+            paired_exact6_primary_atlas
+        ),
+        "pairing_calibration": {
+            "score_id": pairing_metadata["score_id"],
+            "mass_targets_gev": pairing_metadata[
+                "mass_targets_gev"
+            ],
+            "cut_gev": pairing_cut_gev,
+            "cut_operator": pairing_metadata["cut_operator"],
+            "target_efficiency": pairing_target_efficiency,
+            "achieved_efficiency": pairing_metadata[
+                "calibration_achieved_efficiency"
+            ],
+            "source_coordinate": [0.0, 0.0],
+            "threshold_uncertainty_propagated": False,
+        },
     }
     atomic_write_json(paths.results_dir / "plot_metadata.json", payload)
     return payload
@@ -1610,6 +2463,7 @@ def make_plots(paths: AnalysisPaths) -> dict[str, object]:
 
 def result_status(paths: AnalysisPaths) -> dict[str, object]:
     outputs = [
+        "pairing_calibration.json",
         "hhh_ge6b_cross_sections.csv",
         "hhhbb_ge6b_cross_sections.csv",
         "hhhh_ge6b_cross_sections.csv",
@@ -1618,6 +2472,9 @@ def result_status(paths: AnalysisPaths) -> dict[str, object]:
         f"{PRIMARY_RATIO_STEM}.csv",
         f"{DIAGNOSTIC_RATIO_STEM}.csv",
         f"{EXACT6_PRIMARY_RATIO_STEM}.csv",
+        f"{PAIRED_PRIMARY_RATIO_STEM}.csv",
+        f"{PAIRED_DIAGNOSTIC_RATIO_STEM}.csv",
+        f"{PAIRED_EXACT6_PRIMARY_RATIO_STEM}.csv",
         *[
             f"{stem}.{suffix}"
             for stem in PLOT_STEMS
@@ -1659,6 +2516,41 @@ def validate_results(
     )
     if inventory["status"] != "complete":
         issues.append(f"HHHbb inventory is {inventory['status']}")
+    calibration_summary: dict[str, object] = {}
+    calibration_file = pairing_calibration_path(paths)
+    if not calibration_file.is_file():
+        issues.append(f"missing pairing calibration {calibration_file}")
+    else:
+        try:
+            calibration_payload = json.loads(
+                calibration_file.read_text()
+            )
+            pairing = calibration_payload["pairing"]
+            calibration_summary = {
+                "score_id": pairing["score_id"],
+                "cut_gev": pairing["calibrated_cut_gev"],
+                "target_efficiency": pairing[
+                    "calibration_target_efficiency"
+                ],
+                "achieved_efficiency": pairing[
+                    "calibration_achieved_efficiency"
+                ],
+            }
+            if (
+                pairing["score_id"] != PAIRING_SCORE_ID
+                or not math.isclose(
+                    float(pairing["calibration_target_efficiency"]),
+                    PAIRING_TARGET_EFFICIENCY,
+                    rel_tol=0.0,
+                    abs_tol=1.0e-12,
+                )
+                or float(pairing["calibrated_cut_gev"]) < 0.0
+                or float(pairing["calibration_achieved_efficiency"])
+                < PAIRING_TARGET_EFFICIENCY
+            ):
+                issues.append("pairing calibration metadata failed audit")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            issues.append("pairing calibration is unreadable or incomplete")
     expected_coordinates = {point.coordinate for point in points}
     table_names = (
         "hhh_ge6b_cross_sections.csv",
@@ -1669,6 +2561,9 @@ def validate_results(
         f"{PRIMARY_RATIO_STEM}.csv",
         f"{DIAGNOSTIC_RATIO_STEM}.csv",
         f"{EXACT6_PRIMARY_RATIO_STEM}.csv",
+        f"{PAIRED_PRIMARY_RATIO_STEM}.csv",
+        f"{PAIRED_DIAGNOSTIC_RATIO_STEM}.csv",
+        f"{PAIRED_EXACT6_PRIMARY_RATIO_STEM}.csv",
     )
     table_counts = {}
     for name in table_names:
@@ -1702,6 +2597,7 @@ def validate_results(
         "table_counts": table_counts,
         "hhhbb_inventory": inventory,
         "combination_scheme": "additive_unmatched",
+        "pairing_calibration": calibration_summary,
         "issues": issues,
     }
     atomic_write_json(paths.results_dir / "validation_summary.json", payload)
@@ -1734,14 +2630,29 @@ def run_smoke_analysis(paths: AnalysisPaths, points: list[Point]) -> dict[str, o
     )
     hhhh, hhhbb = standard_sm_samples(paths, point)
     smoke_dir = CAMPAIGN_DIR / "smoke" / "analysis"
+    pairing_calibration = ensure_pairing_calibration(
+        paths,
+        smoke_hhh,
+        force=True,
+        output=smoke_dir / "pairing_calibration.json",
+    )
+    pairing_cut_gev = float(pairing_calibration["cut_gev"])
     analysis_files = {}
     for sample in (smoke_hhh, hhhh, hhhbb):
         output = smoke_dir / f"{sample.process}.json"
         analysis_files[sample.process] = run_analyzer(
-            paths, sample, force=True, output=output
+            paths,
+            sample,
+            force=True,
+            output=output,
+            pairing_cut_gev=pairing_cut_gev,
         )
     rows = {
-        process: make_cross_section_row(sample, analysis_files[process])
+        process: make_cross_section_row(
+            sample,
+            analysis_files[process],
+            pairing_cut_gev,
+        )
         for process, sample in (
             ("hhh", smoke_hhh),
             ("hhhh", hhhh),
@@ -1764,6 +2675,13 @@ def run_smoke_analysis(paths: AnalysisPaths, points: list[Point]) -> dict[str, o
             1.0e-18, 1.0e-10 * abs(float(row["sigma_ge6_pb"]))
         ):
             raise RuntimeError("smoke tag-category closure failed")
+        if float(row["sigma_paired_tag_component_closure_pb"]) > max(
+            1.0e-18,
+            1.0e-10 * abs(float(row["sigma_paired_ge6_pb"])),
+        ):
+            raise RuntimeError(
+                "smoke paired tag-category closure failed"
+            )
 
     # A deterministic non-physics mini-grid exercises both triangulated plot
     # paths without pretending that one smoke point defines a contour.
@@ -1789,6 +2707,15 @@ def run_smoke_analysis(paths: AnalysisPaths, points: list[Point]) -> dict[str, o
                 "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6": (
                     exact6_primary
                 ),
+                "ratio_hhhh_paired_ge6_over_hhh_plus_hhhbb_paired_ge6": (
+                    1.1 * primary
+                ),
+                "ratio_hhhh_paired_ge6_over_hhh_paired_ge6": (
+                    1.1 * diagnostic
+                ),
+                "ratio_hhhh_paired_exact6_over_hhh_plus_hhhbb_paired_exact6": (
+                    1.1 * exact6_primary
+                ),
             }
         )
     primary_plot = plot_ratio_contours(
@@ -1808,6 +2735,33 @@ def run_smoke_analysis(paths: AnalysisPaths, points: list[Point]) -> dict[str, o
         "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6",
         smoke_dir / "exact6_primary_fixture.pdf",
         "Smoke fixture: exactly-six primary ratio",
+    )
+    paired_primary_plot = plot_ratio_contours(
+        synthetic,
+        "ratio_hhhh_paired_ge6_over_hhh_plus_hhhbb_paired_ge6",
+        smoke_dir / "paired_primary_fixture.pdf",
+        "Smoke fixture: paired primary ratio",
+        pairing_cut_gev=pairing_cut_gev,
+        pairing_target_efficiency=PAIRING_TARGET_EFFICIENCY,
+    )
+    paired_diagnostic_plot = plot_ratio_contours(
+        synthetic,
+        "ratio_hhhh_paired_ge6_over_hhh_paired_ge6",
+        smoke_dir / "paired_diagnostic_fixture.pdf",
+        "Smoke fixture: paired HHH-only ratio",
+        pairing_cut_gev=pairing_cut_gev,
+        pairing_target_efficiency=PAIRING_TARGET_EFFICIENCY,
+    )
+    paired_exact6_primary_plot = plot_ratio_contours(
+        synthetic,
+        (
+            "ratio_hhhh_paired_exact6_over_hhh_plus_hhhbb_"
+            "paired_exact6"
+        ),
+        smoke_dir / "paired_exact6_primary_fixture.pdf",
+        "Smoke fixture: paired exactly-six primary ratio",
+        pairing_cut_gev=pairing_cut_gev,
+        pairing_target_efficiency=PAIRING_TARGET_EFFICIENCY,
     )
     primary_atlas_plot = plot_ratio_contours(
         synthetic,
@@ -1830,6 +2784,36 @@ def run_smoke_analysis(paths: AnalysisPaths, points: list[Point]) -> dict[str, o
         "Smoke fixture: exactly-six primary ratio",
         include_atlas=True,
     )
+    paired_primary_atlas_plot = plot_ratio_contours(
+        synthetic,
+        "ratio_hhhh_paired_ge6_over_hhh_plus_hhhbb_paired_ge6",
+        smoke_dir / "paired_primary_atlas_fixture.pdf",
+        "Smoke fixture: paired primary ratio",
+        include_atlas=True,
+        pairing_cut_gev=pairing_cut_gev,
+        pairing_target_efficiency=PAIRING_TARGET_EFFICIENCY,
+    )
+    paired_diagnostic_atlas_plot = plot_ratio_contours(
+        synthetic,
+        "ratio_hhhh_paired_ge6_over_hhh_paired_ge6",
+        smoke_dir / "paired_diagnostic_atlas_fixture.pdf",
+        "Smoke fixture: paired HHH-only ratio",
+        include_atlas=True,
+        pairing_cut_gev=pairing_cut_gev,
+        pairing_target_efficiency=PAIRING_TARGET_EFFICIENCY,
+    )
+    paired_exact6_primary_atlas_plot = plot_ratio_contours(
+        synthetic,
+        (
+            "ratio_hhhh_paired_exact6_over_hhh_plus_hhhbb_"
+            "paired_exact6"
+        ),
+        smoke_dir / "paired_exact6_primary_atlas_fixture.pdf",
+        "Smoke fixture: paired exactly-six primary ratio",
+        include_atlas=True,
+        pairing_cut_gev=pairing_cut_gev,
+        pairing_target_efficiency=PAIRING_TARGET_EFFICIENCY,
+    )
     payload = {
         "status": "ok",
         "analysis_id": ANALYSIS_ID,
@@ -1839,6 +2823,7 @@ def run_smoke_analysis(paths: AnalysisPaths, points: list[Point]) -> dict[str, o
             "btag_efficiency": BTAG_EFFICIENCY,
             "smearing_seed": SMEARING_SEED,
             "extra_delta_r_cut": None,
+            "pairing_calibration": pairing_calibration,
         },
         "components": rows,
         "combined": combined,
@@ -1847,9 +2832,19 @@ def run_smoke_analysis(paths: AnalysisPaths, points: list[Point]) -> dict[str, o
             "primary": primary_plot,
             "diagnostic": diagnostic_plot,
             "exact6_primary": exact6_primary_plot,
+            "paired_primary": paired_primary_plot,
+            "paired_diagnostic": paired_diagnostic_plot,
+            "paired_exact6_primary": paired_exact6_primary_plot,
             "primary_atlas": primary_atlas_plot,
             "diagnostic_atlas": diagnostic_atlas_plot,
             "exact6_primary_atlas": exact6_primary_atlas_plot,
+            "paired_primary_atlas": paired_primary_atlas_plot,
+            "paired_diagnostic_atlas": (
+                paired_diagnostic_atlas_plot
+            ),
+            "paired_exact6_primary_atlas": (
+                paired_exact6_primary_atlas_plot
+            ),
         },
     }
     atomic_write_json(smoke_dir / "smoke_results.json", payload)

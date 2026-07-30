@@ -24,8 +24,8 @@ Commands:
   status-mg5      Report HHH MG5 completion (--deep validates every LHE).
   run-herwig      Prepare and shower all completed HHH LHE points.
   status-herwig   Report HHH Herwig completion.
-  analyze         Analyze HHH, existing HHHbb, and existing HHHH samples.
-  plot            Write >=6, exactly-6, HHH-only, and ATLAS ratio contours.
+  analyze         Calibrate the 90% HHH pairing cut, then analyze all samples.
+  plot            Write baseline and paired >=6/exactly-6 ratio contours.
   validate        Validate the completed tables, normalizations, and plots.
   status          Report MG5, Herwig, HHHbb, cache, and output status.
   smoke           Run the isolated 100-event HHH and three-process smoke test.

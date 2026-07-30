@@ -16,7 +16,8 @@ and c3/d4 limit plotting.
   from a completed `fast-sm` study and plots the exact saved pyhf templates.
 - `Signals/hhh_c3d4_10k/run_campaign.sh`: runs the 153-point inclusive HHH
   generation and the common HHH/HHHbb/HHHH six-or-more and exactly-six b-tag
-  comparisons.
+  comparisons, including an SM-calibrated ATLAS-style three-Higgs pairing
+  selection.
 
 ## Forced-Splitting Production on Tiresias
 

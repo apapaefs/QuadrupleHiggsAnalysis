@@ -36,12 +36,23 @@ def component_row(
         "audit_status": "ok",
         "audit_issues": "",
         "probe_trial_weight_correction_applied": process == "hhhbb",
+        "pairing_score_id": scan.PAIRING_SCORE_ID,
+        "pairing_cut_gev": 75.0,
+        "pairing_cut_operator": "<=",
+        "pairing_target_hhh_efficiency": (
+            scan.PAIRING_TARGET_EFFICIENCY
+        ),
+        "pairing_threshold_uncertainty_propagated": False,
     }
     fractions = {
         "exact6": 0.5,
         "exact7": 0.3,
         "ge8": 0.2,
         "ge6": 1.0,
+        "paired_exact6": 0.4,
+        "paired_exact7": 0.2,
+        "paired_ge8": 0.1,
+        "paired_ge6": 0.7,
     }
     for category, fraction in fractions.items():
         row[f"acceptance_{category}"] = fraction
@@ -49,6 +60,51 @@ def component_row(
         row[f"sigma_{category}_pb"] = sigma * fraction
         row[f"sigma_{category}_error_pb"] = error * fraction
     return row
+
+
+def pairing_calibration_fixture(
+    cut_gev: float = 75.0,
+) -> dict[str, object]:
+    return {
+        "analysis_file": "/tmp/pairing_calibration.json",
+        "analysis_id": campaign.ANALYSIS_ID,
+        "source_process": "hhh",
+        "source_run_name": "run_gg_hhh_5_0.0_0.0",
+        "source_coordinate": [0.0, 0.0],
+        "score_id": scan.PAIRING_SCORE_ID,
+        "definition": scan.PAIRING_SCORE_DEFINITION,
+        "mass_targets_gev": list(scan.PAIRING_MASS_TARGETS_GEV),
+        "selected_tagged_jets": scan.PAIRING_SELECTED_TAGGED_JETS,
+        "selected_jet_order": scan.PAIRING_SELECTED_JET_ORDER,
+        "target_assignment": scan.PAIRING_TARGET_ASSIGNMENT,
+        "canonical_pairings": scan.PAIRING_CANONICAL_PAIRINGS,
+        "target_efficiency": scan.PAIRING_TARGET_EFFICIENCY,
+        "achieved_efficiency": 0.9001,
+        "cut_gev": cut_gev,
+        "cut_operator": "<=",
+        "weighted_ge6_sum": 100.0,
+        "calibration_entry_weight_sum": 100.0,
+        "calibration_entries": 100,
+        "pairing_score_evaluations": 100,
+        "threshold_uncertainty_propagated": False,
+    }
+
+
+def raw_pairing_calibration_fixture(
+    cut_gev: float = 75.0,
+) -> dict[str, object]:
+    return {
+        "pairing": {
+            "score_id": scan.PAIRING_SCORE_ID,
+            "mass_targets_gev": list(scan.PAIRING_MASS_TARGETS_GEV),
+            "cut_operator": "<=",
+            "calibration_target_efficiency": (
+                scan.PAIRING_TARGET_EFFICIENCY
+            ),
+            "calibration_achieved_efficiency": 0.9001,
+            "calibrated_cut_gev": cut_gev,
+        }
+    }
 
 
 class HHHGe6BScanTests(unittest.TestCase):
@@ -139,6 +195,37 @@ BLOCK TRIPCOUP
         self.assertEqual(perfect["exact7"], 0.0)
         self.assertEqual(perfect["ge8"], 1.0)
         self.assertEqual(perfect["ge6"], 1.0)
+
+    def test_top_six_tag_sets_close_to_binomial_categories(self) -> None:
+        for truth_bjets in range(5, 13):
+            direct = scan.binomial_tag_probabilities(truth_bjets)
+            top_six = scan.top_six_tag_configuration_probabilities(
+                truth_bjets
+            )
+            for category in ("exact6", "exact7", "ge8", "ge6"):
+                self.assertTrue(
+                    math.isclose(
+                        top_six[category],
+                        direct[category],
+                        rel_tol=0.0,
+                        abs_tol=5.0e-14,
+                    ),
+                    (truth_bjets, category, top_six, direct),
+                )
+
+    def test_weighted_pairing_quantile_is_inclusive_and_retains_target(
+        self,
+    ) -> None:
+        cut, achieved = scan.weighted_quantile_cut(
+            [(10.0, 1.0), (20.0, 2.0), (20.0, 1.0), (30.0, 1.0)],
+            0.6,
+        )
+        self.assertEqual(cut, 20.0)
+        self.assertTrue(math.isclose(achieved, 0.8))
+        with self.assertRaisesRegex(ValueError, "nonnegative"):
+            scan.weighted_quantile_cut(
+                [(10.0, 1.0), (20.0, -1.0)], 0.9
+            )
 
     def test_herwig_parenthetical_cross_section_parser(self) -> None:
         central, error = scan.parse_parenthetical_number("0.12450(1)e-09")
@@ -286,6 +373,17 @@ BLOCK TRIPCOUP
                 float(combined[0]["hhhbb_fraction_exact6"]), 1.0 / 9.0
             )
         )
+        self.assertTrue(
+            math.isclose(
+                float(combined[0]["sigma_paired_ge6_pb"]), 8.4
+            )
+        )
+        self.assertTrue(
+            math.isclose(
+                float(combined[0]["hhhbb_fraction_paired_ge6"]),
+                1.0 / 6.0,
+            )
+        )
         ratios = scan.make_ratio_rows(hhhh, hhh, hhhbb, combined)
         self.assertTrue(
             math.isclose(
@@ -305,6 +403,26 @@ BLOCK TRIPCOUP
                 0.2,
             )
         )
+        self.assertTrue(
+            math.isclose(
+                float(
+                    ratios[0][
+                        "ratio_hhhh_paired_ge6_over_hhh_plus_hhhbb_paired_ge6"
+                    ]
+                ),
+                0.25,
+            )
+        )
+        self.assertTrue(
+            math.isclose(
+                float(
+                    ratios[0][
+                        "ratio_hhhh_paired_ge6_over_hhh_paired_ge6"
+                    ]
+                ),
+                0.3,
+            )
+        )
         self.assertGreater(
             float(ratios[0]["ratio_hhhh_over_hhh_plus_hhhbb_error"]), 0.0
         )
@@ -321,6 +439,10 @@ BLOCK TRIPCOUP
         )
         self.assertGreater(
             float(combined[0]["hhhbb_fraction_exact6_error"]), 0.0
+        )
+        self.assertGreater(
+            float(combined[0]["hhhbb_fraction_paired_ge6_error"]),
+            0.0,
         )
 
     def test_exact_join_retains_all_153_authoritative_points(self) -> None:
@@ -368,7 +490,11 @@ BLOCK TRIPCOUP
         ratios = scan.make_ratio_rows(hhhh, hhh, hhhbb, combined)
         with tempfile.TemporaryDirectory() as temporary:
             results_dir = Path(temporary)
-            scan.write_pointwise_ratio_tables(results_dir, ratios)
+            scan.write_pointwise_ratio_tables(
+                results_dir,
+                ratios,
+                pairing_calibration_fixture(),
+            )
             payload = json.loads(
                 (
                     results_dir
@@ -392,6 +518,26 @@ BLOCK TRIPCOUP
                     ],
                     0.25,
                 )
+            )
+            paired_payload = json.loads(
+                (
+                    results_dir
+                    / f"{scan.PAIRED_PRIMARY_RATIO_STEM}.json"
+                ).read_text()
+            )
+            self.assertEqual(
+                paired_payload["metadata"]["pairing"]["cut_gev"],
+                75.0,
+            )
+            self.assertEqual(
+                paired_payload["metadata"]["pairing"][
+                    "target_hhh_efficiency"
+                ],
+                0.9,
+            )
+            self.assertIn(
+                "ratio_hhhh_paired_ge6_over_hhh_plus_hhhbb_paired_ge6",
+                paired_payload["rows"][0],
             )
 
     def test_zero_denominator_is_masked(self) -> None:
@@ -462,6 +608,14 @@ BLOCK TRIPCOUP
                 base / "exact6_primary.pdf",
                 "Exactly-six fixture",
             )
+            paired = scan.plot_ratio_contours(
+                rows,
+                "primary",
+                base / "paired_primary.pdf",
+                "Paired fixture",
+                pairing_cut_gev=75.0,
+                pairing_target_efficiency=0.9,
+            )
             atlas = scan.plot_ratio_contours(
                 rows,
                 "exact6_primary",
@@ -469,7 +623,7 @@ BLOCK TRIPCOUP
                 "Exactly-six fixture",
                 include_atlas=True,
             )
-            for metadata in (first, second, third, atlas):
+            for metadata in (first, second, third, paired, atlas):
                 self.assertEqual(metadata["status"], "ok")
                 self.assertTrue(Path(metadata["output_pdf"]).is_file())
                 self.assertTrue(Path(metadata["output_png"]).is_file())
@@ -538,6 +692,16 @@ BLOCK TRIPCOUP
                     ],
                     "bottom",
                 )
+            self.assertEqual(paired["pairing_cut_gev"], 75.0)
+            self.assertEqual(paired["pairing_target_efficiency"], 0.9)
+            self.assertEqual(
+                paired["fiducial_selection_annotation"]["text"],
+                "b-jets with pT > 20 GeV and |eta| < 2.5",
+            )
+            self.assertIn(
+                r"ATLAS pairing: $D_{3H}\leq 75.0\,\mathrm{GeV}$",
+                paired["title"],
+            )
             self.assertTrue(atlas["atlas_overlay"])
             self.assertIsNone(atlas["fiducial_selection_annotation"])
             self.assertIn(
@@ -552,7 +716,7 @@ BLOCK TRIPCOUP
                 ),
             )
 
-    def test_make_plots_writes_three_plain_and_three_atlas_variants(self) -> None:
+    def test_make_plots_writes_six_plain_and_six_atlas_variants(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             results_dir = base / "results"
@@ -580,6 +744,9 @@ BLOCK TRIPCOUP
                         "ratio_hhhh_exact6_over_hhh_plus_hhhbb_exact6": 0.3,
                     }
                 )
+            (results_dir / "pairing_calibration.json").write_text(
+                json.dumps(raw_pairing_calibration_fixture())
+            )
             paths = scan.AnalysisPaths(
                 source_repo=base,
                 mg5_process=base,
@@ -602,7 +769,7 @@ BLOCK TRIPCOUP
             ) as plot:
                 payload = scan.make_plots(paths)
 
-            self.assertEqual(plot.call_count, 6)
+            self.assertEqual(plot.call_count, 12)
             output_stems = {
                 Path(call.args[2]).stem for call in plot.call_args_list
             }
@@ -612,7 +779,7 @@ BLOCK TRIPCOUP
                     call.kwargs.get("include_atlas", False)
                     for call in plot.call_args_list
                 ),
-                3,
+                6,
             )
             self.assertEqual(
                 {
@@ -625,9 +792,15 @@ BLOCK TRIPCOUP
                     "primary",
                     "diagnostic",
                     "exact6_primary",
+                    "paired_primary",
+                    "paired_diagnostic",
+                    "paired_exact6_primary",
                     "primary_atlas",
                     "diagnostic_atlas",
                     "exact6_primary_atlas",
+                    "paired_primary_atlas",
+                    "paired_diagnostic_atlas",
+                    "paired_exact6_primary_atlas",
                 },
             )
 
@@ -667,7 +840,8 @@ BLOCK TRIPCOUP
                 r"$N_{b\mathrm{-tag}}=6$"
             ),
         )
-        self.assertEqual(len(scan.PLOT_STEMS), 6)
+        self.assertEqual(campaign.ANALYSIS_ID, "hhh-hhhh-ge6b-pairing-v3")
+        self.assertEqual(len(scan.PLOT_STEMS), 12)
         self.assertTrue(
             all(
                 f"{stem}{scan.ATLAS_PLOT_SUFFIX}" in scan.PLOT_STEMS
@@ -675,6 +849,9 @@ BLOCK TRIPCOUP
                     scan.PRIMARY_PLOT_STEM,
                     scan.DIAGNOSTIC_PLOT_STEM,
                     scan.EXACT6_PRIMARY_PLOT_STEM,
+                    scan.PAIRED_PRIMARY_PLOT_STEM,
+                    scan.PAIRED_DIAGNOSTIC_PLOT_STEM,
+                    scan.PAIRED_EXACT6_PRIMARY_PLOT_STEM,
                 )
             )
         )
