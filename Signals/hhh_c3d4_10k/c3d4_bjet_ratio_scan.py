@@ -2244,8 +2244,27 @@ def plot_ratio_contours(
             selection_annotation_metadata[
                 "pairing_target_efficiency"
             ] = pairing_target_efficiency
+    legend_metadata = None
     if include_atlas:
-        axis.legend(loc="upper right", fontsize=8, framealpha=0.9)
+        legend = axis.legend(
+            loc="upper right",
+            bbox_to_anchor=(0.99, 0.99),
+            bbox_transform=axis.transAxes,
+            borderaxespad=0.0,
+            fontsize=8,
+            framealpha=0.9,
+        )
+        # Some older Matplotlib constrained-layout implementations treat an
+        # axes legend as external even when it is anchored inside the axes,
+        # which can push a two-line title off the canvas.  The fixed axes
+        # anchor needs no layout allocation.
+        legend.set_in_layout(False)
+        legend_metadata = {
+            "location": "upper right",
+            "anchor_axes_fraction": [0.99, 0.99],
+            "fontsize": 8,
+            "in_layout": False,
+        }
     fig.canvas.draw()
     axes_box = axis.get_position()
     axes_box_aspect_ratio = (
@@ -2272,6 +2291,7 @@ def plot_ratio_contours(
         "value_field": value_field,
         "atlas_overlay": include_atlas,
         "atlas_reference_curve": atlas_curve_metadata,
+        "atlas_legend": legend_metadata,
         "fiducial_selection_annotation": selection_annotation_metadata,
         "pairing_cut_gev": pairing_cut_gev,
         "pairing_target_efficiency": pairing_target_efficiency,

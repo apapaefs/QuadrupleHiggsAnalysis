@@ -704,6 +704,11 @@ BLOCK TRIPCOUP
             )
             self.assertTrue(atlas["atlas_overlay"])
             self.assertIsNone(atlas["fiducial_selection_annotation"])
+            self.assertEqual(
+                atlas["atlas_legend"]["anchor_axes_fraction"],
+                [0.99, 0.99],
+            )
+            self.assertFalse(atlas["atlas_legend"]["in_layout"])
             self.assertIn(
                 "ATL-PHYS-PUB-2025-003.pdf",
                 atlas["atlas_reference_curve"]["source"],
