@@ -1192,6 +1192,7 @@ def plot_ratio_contours(
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import matplotlib.patheffects as path_effects
     import matplotlib.tri as mtri
     import numpy as np
 
@@ -1266,7 +1267,8 @@ def plot_ratio_contours(
 
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     output_png = output_pdf.with_suffix(".png")
-    fig, axis = plt.subplots(figsize=(8.2, 6.2), constrained_layout=True)
+    fig, axis = plt.subplots(figsize=(8.2, 6.2))
+    fig.subplots_adjust(left=0.13, right=0.98, bottom=0.14, top=0.82)
     axis.set_facecolor("white")
     axis.grid(alpha=0.2, linewidth=0.5)
     contour_styles = {
@@ -1289,20 +1291,44 @@ def plot_ratio_contours(
             ],
             linewidths=1.8,
         )
-        axis.clabel(
+        contour_labels = axis.clabel(
             contour,
             fmt={
                 math.log10(level): f"{level:.2g}"
                 for level in visible_levels
             },
-            inline=True,
+            inline=False,
             fontsize=11,
         )
+        c3_label_margin = 0.02 * (
+            PLOT_C3_RANGE[1] - PLOT_C3_RANGE[0]
+        )
+        d4_label_margin = 0.03 * (
+            PLOT_D4_RANGE[1] - PLOT_D4_RANGE[0]
+        )
+        for label in contour_labels:
+            label_c3, label_d4 = label.get_position()
+            if (
+                label_c3 < PLOT_C3_RANGE[0] + c3_label_margin
+                or label_c3 > PLOT_C3_RANGE[1] - c3_label_margin
+                or label_d4 < PLOT_D4_RANGE[0] + d4_label_margin
+                or label_d4 > PLOT_D4_RANGE[1] - d4_label_margin
+            ):
+                label.remove()
+            else:
+                label.set_path_effects(
+                    [
+                        path_effects.Stroke(
+                            linewidth=3.0, foreground="white"
+                        ),
+                        path_effects.Normal(),
+                    ]
+                )
     axis.set_xlim(PLOT_C3_RANGE)
     axis.set_ylim(PLOT_D4_RANGE)
     axis.set_xlabel(r"$c_3$", fontsize=20)
     axis.set_ylabel(r"$d_4$", fontsize=20)
-    axis.set_title(title + " at 14 TeV", fontsize=18)
+    axis.set_title(title + " at 14 TeV", fontsize=18, pad=10)
     axis.tick_params(axis="both", labelsize=15)
     fig.savefig(output_pdf)
     fig.savefig(output_png, dpi=220)
