@@ -498,6 +498,10 @@ BLOCK TRIPCOUP
                     [8.2, 6.2],
                 )
                 self.assertEqual(
+                    metadata["title_fontsize"],
+                    scan.PLOT_TITLE_FONTSIZE,
+                )
+                self.assertEqual(
                     metadata["layout"],
                     "constrained; matches the Fig. 3 plotting canvas",
                 )
@@ -622,8 +626,9 @@ BLOCK TRIPCOUP
         self.assertEqual(
             scan.FIDUCIAL_EXACT6_PLOT_TITLE,
             (
-                r"Fiducial $\sigma(gg\rightarrow hhhh,\,N_{b\mathrm{-tag}}=6)"
-                r"/\sigma(gg\rightarrow hhh,\,N_{b\mathrm{-tag}}=6)$"
+                r"Fiducial $\sigma(gg\rightarrow hhhh)"
+                r"/\sigma(gg\rightarrow hhh)$, "
+                r"$N_{b\mathrm{-tag}}=6$"
             ),
         )
         self.assertEqual(len(scan.PLOT_STEMS), 6)

@@ -61,13 +61,14 @@ PLOT_C3_RANGE = (-20.0, 20.0)
 PLOT_D4_RANGE = (-300.0, 300.0)
 CONTOUR_GRID_POINTS_PER_AXIS = 601
 CONTOUR_FIGURE_SIZE_INCHES = (8.2, 6.2)
+PLOT_TITLE_FONTSIZE = 18
 FIDUCIAL_PLOT_TITLE = (
     r"Fiducial $\sigma(gg\rightarrow hhhh\geq 6b)"
     r"/\sigma(gg\rightarrow hhh\geq 6b)$"
 )
 FIDUCIAL_EXACT6_PLOT_TITLE = (
-    r"Fiducial $\sigma(gg\rightarrow hhhh,\,N_{b\mathrm{-tag}}=6)"
-    r"/\sigma(gg\rightarrow hhh,\,N_{b\mathrm{-tag}}=6)$"
+    r"Fiducial $\sigma(gg\rightarrow hhhh)/\sigma(gg\rightarrow hhh)$, "
+    r"$N_{b\mathrm{-tag}}=6$"
 )
 HERWIG_TOTAL = re.compile(r"^Total:\s+(\d+)\s+\d+\s+(\S+)")
 PARENTHETICAL_VALUE = re.compile(
@@ -1444,7 +1445,7 @@ def plot_ratio_contours(
     axis.set_ylim(PLOT_D4_RANGE)
     axis.set_xlabel(r"$c_3$", fontsize=20)
     axis.set_ylabel(r"$d_4$", fontsize=20)
-    axis.set_title(title + " at 14 TeV", fontsize=20)
+    axis.set_title(title + " at 14 TeV", fontsize=PLOT_TITLE_FONTSIZE)
     axis.tick_params(axis="both", labelsize=15)
     if include_atlas:
         axis.legend(loc="best", fontsize=8, framealpha=0.9)
@@ -1463,6 +1464,7 @@ def plot_ratio_contours(
         "output_pdf": str(output_pdf),
         "output_png": str(output_png),
         "title": title + " at 14 TeV",
+        "title_fontsize": PLOT_TITLE_FONTSIZE,
         "figure_size_inches": list(CONTOUR_FIGURE_SIZE_INCHES),
         "figure_aspect_ratio": (
             CONTOUR_FIGURE_SIZE_INCHES[0]

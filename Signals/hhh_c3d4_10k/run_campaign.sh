@@ -25,7 +25,7 @@ Commands:
   run-herwig      Prepare and shower all completed HHH LHE points.
   status-herwig   Report HHH Herwig completion.
   analyze         Analyze HHH, existing HHHbb, and existing HHHH samples.
-  plot            Write the primary and HHH-only ratio contour plots.
+  plot            Write >=6, exactly-6, HHH-only, and ATLAS ratio contours.
   validate        Validate the completed tables, normalizations, and plots.
   status          Report MG5, Herwig, HHHbb, cache, and output status.
   smoke           Run the isolated 100-event HHH and three-process smoke test.
