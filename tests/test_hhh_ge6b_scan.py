@@ -402,6 +402,22 @@ BLOCK TRIPCOUP
                     "outside the Delaunay convex hull",
                     metadata["extrapolation"],
                 )
+                self.assertEqual(
+                    metadata["figure_size_inches"],
+                    [8.2, 6.2],
+                )
+                self.assertEqual(
+                    metadata["layout"],
+                    "constrained; matches the Fig. 3 plotting canvas",
+                )
+                self.assertGreater(
+                    metadata["axes_box_aspect_ratio"],
+                    1.2,
+                )
+                self.assertLess(
+                    metadata["axes_box_aspect_ratio"],
+                    1.5,
+                )
 
     def test_ratio_contour_levels_and_title(self) -> None:
         self.assertEqual(

@@ -100,4 +100,6 @@ The displayed contour levels are `0.01`, `0.1`, `0.5`, `1`, and, when it lies
 within the sampled range, `10`.  The concise plot title labels the denominator
 as fiducial `gg -> hhh`; any use of the primary plot must state in its caption
 that the denominator also includes the additive unmatched `hhh+b bbar`
-contribution.
+contribution.  The plots use the same `8.2 x 6.2` inch constrained-layout
+canvas as the paper's self-coupling contour figure, so their axes have the same
+aspect ratio when placed at equal column width.

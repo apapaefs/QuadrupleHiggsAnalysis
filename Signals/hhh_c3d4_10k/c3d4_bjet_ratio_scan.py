@@ -59,6 +59,7 @@ RATIO_FALLBACK_STYLE = {"color": "black", "linestyle": "solid"}
 PLOT_C3_RANGE = (-20.0, 20.0)
 PLOT_D4_RANGE = (-300.0, 300.0)
 CONTOUR_GRID_POINTS_PER_AXIS = 601
+CONTOUR_FIGURE_SIZE_INCHES = (8.2, 6.2)
 FIDUCIAL_PLOT_TITLE = (
     r"Fiducial $\sigma(gg\rightarrow hhhh\geq 6b)"
     r"/\sigma(gg\rightarrow hhh\geq 6b)$"
@@ -1271,8 +1272,10 @@ def plot_ratio_contours(
 
     output_pdf.parent.mkdir(parents=True, exist_ok=True)
     output_png = output_pdf.with_suffix(".png")
-    fig, axis = plt.subplots(figsize=(8.2, 6.2))
-    fig.subplots_adjust(left=0.13, right=0.98, bottom=0.14, top=0.82)
+    fig, axis = plt.subplots(
+        figsize=CONTOUR_FIGURE_SIZE_INCHES,
+        constrained_layout=True,
+    )
     axis.set_facecolor("white")
     axis.grid(alpha=0.2, linewidth=0.5)
     contour_styles = {
@@ -1332,8 +1335,15 @@ def plot_ratio_contours(
     axis.set_ylim(PLOT_D4_RANGE)
     axis.set_xlabel(r"$c_3$", fontsize=20)
     axis.set_ylabel(r"$d_4$", fontsize=20)
-    axis.set_title(title + " at 14 TeV", fontsize=18, pad=10)
+    axis.set_title(title + " at 14 TeV", fontsize=20)
     axis.tick_params(axis="both", labelsize=15)
+    fig.canvas.draw()
+    axes_box = axis.get_position()
+    axes_box_aspect_ratio = (
+        axes_box.width
+        * fig.get_figwidth()
+        / (axes_box.height * fig.get_figheight())
+    )
     fig.savefig(output_pdf)
     fig.savefig(output_png, dpi=220)
     plt.close(fig)
@@ -1342,6 +1352,13 @@ def plot_ratio_contours(
         "output_pdf": str(output_pdf),
         "output_png": str(output_png),
         "title": title + " at 14 TeV",
+        "figure_size_inches": list(CONTOUR_FIGURE_SIZE_INCHES),
+        "figure_aspect_ratio": (
+            CONTOUR_FIGURE_SIZE_INCHES[0]
+            / CONTOUR_FIGURE_SIZE_INCHES[1]
+        ),
+        "layout": "constrained; matches the Fig. 3 plotting canvas",
+        "axes_box_aspect_ratio": axes_box_aspect_ratio,
         "value_field": value_field,
         "points": len(values),
         "ratio_min": float(np.min(z)),
