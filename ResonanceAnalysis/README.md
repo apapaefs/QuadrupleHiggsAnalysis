@@ -317,6 +317,7 @@ nohup python3 -u Code/resonance_xgboost_analysis.py \
   --mode full \
   --signal-root-dir ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1/baseline-120-115-110-105 \
   --background-manifest ResonanceAnalysis/background_manifest_cms-energy-uniform-fourvector-v1_baseline-120-115-110-105.csv \
+  --limit-jobs 4 \
   --output-dir ResonanceAnalysis/results/cms-energy-uniform-fourvector-v1/baseline-120-115-110-105/direct \
   > ResonanceAnalysis/logs/xgboost-direct-cms-energy-uniform-fourvector-v1-baseline-120-115-110-105.log 2>&1 &
 
@@ -326,6 +327,7 @@ nohup python3 -u Code/resonance_xgboost_analysis.py \
   --mode full \
   --signal-root-dir ResonanceAnalysis/features/cms-energy-uniform-fourvector-v1/baseline-120-115-110-105 \
   --background-manifest ResonanceAnalysis/background_manifest_cms-energy-uniform-fourvector-v1_baseline-120-115-110-105.csv \
+  --limit-jobs 12 \
   --output-dir ResonanceAnalysis/results/cms-energy-uniform-fourvector-v1/baseline-120-115-110-105/cascade \
   > ResonanceAnalysis/logs/xgboost-cascade-cms-energy-uniform-fourvector-v1-baseline-120-115-110-105.log 2>&1 &
 ```
@@ -337,6 +339,27 @@ completed mass points. `run_config.json` fingerprints the manifests, feature
 ROOT/summary inputs, extractor source, and analysis settings. If any of these
 changes, reuse is refused; choose a new output directory rather than deleting
 or overwriting the old result.
+
+`--limit-jobs` parallelizes only the independent pyhf fits. The XGBoost
+configuration, folds, templates, likelihood, and numerical result order are
+unchanged. A persistent process pool uses the safe `spawn` start method, sends
+workers only the category-by-fold channel arrays, and limits each worker to
+one numerical-library thread. The exact serial path uses the same fixed
+one-thread numerical-library policy. The parent keeps at most
+`2 * --limit-jobs` scenario fits pending, collects complete points in signal
+manifest order, and is the only process that atomically writes checkpoints.
+An interrupt or termination request cancels queued work and explicitly stops
+and joins the spawned workers.
+The suggested Tiresias settings above use four workers for the 42-point direct
+scan and twelve for the 441-point cascade scan.
+
+The default `--limit-jobs 1` retains the exact serial path. The worker count is
+execution provenance in `run_config.json` and `method_manifest.json`, not part
+of the physics fingerprint, so it may be changed when resuming outputs made by
+this implementation. This source-code update itself changes the recorded
+analysis-source hash once: a result directory first created by the earlier
+serial implementation must not be reused. Start it in a fresh directory, and
+never launch two writers into the same result directory.
 
 Background regeneration and feature extraction are also resumable. Existing
 targets are validated and kept. A lone/incompatible ROOT or JSON feature file

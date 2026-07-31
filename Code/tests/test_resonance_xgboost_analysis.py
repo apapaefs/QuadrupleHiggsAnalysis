@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -823,6 +824,294 @@ class PyhfIntegrationTests(unittest.TestCase):
             6.1742253,
             places=4,
         )
+
+    def test_spawned_limit_worker_matches_exact_serial_path(self) -> None:
+        channels = [
+            {
+                "name": "resolved_fold0",
+                "signal": np.asarray([1.0, 2.0]),
+                "background": np.asarray([10.0, 5.0]),
+                "signal_staterror": np.asarray([0.1, 0.2]),
+                "background_staterror": np.asarray([1.0, 0.7]),
+            }
+        ]
+        serial = analysis._LimitExecutor(1)
+        serial_fit = serial.submit(channels).result()["fit"]
+        code_directory = str(MODULE_PATH.parent)
+        inserted = code_directory not in sys.path
+        if inserted:
+            sys.path.insert(0, code_directory)
+        parallel = analysis._LimitExecutor(2)
+        try:
+            first_future = parallel.submit(channels)
+            second_future = parallel.submit(channels)
+            parallel_fit = first_future.result()["fit"]
+            second_parallel_fit = second_future.result()["fit"]
+        finally:
+            parallel.shutdown(wait=True)
+            if inserted:
+                sys.path.remove(code_directory)
+        self.assertEqual(serial_fit["status"], parallel_fit["status"])
+        self.assertEqual(parallel_fit["status"], second_parallel_fit["status"])
+        for field in (
+            "observed_asimov",
+            "expected_minus2sigma",
+            "expected_minus1sigma",
+            "expected_median",
+            "expected_plus1sigma",
+            "expected_plus2sigma",
+        ):
+            self.assertAlmostEqual(serial_fit[field], parallel_fit[field], places=10)
+            self.assertAlmostEqual(
+                parallel_fit[field], second_parallel_fit[field], places=10
+            )
+
+
+class LimitExecutionTests(unittest.TestCase):
+    @staticmethod
+    def _metadata(scenario: str, value: float) -> dict[str, object]:
+        return {
+            "topology": "direct",
+            "point_id": "MS_1000",
+            "MS_GeV": 1000.0,
+            "M2_GeV": None,
+            "M3_GeV": None,
+            "tagging_scenario": scenario,
+            "eps_bb": value,
+            "valid_categories": "resolved",
+            "n_channels": 1,
+        }
+
+    @staticmethod
+    def _fit(value: float) -> dict[str, object]:
+        return {
+            "fit": {"status": "ok", "expected_median": value},
+            "wall_seconds": value / 10.0,
+        }
+
+    def _pending(
+        self,
+        path: Path,
+        tasks: list[tuple[dict[str, object], analysis.Future]],
+    ) -> analysis.PendingPoint:
+        point = analysis.MassPoint("direct", ms=1000.0)
+        return analysis.PendingPoint(
+            point_id=point.point_id,
+            point=point,
+            shard_path=path,
+            point_category_rows=[{"point_id": point.point_id}],
+            point_score_rows=[{"point_id": point.point_id, "bin": 0}],
+            point_binning={"resolved": {"status": "ok"}},
+            limit_tasks=tasks,
+            preparation_seconds=0.25,
+        )
+
+    def test_serial_and_out_of_order_completion_write_identical_shards(self) -> None:
+        nominal_metadata = self._metadata("nominal", analysis.EPS_B**2)
+        conservative_metadata = self._metadata(
+            "conservative", analysis.EPS_BB_CONSERVATIVE
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            serial_tasks = [
+                (
+                    nominal_metadata,
+                    analysis._resolved_future(self._fit(1.0)),
+                ),
+                (
+                    conservative_metadata,
+                    analysis._resolved_future(self._fit(2.0)),
+                ),
+            ]
+            nominal_future: analysis.Future = analysis.Future()
+            conservative_future: analysis.Future = analysis.Future()
+            conservative_future.set_result(self._fit(2.0))
+            nominal_future.set_result(self._fit(1.0))
+            parallel_tasks = [
+                (nominal_metadata, nominal_future),
+                (conservative_metadata, conservative_future),
+            ]
+            serial_path = root / "serial.json"
+            parallel_path = root / "parallel.json"
+            for path, tasks in (
+                (serial_path, serial_tasks),
+                (parallel_path, parallel_tasks),
+            ):
+                analysis._finalize_pending_point(
+                    self._pending(path, tasks),
+                    run_fingerprint="run",
+                    analysis_fingerprint="analysis",
+                    model_hashes={"fold0": "abc"},
+                )
+            self.assertEqual(serial_path.read_bytes(), parallel_path.read_bytes())
+            shard = json.loads(parallel_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [row["tagging_scenario"] for row in shard["point_limits"]],
+                ["nominal", "conservative"],
+            )
+
+    def test_worker_exception_has_context_cancels_peer_and_writes_no_shard(
+        self,
+    ) -> None:
+        failed: analysis.Future = analysis.Future()
+        failed.set_exception(RuntimeError("worker disappeared"))
+        peer: analysis.Future = analysis.Future()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "MS_1000.json"
+            pending = self._pending(
+                path,
+                [
+                    (self._metadata("nominal", analysis.EPS_B**2), failed),
+                    (
+                        self._metadata(
+                            "conservative", analysis.EPS_BB_CONSERVATIVE
+                        ),
+                        peer,
+                    ),
+                ],
+            )
+            with self.assertRaisesRegex(
+                analysis.AnalysisInputError,
+                "MS_1000.*nominal.*worker disappeared",
+            ):
+                analysis._finalize_pending_point(
+                    pending,
+                    run_fingerprint="run",
+                    analysis_fingerprint="analysis",
+                    model_hashes={},
+                )
+            self.assertTrue(peer.cancelled())
+            self.assertFalse(path.exists())
+
+    def test_serial_executor_never_constructs_a_process_pool(self) -> None:
+        expected = self._fit(1.0)
+        with mock.patch.object(
+            analysis, "_timed_pyhf_limit", return_value=expected
+        ) as timed_limit, mock.patch.object(
+            analysis, "ProcessPoolExecutor"
+        ) as process_pool:
+            executor = analysis._LimitExecutor(1)
+            result = executor.submit([]).result()
+            executor.shutdown(wait=True)
+        self.assertEqual(result, expected)
+        timed_limit.assert_called_once_with(())
+        process_pool.assert_not_called()
+        self.assertFalse(executor.started)
+        self.assertEqual(executor.submitted_task_count, 1)
+
+    def test_parallel_executor_uses_spawn_and_bounded_execution_plan(self) -> None:
+        completed = analysis._resolved_future(self._fit(1.0))
+        with mock.patch.dict(os.environ, {}, clear=False), mock.patch.object(
+            analysis, "ProcessPoolExecutor"
+        ) as process_pool:
+            process_pool.return_value.submit.return_value = completed
+            executor = analysis._LimitExecutor(4)
+            self.assertIs(executor.submit([]), completed)
+            executor.shutdown(wait=True)
+            kwargs = process_pool.call_args.kwargs
+            self.assertEqual(kwargs["max_workers"], 4)
+            self.assertEqual(kwargs["mp_context"].get_start_method(), "spawn")
+            self.assertIs(kwargs["initializer"], analysis._limit_worker_initializer)
+        plan = analysis._limit_execution_plan(4, "full")
+        self.assertEqual(plan["max_pending_points"], 4)
+        self.assertEqual(plan["max_pending_fit_tasks"], 8)
+        self.assertTrue(plan["parent_only_checkpoint_writes"])
+        self.assertEqual(
+            plan["result_order"], "signal_manifest_then_tagging_scenario"
+        )
+
+    def test_terminate_stops_and_joins_active_worker_processes(self) -> None:
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.alive = True
+                self.terminated = False
+                self.killed = False
+                self.join_timeouts: list[float] = []
+
+            def is_alive(self) -> bool:
+                return self.alive
+
+            def terminate(self) -> None:
+                self.terminated = True
+                self.alive = False
+
+            def kill(self) -> None:
+                self.killed = True
+                self.alive = False
+
+            def join(self, timeout: float) -> None:
+                self.join_timeouts.append(timeout)
+
+        class FakePool:
+            def __init__(self, process: FakeProcess) -> None:
+                self._processes = {123: process}
+                self.shutdown_calls: list[dict[str, object]] = []
+
+            def shutdown(self, **kwargs: object) -> None:
+                self.shutdown_calls.append(kwargs)
+
+        process = FakeProcess()
+        pool = FakePool(process)
+        executor = analysis._LimitExecutor(2)
+        executor._pool = pool  # type: ignore[assignment]
+        executor.terminate()
+        self.assertTrue(process.terminated)
+        self.assertFalse(process.killed)
+        self.assertEqual(process.join_timeouts, [5.0])
+        self.assertEqual(
+            pool.shutdown_calls,
+            [{"wait": False, "cancel_futures": True}],
+        )
+
+    def test_limit_jobs_cli_validation_happens_before_analysis(self) -> None:
+        base = [
+            "--topology",
+            "direct",
+            "--output-dir",
+            "unused",
+        ]
+        self.assertEqual(analysis.build_parser().parse_args(base).limit_jobs, 1)
+        for invalid in ("0", "-2"):
+            with self.subTest(invalid=invalid), mock.patch.object(
+                analysis, "run_analysis"
+            ) as run_analysis:
+                with self.assertRaisesRegex(SystemExit, "--limit-jobs"):
+                    analysis.main([*base, "--limit-jobs", invalid])
+                run_analysis.assert_not_called()
+        with mock.patch.object(
+            analysis, "run_analysis", return_value=17
+        ) as run_analysis:
+            self.assertEqual(
+                analysis.main([*base, "--limit-jobs", "3"]),
+                17,
+            )
+            self.assertEqual(run_analysis.call_args.args[0].limit_jobs, 3)
+
+    def test_execution_provenance_does_not_change_physics_fingerprint(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            payload = {"physics": "fixed"}
+            fingerprint = analysis._initialize_run_config(output, payload)
+            analysis._record_run_execution(
+                output,
+                fingerprint,
+                analysis._limit_execution_plan(1, "full"),
+            )
+            resumed_fingerprint = analysis._initialize_run_config(output, payload)
+            analysis._record_run_execution(
+                output,
+                resumed_fingerprint,
+                analysis._limit_execution_plan(8, "full"),
+            )
+            document = json.loads(
+                (output / "run_config.json").read_text(encoding="utf-8")
+            )
+        self.assertEqual(fingerprint, resumed_fingerprint)
+        self.assertEqual(document["configuration"], payload)
+        self.assertEqual(document["latest_execution"]["requested_jobs"], 8)
+        self.assertNotIn("requested_jobs", document["configuration"])
 
 
 class CheckpointTests(unittest.TestCase):

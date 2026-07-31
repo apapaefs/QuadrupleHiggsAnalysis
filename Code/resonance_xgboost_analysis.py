@@ -15,6 +15,8 @@ true-single, double-B, charm-mistag, and light-mistag multiplicities.
 from __future__ import annotations
 
 import argparse
+from collections import deque
+from concurrent.futures import Future, ProcessPoolExecutor
 import csv
 import gzip
 import hashlib
@@ -23,14 +25,32 @@ import importlib.metadata
 import itertools
 import json
 import math
+import multiprocessing
 import os
 import platform
 import re
 import shlex
+import signal as signal_module
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+
+# This is a fixed execution policy, not a user-tunable physics setting.  It is
+# applied before NumPy is imported so serial and spawned pyhf fits use the same
+# one-thread numerical-library contract.
+LIMIT_THREAD_ENVIRONMENT = (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "BLIS_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "GOTO_NUM_THREADS",
+)
+for _thread_variable in LIMIT_THREAD_ENVIRONMENT:
+    os.environ[_thread_variable] = "1"
 
 import numpy as np
 
@@ -57,6 +77,10 @@ SIGNAL_XSEC_DEFINITION = (
     "before h->bb; scalar decay branching fractions are included"
 )
 BACKGROUND_NORM_UNCERTAINTY = 0.10
+LIMIT_EXECUTION_CONTRACT = (
+    "spawned pyhf workers receive only immutable channel templates; "
+    "the parent writes ordered atomic point checkpoints"
+)
 EPS_B = 0.85
 EPS_C = 0.10
 EPS_LIGHT = 0.01
@@ -333,6 +357,20 @@ class CrossfitScores:
 
     test: np.ndarray
     validation: np.ndarray
+
+
+@dataclass
+class PendingPoint:
+    """Parent-owned point payload awaiting one pyhf result per tag scenario."""
+
+    point_id: str
+    point: MassPoint
+    shard_path: Path
+    point_category_rows: list[dict[str, Any]]
+    point_score_rows: list[dict[str, Any]]
+    point_binning: dict[str, Any]
+    limit_tasks: list[tuple[dict[str, Any], Future[Any]]]
+    preparation_seconds: float
 
 
 def _mass_token(value: float) -> str:
@@ -1704,6 +1742,214 @@ def _pyhf_limit(
     }
 
 
+def _timed_pyhf_limit(
+    channels: Sequence[Mapping[str, Any]],
+    background_norm: float = BACKGROUND_NORM_UNCERTAINTY,
+) -> dict[str, Any]:
+    """Run one fit and return timing separately from the physics result."""
+
+    started = time.perf_counter()
+    fit = _pyhf_limit(channels, background_norm)
+    return {"fit": fit, "wall_seconds": time.perf_counter() - started}
+
+
+def _apply_limit_thread_policy() -> bool:
+    """Apply the fixed one-thread policy, including already-loaded libraries."""
+
+    _set_limit_worker_thread_environment()
+    try:
+        from threadpoolctl import threadpool_limits  # type: ignore
+    except ImportError:
+        return False
+    threadpool_limits(limits=1)
+    return True
+
+
+def _set_limit_worker_thread_environment() -> None:
+    for variable in LIMIT_THREAD_ENVIRONMENT:
+        os.environ[variable] = "1"
+
+
+def _limit_worker_initializer() -> None:
+    """Keep each spawned pyhf worker to one numerical-library thread."""
+
+    _apply_limit_thread_policy()
+
+
+def _resolved_future(value: Any) -> Future[Any]:
+    future: Future[Any] = Future()
+    future.set_result(value)
+    return future
+
+
+class _LimitExecutor:
+    """Exact serial execution at one job, spawned processes otherwise."""
+
+    def __init__(self, limit_jobs: int):
+        if limit_jobs < 1:
+            raise ValueError("limit_jobs must be positive")
+        self.limit_jobs = limit_jobs
+        self._pool: ProcessPoolExecutor | None = None
+        self._ever_started = False
+        self.submitted_task_count = 0
+        self.runtime_thread_limiter_available = _apply_limit_thread_policy()
+
+    @property
+    def started(self) -> bool:
+        return self._ever_started
+
+    def submit(self, channels: Sequence[Mapping[str, Any]]) -> Future[Any]:
+        payload = tuple(channels)
+        self.submitted_task_count += 1
+        if self.limit_jobs == 1:
+            try:
+                return _resolved_future(_timed_pyhf_limit(payload))
+            except Exception as error:
+                future: Future[Any] = Future()
+                future.set_exception(error)
+                return future
+        if self._pool is None:
+            # Spawned children import NumPy before their initializer runs, so
+            # clamp their inherited environment before starting the pool.
+            _set_limit_worker_thread_environment()
+            self._pool = ProcessPoolExecutor(
+                max_workers=self.limit_jobs,
+                mp_context=multiprocessing.get_context("spawn"),
+                initializer=_limit_worker_initializer,
+            )
+            self._ever_started = True
+        return self._pool.submit(_timed_pyhf_limit, payload)
+
+    def shutdown(self, *, wait: bool, cancel_futures: bool = False) -> None:
+        if self._pool is None:
+            return
+        pool, self._pool = self._pool, None
+        pool.shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    def terminate(self) -> None:
+        """Promptly stop active workers after interruption or executor failure."""
+
+        if self._pool is None:
+            return
+        pool, self._pool = self._pool, None
+        terminate_workers = getattr(pool, "terminate_workers", None)
+        if callable(terminate_workers):
+            terminate_workers()
+            return
+        processes = list((getattr(pool, "_processes", None) or {}).values())
+        for process in processes:
+            try:
+                if process.is_alive():
+                    process.terminate()
+            except (OSError, ValueError):
+                pass
+        pool.shutdown(wait=False, cancel_futures=True)
+        for process in processes:
+            try:
+                process.join(timeout=5.0)
+                if process.is_alive() and hasattr(process, "kill"):
+                    process.kill()
+                    process.join(timeout=1.0)
+            except (OSError, ValueError):
+                pass
+
+
+def _cancel_pending_limit_tasks(pending_points: Iterable[PendingPoint]) -> int:
+    cancelled = 0
+    for pending in pending_points:
+        for _, future in pending.limit_tasks:
+            cancelled += int(future.cancel())
+    return cancelled
+
+
+def _finalize_pending_point(
+    pending: PendingPoint,
+    *,
+    run_fingerprint: str,
+    analysis_fingerprint: str,
+    model_hashes: Mapping[str, str],
+) -> dict[str, Any]:
+    """Collect an entire point in scenario order, then atomically publish it."""
+
+    point_limit_rows: list[dict[str, Any]] = []
+    fit_worker_seconds = 0.0
+    for metadata, future in pending.limit_tasks:
+        scenario = str(metadata["tagging_scenario"])
+        try:
+            result = future.result()
+            if not isinstance(result, Mapping):
+                raise TypeError("limit worker returned a non-mapping result")
+            fit = result.get("fit")
+            if not isinstance(fit, Mapping):
+                raise TypeError("limit worker result has no fit mapping")
+            wall_seconds = float(result.get("wall_seconds", 0.0))
+            if not math.isfinite(wall_seconds) or wall_seconds < 0.0:
+                raise ValueError("limit worker returned an invalid wall time")
+        except Exception as error:
+            for _, other_future in pending.limit_tasks:
+                if other_future is not future:
+                    other_future.cancel()
+            raise AnalysisInputError(
+                f"{pending.point_id}: pyhf limit worker failed for tagging scenario "
+                f"{scenario!r}: {type(error).__name__}: {error}"
+            ) from error
+        fit_worker_seconds += wall_seconds
+        point_limit_rows.append({**metadata, **fit})
+
+    _write_json(
+        pending.shard_path,
+        {
+            "run_fingerprint": run_fingerprint,
+            "analysis_fingerprint": analysis_fingerprint,
+            "model_sha256": model_hashes,
+            "point_id": pending.point_id,
+            "point": pending.point.as_dict(),
+            "point_category_yields": pending.point_category_rows,
+            "score_bin_yields": pending.point_score_rows,
+            "point_limits": point_limit_rows,
+            "binning_audit": pending.point_binning,
+        },
+    )
+    return {
+        "fit_worker_seconds": fit_worker_seconds,
+        "limit_rows": point_limit_rows,
+    }
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours:d}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes:d}m{seconds:02d}s"
+    return f"{seconds:d}s"
+
+
+def _report_point_progress(
+    *,
+    completed: int,
+    total: int,
+    started: float,
+    point_id: str,
+    disposition: str,
+) -> None:
+    elapsed = time.monotonic() - started
+    eta = elapsed * (total - completed) / completed if completed else math.nan
+    eta_text = _format_duration(eta) if math.isfinite(eta) else "unknown"
+    print(
+        f"limits: {completed}/{total} points; {point_id}: {disposition}; "
+        f"elapsed {_format_duration(elapsed)}; ETA {eta_text}",
+        flush=True,
+    )
+
+
+def _interrupt_on_sigterm(signum: int, frame: Any) -> None:
+    del frame
+    raise KeyboardInterrupt(f"received signal {signum}")
+
+
 def _select_category_edges(
     signal_scores: np.ndarray,
     signal_weights: np.ndarray,
@@ -2716,6 +2962,7 @@ def _software_versions() -> dict[str, str | None]:
         "pyhf": _package_version("pyhf"),
         "uproot": _package_version("uproot"),
         "matplotlib": _package_version("matplotlib"),
+        "threadpoolctl": _package_version("threadpoolctl"),
     }
 
 
@@ -2758,6 +3005,50 @@ def _initialize_run_config(output_dir: Path, payload: Mapping[str, Any]) -> str:
             },
         )
     return fingerprint
+
+
+def _limit_execution_plan(limit_jobs: int, mode: str) -> dict[str, Any]:
+    active = mode != "normalization-only"
+    return {
+        "status": "started" if active else "not_applicable",
+        "requested_jobs": limit_jobs,
+        "configured_executor": (
+            "serial" if limit_jobs == 1 else "ProcessPoolExecutor"
+        )
+        if active
+        else "not_used",
+        "start_method": (
+            "none" if limit_jobs == 1 else "spawn"
+        )
+        if active
+        else "none",
+        "task_granularity": "physical_mass_point_x_tagging_scenario",
+        "parent_only_checkpoint_writes": True,
+        "terminate_workers_on_parent_interrupt": True,
+        "result_order": "signal_manifest_then_tagging_scenario",
+        "max_pending_points": limit_jobs if active else 0,
+        "max_pending_fit_tasks": 2 * limit_jobs if active else 0,
+        "numerical_library_thread_limit": 1,
+        "thread_environment": list(LIMIT_THREAD_ENVIRONMENT),
+        "thread_policy_scope": "serial_parent_and_spawned_workers",
+        "execution_contract": LIMIT_EXECUTION_CONTRACT,
+    }
+
+
+def _record_run_execution(
+    output_dir: Path,
+    analysis_fingerprint: str,
+    execution: Mapping[str, Any],
+) -> None:
+    """Record mutable execution provenance outside the hashed configuration."""
+
+    path = output_dir / "run_config.json"
+    document = _read_json(path)
+    if document.get("analysis_fingerprint") != analysis_fingerprint:
+        raise AnalysisInputError(f"{path}: analysis fingerprint changed while running")
+    document["latest_command"] = shlex.join(sys.argv)
+    document["latest_execution"] = dict(execution)
+    _write_json(path, document)
 
 
 def _write_plots(output_dir: Path, topology: str, limit_rows: Sequence[Mapping[str, Any]]) -> list[str]:
@@ -2968,8 +3259,11 @@ def run_analysis(args: argparse.Namespace) -> int:
         "fixed_xgboost_parameters": FIXED_XGBOOST_PARAMS,
         "signal_cross_section_hypothesis_fb": SIGNAL_HYPOTHESIS_FB,
         "signal_cross_section_definition": SIGNAL_XSEC_DEFINITION,
+        "limit_execution_contract": LIMIT_EXECUTION_CONTRACT,
     }
     analysis_fingerprint = _initialize_run_config(output_dir, configuration)
+    limit_execution_plan = _limit_execution_plan(args.limit_jobs, args.mode)
+    _record_run_execution(output_dir, analysis_fingerprint, limit_execution_plan)
     max_events = args.smoke_max_events if smoke else None
     allow_partial = smoke
     signals = [
@@ -3099,8 +3393,14 @@ def run_analysis(args: argparse.Namespace) -> int:
             "background_provenance": background_provenance,
             "provenance_warnings": provenance_warnings,
             "normalization_audit_passed": True,
+            "limit_execution": limit_execution_plan,
         }
         _write_json(output_dir / "method_manifest.json", manifest)
+        _record_run_execution(
+            output_dir,
+            analysis_fingerprint,
+            {**limit_execution_plan, "status": "not_applicable"},
+        )
         _write_html_report(output_dir, args.topology, cross_rows, [], audit)
         return 0
 
@@ -3121,173 +3421,180 @@ def run_analysis(args: argparse.Namespace) -> int:
     )
     checkpoint_dir = output_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    shard_paths: list[Path] = []
+    shard_paths = [
+        checkpoint_dir / f"{signal.spec.point.point_id}.json" for signal in signals
+    ]
     resumed_point_count = 0
     retried_point_count = 0
     retry_reasons: dict[str, str] = {}
+    pending_points: deque[PendingPoint] = deque()
+    active_limit_tasks: list[tuple[dict[str, Any], Future[Any]]] = []
+    limit_executor = _LimitExecutor(args.limit_jobs)
+    max_pending_points = args.limit_jobs
+    peak_pending_points = 0
+    completed_point_count = 0
+    computed_point_count = 0
+    point_preparation_seconds_sum = 0.0
+    fit_worker_seconds_sum = 0.0
+    point_stage_started = time.monotonic()
+    print(
+        f"limits: starting {len(signals)} points with --limit-jobs "
+        f"{args.limit_jobs} ({limit_execution_plan['configured_executor']})",
+        flush=True,
+    )
 
-    for signal in signals:
-        point = signal.spec.point
-        point_id = point.point_id
-        shard_path = checkpoint_dir / f"{point_id}.json"
-        if shard_path.exists():
-            try:
-                shard = _read_json(shard_path)
-            except AnalysisInputError as error:
-                reusable, reason = False, f"malformed JSON: {error}"
-            else:
-                reusable, reason = _point_shard_reuse_decision(
-                    shard,
-                    mode=args.mode,
-                    point_id=point_id,
-                    run_fingerprint=run_fingerprint,
-                    tagging_scenarios=tuple(tagging_scenarios),
-                )
-            if reusable:
-                shard_paths.append(shard_path)
-                resumed_point_count += 1
-                continue
-            retried_point_count += 1
-            retry_reasons[point_id] = reason
-        point_category_rows: list[dict[str, Any]] = []
-        point_score_rows: list[dict[str, Any]] = []
-        point_limit_rows: list[dict[str, Any]] = []
-        # Each sample/point is engineered and scored exactly once.  The cache
-        # retains distinct validation and test roles for every source-local row.
-        signal_score_cache = _predict_point_crossfit(signal, point, models)
-        background_score_caches = {
-            background.spec.sample_id: _predict_point_crossfit(background, point, models)
-            for background in backgrounds
-        }
-        point_binning: dict[str, Any] = {}
-        valid_categories: set[int] = set()
-        selected_edges: dict[int, dict[int, list[float]]] = {}
-        for category, category_name in enumerate(CATEGORY_NAMES):
-            rotation_records: dict[str, Any] = {}
-            category_edges: dict[int, list[float]] = {}
-            for rotation in range(N_FOLDS):
-                validation_fold = (rotation + 1) % N_FOLDS
-                signal_validation_mask = (
-                    _category_mask(signal.table, category)
-                    & (signal.folds == validation_fold)
-                )
-                background_validation_scores: list[np.ndarray] = []
-                background_validation_weights: dict[str, list[np.ndarray]] = {
-                    scenario: [] for scenario in tagging_scenarios
-                }
-                for background in backgrounds:
-                    mask = (
-                        _category_mask(background.table, category)
-                        & (background.folds == validation_fold)
+    previous_sigterm_handler = signal_module.getsignal(signal_module.SIGTERM)
+    signal_module.signal(signal_module.SIGTERM, _interrupt_on_sigterm)
+    try:
+        for signal, shard_path in zip(signals, shard_paths, strict=True):
+            point_started = time.monotonic()
+            point = signal.spec.point
+            point_id = point.point_id
+            if shard_path.exists():
+                try:
+                    shard = _read_json(shard_path)
+                except AnalysisInputError as error:
+                    reusable, reason = False, f"malformed JSON: {error}"
+                else:
+                    reusable, reason = _point_shard_reuse_decision(
+                        shard,
+                        mode=args.mode,
+                        point_id=point_id,
+                        run_fingerprint=run_fingerprint,
+                        tagging_scenarios=tuple(tagging_scenarios),
                     )
-                    cache = background_score_caches[background.spec.sample_id]
-                    background_validation_scores.append(cache.validation[mask])
-                    for scenario in tagging_scenarios:
-                        background_validation_weights[scenario].append(
-                            background.scenario_weights[scenario][mask]
-                        )
-                selection = _select_category_edges(
-                    signal_score_cache.validation[signal_validation_mask],
-                    signal.scenario_weights["nominal"][signal_validation_mask],
-                    np.concatenate(background_validation_scores),
-                    {
-                        scenario: np.concatenate(parts)
-                        for scenario, parts in background_validation_weights.items()
-                    },
-                    args.min_background_raw,
-                    args.min_background_neff,
+                if reusable:
+                    resumed_point_count += 1
+                    completed_point_count += 1
+                    _report_point_progress(
+                        completed=completed_point_count,
+                        total=len(signals),
+                        started=point_stage_started,
+                        point_id=point_id,
+                        disposition="reused checkpoint",
+                    )
+                    continue
+                retried_point_count += 1
+                retry_reasons[point_id] = reason
+            point_category_rows: list[dict[str, Any]] = []
+            point_score_rows: list[dict[str, Any]] = []
+            limit_payloads: list[
+                tuple[dict[str, Any], tuple[Mapping[str, Any], ...] | None]
+            ] = []
+            # Each sample/point is engineered and scored exactly once.  The cache
+            # retains distinct validation and test roles for every source-local row.
+            signal_score_cache = _predict_point_crossfit(signal, point, models)
+            background_score_caches = {
+                background.spec.sample_id: _predict_point_crossfit(
+                    background, point, models
                 )
-                selection.update(
-                    {
-                        "rotation": rotation,
-                        "validation_fold": validation_fold,
-                        "test_fold": rotation,
-                        "validation_test_disjoint": True,
-                        "validation_signal_entries": int(np.sum(signal_validation_mask)),
-                        "test_signal_entries": int(
-                            np.sum(
-                                _category_mask(signal.table, category)
-                                & (signal.folds == rotation)
-                            )
-                        ),
-                    }
-                )
-                rotation_records[str(rotation)] = selection
-                if selection["status"] == "ok":
-                    category_edges[rotation] = list(map(float, selection["edges"]))
-            category_valid = len(category_edges) == N_FOLDS
-            point_binning[category_name] = {
-                "status": "ok" if category_valid else "invalid",
-                "all_rotations_valid": category_valid,
-                "rotations": rotation_records,
+                for background in backgrounds
             }
-            if category_valid:
-                valid_categories.add(category)
-                selected_edges[category] = category_edges
-        point_category_rows.extend(
-            _category_yield_rows(
-                args.topology,
-                point,
-                [signal, *backgrounds],
-                valid_categories,
-                tagging_scenarios,
-                args.luminosity,
-                args.hbb_branching_ratio,
-                args.eps_b,
-                args.eps_c,
-                args.eps_light,
-            )
-        )
-
-        for scenario in tagging_scenarios:
-            channels: list[dict[str, Any]] = []
-            for category in sorted(valid_categories):
-                category_name = CATEGORY_NAMES[category]
-                signal_fold_summaries: list[dict[str, np.ndarray]] = []
-                component_fold_summaries: dict[str, list[dict[str, np.ndarray]]] = {
-                    background.spec.sample_id: [] for background in backgrounds
-                }
-                total_fold_summaries: list[dict[str, np.ndarray]] = []
-                for fold in range(N_FOLDS):
-                    edges = selected_edges[category][fold]
-                    signal_mask = (
-                        _category_mask(signal.table, category) & (signal.folds == fold)
+            point_binning: dict[str, Any] = {}
+            valid_categories: set[int] = set()
+            selected_edges: dict[int, dict[int, list[float]]] = {}
+            for category, category_name in enumerate(CATEGORY_NAMES):
+                rotation_records: dict[str, Any] = {}
+                category_edges: dict[int, list[float]] = {}
+                for rotation in range(N_FOLDS):
+                    validation_fold = (rotation + 1) % N_FOLDS
+                    signal_validation_mask = (
+                        _category_mask(signal.table, category)
+                        & (signal.folds == validation_fold)
                     )
-                    signal_summary = binned_summary(
-                        signal_score_cache.test[signal_mask],
-                        signal.scenario_weights[scenario][signal_mask],
-                        edges,
-                    )
-                    signal_fold_summaries.append(signal_summary)
-                    point_score_rows.extend(
-                        _score_summary_rows(
-                            topology=args.topology,
-                            point=point,
-                            scenario=scenario,
-                            eps_bb=tagging_scenarios[scenario],
-                            category=category_name,
-                            fold=fold,
-                            edges=edges,
-                            sample_id=signal.spec.sample_id,
-                            role="signal",
-                            aggregation_level="component",
-                            summary=signal_summary,
-                        )
-                    )
-                    component_summaries: list[dict[str, np.ndarray]] = []
+                    background_validation_scores: list[np.ndarray] = []
+                    background_validation_weights: dict[str, list[np.ndarray]] = {
+                        scenario: [] for scenario in tagging_scenarios
+                    }
                     for background in backgrounds:
                         mask = (
                             _category_mask(background.table, category)
-                            & (background.folds == fold)
+                            & (background.folds == validation_fold)
                         )
                         cache = background_score_caches[background.spec.sample_id]
-                        summary = binned_summary(
-                            cache.test[mask],
-                            background.scenario_weights[scenario][mask],
+                        background_validation_scores.append(cache.validation[mask])
+                        for scenario in tagging_scenarios:
+                            background_validation_weights[scenario].append(
+                                background.scenario_weights[scenario][mask]
+                            )
+                    selection = _select_category_edges(
+                        signal_score_cache.validation[signal_validation_mask],
+                        signal.scenario_weights["nominal"][signal_validation_mask],
+                        np.concatenate(background_validation_scores),
+                        {
+                            scenario: np.concatenate(parts)
+                            for scenario, parts in background_validation_weights.items()
+                        },
+                        args.min_background_raw,
+                        args.min_background_neff,
+                    )
+                    selection.update(
+                        {
+                            "rotation": rotation,
+                            "validation_fold": validation_fold,
+                            "test_fold": rotation,
+                            "validation_test_disjoint": True,
+                            "validation_signal_entries": int(
+                                np.sum(signal_validation_mask)
+                            ),
+                            "test_signal_entries": int(
+                                np.sum(
+                                    _category_mask(signal.table, category)
+                                    & (signal.folds == rotation)
+                                )
+                            ),
+                        }
+                    )
+                    rotation_records[str(rotation)] = selection
+                    if selection["status"] == "ok":
+                        category_edges[rotation] = list(map(float, selection["edges"]))
+                category_valid = len(category_edges) == N_FOLDS
+                point_binning[category_name] = {
+                    "status": "ok" if category_valid else "invalid",
+                    "all_rotations_valid": category_valid,
+                    "rotations": rotation_records,
+                }
+                if category_valid:
+                    valid_categories.add(category)
+                    selected_edges[category] = category_edges
+            point_category_rows.extend(
+                _category_yield_rows(
+                    args.topology,
+                    point,
+                    [signal, *backgrounds],
+                    valid_categories,
+                    tagging_scenarios,
+                    args.luminosity,
+                    args.hbb_branching_ratio,
+                    args.eps_b,
+                    args.eps_c,
+                    args.eps_light,
+                )
+            )
+
+            for scenario in tagging_scenarios:
+                channels: list[dict[str, Any]] = []
+                for category in sorted(valid_categories):
+                    category_name = CATEGORY_NAMES[category]
+                    signal_fold_summaries: list[dict[str, np.ndarray]] = []
+                    component_fold_summaries: dict[
+                        str, list[dict[str, np.ndarray]]
+                    ] = {
+                        background.spec.sample_id: [] for background in backgrounds
+                    }
+                    total_fold_summaries: list[dict[str, np.ndarray]] = []
+                    for fold in range(N_FOLDS):
+                        edges = selected_edges[category][fold]
+                        signal_mask = (
+                            _category_mask(signal.table, category)
+                            & (signal.folds == fold)
+                        )
+                        signal_summary = binned_summary(
+                            signal_score_cache.test[signal_mask],
+                            signal.scenario_weights[scenario][signal_mask],
                             edges,
                         )
-                        component_summaries.append(summary)
-                        component_fold_summaries[background.spec.sample_id].append(summary)
+                        signal_fold_summaries.append(signal_summary)
                         point_score_rows.extend(
                             _score_summary_rows(
                                 topology=args.topology,
@@ -3297,133 +3604,267 @@ def run_analysis(args: argparse.Namespace) -> int:
                                 category=category_name,
                                 fold=fold,
                                 edges=edges,
-                                sample_id=background.spec.sample_id,
-                                role=background.spec.role,
+                                sample_id=signal.spec.sample_id,
+                                role="signal",
                                 aggregation_level="component",
-                                summary=summary,
+                                summary=signal_summary,
                             )
                         )
-                    total_background = _combine_binned_summaries(component_summaries)
-                    total_fold_summaries.append(total_background)
-                    point_score_rows.extend(
-                        _score_summary_rows(
-                            topology=args.topology,
-                            point=point,
-                            scenario=scenario,
-                            eps_bb=tagging_scenarios[scenario],
-                            category=category_name,
-                            fold=fold,
-                            edges=edges,
-                            sample_id="TOTAL_BACKGROUND",
-                            role="total_background",
-                            aggregation_level="total_background",
-                            summary=total_background,
+                        component_summaries: list[dict[str, np.ndarray]] = []
+                        for background in backgrounds:
+                            mask = (
+                                _category_mask(background.table, category)
+                                & (background.folds == fold)
+                            )
+                            cache = background_score_caches[background.spec.sample_id]
+                            summary = binned_summary(
+                                cache.test[mask],
+                                background.scenario_weights[scenario][mask],
+                                edges,
+                            )
+                            component_summaries.append(summary)
+                            component_fold_summaries[
+                                background.spec.sample_id
+                            ].append(summary)
+                            point_score_rows.extend(
+                                _score_summary_rows(
+                                    topology=args.topology,
+                                    point=point,
+                                    scenario=scenario,
+                                    eps_bb=tagging_scenarios[scenario],
+                                    category=category_name,
+                                    fold=fold,
+                                    edges=edges,
+                                    sample_id=background.spec.sample_id,
+                                    role=background.spec.role,
+                                    aggregation_level="component",
+                                    summary=summary,
+                                )
+                            )
+                        total_background = _combine_binned_summaries(
+                            component_summaries
                         )
-                    )
-                    channels.append(
-                        {
-                            "name": f"{category_name}_fold{fold}",
-                            "signal": signal_summary["yield"],
-                            "background": total_background["yield"],
-                            "signal_staterror": np.sqrt(signal_summary["sumw2"]),
-                            "background_staterror": np.sqrt(total_background["sumw2"]),
-                        }
-                    )
-                signal_all_row = _all_fold_score_row(
-                    topology=args.topology,
-                    point=point,
-                    scenario=scenario,
-                    eps_bb=tagging_scenarios[scenario],
-                    category=category_name,
-                    sample_id=signal.spec.sample_id,
-                    role="signal",
-                    aggregation_level="all_folds_category",
-                    summaries=signal_fold_summaries,
-                )
-                expected_signal = float(
-                    np.sum(
-                        signal.scenario_weights[scenario][
-                            _category_mask(signal.table, category)
-                        ]
-                    )
-                )
-                signal_all_row["tagged_category_closure_pass"] = math.isclose(
-                    float(signal_all_row["yield"]),
-                    expected_signal,
-                    rel_tol=1.0e-12,
-                    abs_tol=1.0e-12,
-                )
-                point_score_rows.append(signal_all_row)
-                component_all_rows: list[dict[str, Any]] = []
-                for background in backgrounds:
-                    row = _all_fold_score_row(
+                        total_fold_summaries.append(total_background)
+                        point_score_rows.extend(
+                            _score_summary_rows(
+                                topology=args.topology,
+                                point=point,
+                                scenario=scenario,
+                                eps_bb=tagging_scenarios[scenario],
+                                category=category_name,
+                                fold=fold,
+                                edges=edges,
+                                sample_id="TOTAL_BACKGROUND",
+                                role="total_background",
+                                aggregation_level="total_background",
+                                summary=total_background,
+                            )
+                        )
+                        channels.append(
+                            {
+                                "name": f"{category_name}_fold{fold}",
+                                "signal": signal_summary["yield"],
+                                "background": total_background["yield"],
+                                "signal_staterror": np.sqrt(
+                                    signal_summary["sumw2"]
+                                ),
+                                "background_staterror": np.sqrt(
+                                    total_background["sumw2"]
+                                ),
+                            }
+                        )
+                    signal_all_row = _all_fold_score_row(
                         topology=args.topology,
                         point=point,
                         scenario=scenario,
                         eps_bb=tagging_scenarios[scenario],
                         category=category_name,
-                        sample_id=background.spec.sample_id,
-                        role=background.spec.role,
+                        sample_id=signal.spec.sample_id,
+                        role="signal",
                         aggregation_level="all_folds_category",
-                        summaries=component_fold_summaries[background.spec.sample_id],
+                        summaries=signal_fold_summaries,
                     )
-                    expected = float(
+                    expected_signal = float(
                         np.sum(
-                            background.scenario_weights[scenario][
-                                _category_mask(background.table, category)
+                            signal.scenario_weights[scenario][
+                                _category_mask(signal.table, category)
                             ]
                         )
                     )
-                    row["tagged_category_closure_pass"] = math.isclose(
-                        float(row["yield"]), expected, rel_tol=1.0e-12, abs_tol=1.0e-12
+                    signal_all_row["tagged_category_closure_pass"] = math.isclose(
+                        float(signal_all_row["yield"]),
+                        expected_signal,
+                        rel_tol=1.0e-12,
+                        abs_tol=1.0e-12,
                     )
-                    component_all_rows.append(row)
-                    point_score_rows.append(row)
-                total_all_row = _all_fold_score_row(
-                    topology=args.topology,
-                    point=point,
-                    scenario=scenario,
-                    eps_bb=tagging_scenarios[scenario],
-                    category=category_name,
-                    sample_id="TOTAL_BACKGROUND",
-                    role="total_background",
-                    aggregation_level="all_folds_category_total_background",
-                    summaries=total_fold_summaries,
-                )
-                total_all_row["tagged_category_closure_pass"] = math.isclose(
-                    float(total_all_row["yield"]),
-                    sum(float(row["yield"]) for row in component_all_rows),
-                    rel_tol=1.0e-12,
-                    abs_tol=1.0e-12,
-                )
-                point_score_rows.append(total_all_row)
-            fit = _pyhf_limit(channels) if channels else {"status": "invalid", "reason": "no valid category"}
-            point_limit_rows.append(
-                {
+                    point_score_rows.append(signal_all_row)
+                    component_all_rows: list[dict[str, Any]] = []
+                    for background in backgrounds:
+                        row = _all_fold_score_row(
+                            topology=args.topology,
+                            point=point,
+                            scenario=scenario,
+                            eps_bb=tagging_scenarios[scenario],
+                            category=category_name,
+                            sample_id=background.spec.sample_id,
+                            role=background.spec.role,
+                            aggregation_level="all_folds_category",
+                            summaries=component_fold_summaries[
+                                background.spec.sample_id
+                            ],
+                        )
+                        expected = float(
+                            np.sum(
+                                background.scenario_weights[scenario][
+                                    _category_mask(background.table, category)
+                                ]
+                            )
+                        )
+                        row["tagged_category_closure_pass"] = math.isclose(
+                            float(row["yield"]),
+                            expected,
+                            rel_tol=1.0e-12,
+                            abs_tol=1.0e-12,
+                        )
+                        component_all_rows.append(row)
+                        point_score_rows.append(row)
+                    total_all_row = _all_fold_score_row(
+                        topology=args.topology,
+                        point=point,
+                        scenario=scenario,
+                        eps_bb=tagging_scenarios[scenario],
+                        category=category_name,
+                        sample_id="TOTAL_BACKGROUND",
+                        role="total_background",
+                        aggregation_level="all_folds_category_total_background",
+                        summaries=total_fold_summaries,
+                    )
+                    total_all_row["tagged_category_closure_pass"] = math.isclose(
+                        float(total_all_row["yield"]),
+                        sum(float(row["yield"]) for row in component_all_rows),
+                        rel_tol=1.0e-12,
+                        abs_tol=1.0e-12,
+                    )
+                    point_score_rows.append(total_all_row)
+                metadata = {
                     "topology": args.topology,
                     **point.as_dict(),
                     "tagging_scenario": scenario,
                     "eps_bb": tagging_scenarios[scenario],
-                    "valid_categories": ",".join(CATEGORY_NAMES[index] for index in sorted(valid_categories)),
+                    "valid_categories": ",".join(
+                        CATEGORY_NAMES[index]
+                        for index in sorted(valid_categories)
+                    ),
                     "n_channels": len(channels),
-                    **fit,
                 }
+                limit_payloads.append(
+                    (metadata, tuple(channels) if channels else None)
+                )
+
+            preparation_seconds = time.monotonic() - point_started
+            active_limit_tasks = []
+            for metadata, channels in limit_payloads:
+                if channels is None:
+                    future = _resolved_future(
+                        {
+                            "fit": {
+                                "status": "invalid",
+                                "reason": "no valid category",
+                            },
+                            "wall_seconds": 0.0,
+                        }
+                    )
+                else:
+                    future = limit_executor.submit(channels)
+                active_limit_tasks.append((metadata, future))
+            pending_points.append(
+                PendingPoint(
+                    point_id=point_id,
+                    point=point,
+                    shard_path=shard_path,
+                    point_category_rows=point_category_rows,
+                    point_score_rows=point_score_rows,
+                    point_binning=point_binning,
+                    limit_tasks=active_limit_tasks,
+                    preparation_seconds=preparation_seconds,
+                )
             )
-        _write_json(
-            shard_path,
-            {
-                "run_fingerprint": run_fingerprint,
-                "analysis_fingerprint": analysis_fingerprint,
-                "model_sha256": model_hashes,
-                "point_id": point_id,
-                "point": point.as_dict(),
-                "point_category_yields": point_category_rows,
-                "score_bin_yields": point_score_rows,
-                "point_limits": point_limit_rows,
-                "binning_audit": point_binning,
-            },
-        )
-        shard_paths.append(shard_path)
+            active_limit_tasks = []
+            peak_pending_points = max(peak_pending_points, len(pending_points))
+            if len(pending_points) >= max_pending_points:
+                pending = pending_points[0]
+                finalized = _finalize_pending_point(
+                    pending,
+                    run_fingerprint=run_fingerprint,
+                    analysis_fingerprint=analysis_fingerprint,
+                    model_hashes=model_hashes,
+                )
+                pending_points.popleft()
+                computed_point_count += 1
+                completed_point_count += 1
+                point_preparation_seconds_sum += pending.preparation_seconds
+                fit_worker_seconds_sum += float(finalized["fit_worker_seconds"])
+                _report_point_progress(
+                    completed=completed_point_count,
+                    total=len(signals),
+                    started=point_stage_started,
+                    point_id=pending.point_id,
+                    disposition="checkpoint written",
+                )
+
+        while pending_points:
+            pending = pending_points[0]
+            finalized = _finalize_pending_point(
+                pending,
+                run_fingerprint=run_fingerprint,
+                analysis_fingerprint=analysis_fingerprint,
+                model_hashes=model_hashes,
+            )
+            pending_points.popleft()
+            computed_point_count += 1
+            completed_point_count += 1
+            point_preparation_seconds_sum += pending.preparation_seconds
+            fit_worker_seconds_sum += float(finalized["fit_worker_seconds"])
+            _report_point_progress(
+                completed=completed_point_count,
+                total=len(signals),
+                started=point_stage_started,
+                point_id=pending.point_id,
+                disposition="checkpoint written",
+            )
+    except BaseException:
+        for _, future in active_limit_tasks:
+            future.cancel()
+        _cancel_pending_limit_tasks(pending_points)
+        limit_executor.terminate()
+        raise
+    else:
+        limit_executor.shutdown(wait=True)
+    finally:
+        signal_module.signal(signal_module.SIGTERM, previous_sigterm_handler)
+
+    point_stage_wall_seconds = time.monotonic() - point_stage_started
+    limit_execution = {
+        **limit_execution_plan,
+        "status": "point_stage_finished",
+        "executor_started": limit_executor.started,
+        "runtime_thread_limiter_available": (
+            limit_executor.runtime_thread_limiter_available
+        ),
+        "submitted_fit_tasks": limit_executor.submitted_task_count,
+        "effective_worker_upper_bound": min(
+            args.limit_jobs, limit_executor.submitted_task_count
+        ),
+        "computed_points": computed_point_count,
+        "resumed_points": resumed_point_count,
+        "peak_pending_points": peak_pending_points,
+        "peak_pending_fit_tasks_upper_bound": (
+            peak_pending_points * len(tagging_scenarios)
+        ),
+        "point_preparation_seconds_sum": point_preparation_seconds_sum,
+        "fit_worker_seconds_sum": fit_worker_seconds_sum,
+        "point_stage_wall_seconds": point_stage_wall_seconds,
+    }
 
     # Campaign-wide products are assembled from ordered point shards.  Only
     # one point is resident while writing the potentially million-row score
@@ -3526,11 +3967,21 @@ def run_analysis(args: argparse.Namespace) -> int:
         "campaign_output_assembly": (
             "bounded-memory streaming from point shards in signal-manifest order"
         ),
+        "limit_execution": limit_execution,
         "checkpoint_directory": str(checkpoint_dir),
         "plot_outputs": plot_outputs,
         "html_report": str(report),
     }
     _write_json(output_dir / "method_manifest.json", manifest)
+    _record_run_execution(
+        output_dir,
+        analysis_fingerprint,
+        {
+            **limit_execution,
+            "status": "finished",
+            "limit_status_complete": limits_complete,
+        },
+    )
     if args.mode == "full" and not limits_complete:
         return 3
     return 0
@@ -3565,6 +4016,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--background-replicas", type=int, default=3)
     parser.add_argument("--min-background-raw", type=int, default=25)
     parser.add_argument("--min-background-neff", type=float, default=10.0)
+    parser.add_argument(
+        "--limit-jobs",
+        type=int,
+        default=1,
+        help=(
+            "number of spawned pyhf fit workers; 1 preserves exact serial execution "
+            "(recommended on Tiresias: direct=4, cascade=12)"
+        ),
+    )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--smoke-points", type=int, default=3)
     parser.add_argument("--smoke-max-events", type=int, default=250)
@@ -3589,6 +4049,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--background-k-factor must be positive and finite")
     if args.min_background_raw < 0 or not math.isfinite(args.min_background_neff) or args.min_background_neff < 0.0:
         raise SystemExit("background bin thresholds must be non-negative")
+    if args.limit_jobs < 1:
+        raise SystemExit("--limit-jobs must be positive")
     if args.background_replicas < 1 or args.smoke_points < 1 or args.smoke_max_events < 1:
         raise SystemExit("replica and smoke counts must be positive")
     try:
