@@ -7,6 +7,7 @@ therefore not changed by the cross-fitted study implemented here.
 
 from __future__ import annotations
 
+import copy
 import csv
 import hashlib
 import json
@@ -75,7 +76,7 @@ CLASSIFIER_WEIGHT_SCALE_VERSION = "equal-class-mean-effective-row-weight-1-v1"
 BASE_SEED = 12345
 DEFAULT_PROFILES = ("corrected28", "core52", "full91")
 SHAPE_CHECKPOINT_VERSION = 2
-SHAPE_ORCHESTRATION_VERSION = "parallel-checkpoint-postfit-signal-v2"
+SHAPE_ORCHESTRATION_VERSION = "parallel-checkpoint-postfit-signal-v3"
 PYHF_POI_BRACKET_MULTIPLIER = 10.0
 COUPLING_HOLDOUT_VERSION = "balanced-hash-fivefold-v1"
 LEGACY_CONTOUR_STYLE_VERSION = "legacy-c3d4-overlay-v2"
@@ -85,6 +86,8 @@ DEFAULT_CONTOUR_GRID_BINS = 301
 DEFAULT_CONTOUR_LEGEND_FONTSIZE = 7.0
 EXPECTED_C3D4_SIGNAL_POINT_COUNT = 57
 CONTOUR_INTERPOLATION_METHODS = ("linear", "clough-tocher")
+SM_HH4B_ALTERNATIVE_LIMIT_DIR = "limits_with_sm_hh4b"
+SM_HH4B_ALTERNATIVE_LIMIT_SCENARIO = "hhhh+hhhbb+hh4b"
 OPTUNA_TUNED_PARAMETER_NAMES = (
     "n_estimators",
     "max_depth",
@@ -1793,6 +1796,9 @@ def _sm_hh4b_signal_cutflow_row(
         target_xsec_uncertainty_fb = None
         fit_file = None
         fit_applied = False
+        fit_c3_min = None
+        fit_c3_max = None
+        fit_extrapolated = False
     else:
         evaluation = evaluate_hh4b_c3_fit(fit, target_c3)
         target_xsec_fb = float(evaluation["cross_section_fb"])
@@ -1801,6 +1807,12 @@ def _sm_hh4b_signal_cutflow_row(
         )
         fit_file = fit.get("fit_file")
         fit_applied = True
+        fit_c3_values = [float(point["c3"]) for point in fit["points"]]
+        fit_c3_min = min(fit_c3_values)
+        fit_c3_max = max(fit_c3_values)
+        fit_extrapolated = bool(
+            target_c3 < fit_c3_min or target_c3 > fit_c3_max
+        )
 
     reference_xsec_fb = float(result["xsec_fb"])
     if reference_xsec_fb <= 0.0:
@@ -1862,6 +1874,9 @@ def _sm_hh4b_signal_cutflow_row(
         "cross_section_rescale_factor": xsec_scale,
         "cross_section_fit_applied": fit_applied,
         "cross_section_fit_file": fit_file,
+        "cross_section_fit_c3_min": fit_c3_min,
+        "cross_section_fit_c3_max": fit_c3_max,
+        "cross_section_fit_extrapolated": fit_extrapolated,
         "cross_section_depends_on": "c3",
         "cross_section_independent_of_d4": True,
         "efficiency_extrapolated_from_sm": bool(
@@ -2363,6 +2378,294 @@ def _add_postfit_hhhbb_cut_contribution(
                 ),
                 "fold_cut_sigma95_std": float(
                     np.std([fold["cut_sigma95_fb"] for fold in row["folds"]])
+                ),
+            }
+        )
+
+
+def _add_postfit_sm_hh4b_cut_contribution(
+    aggregate: list[dict[str, Any]],
+    grid_samples: Sequence[EventSample],
+    sm_hh4b_result: Mapping[str, Any],
+    *,
+    luminosity: float,
+) -> None:
+    """Add fitted hh+4b yields to a copied, post-optimization cut result.
+
+    ``aggregate`` is expected to be a deep copy of the canonical result table.
+    The primary hhhh classifier, validation thresholds, background yields, and
+    any already-added hhh+bb contribution remain frozen.  The returned limit is
+    expressed on the equivalent-hhhh-fb basis with one common signal strength.
+    """
+
+    fit = sm_hh4b_result.get("c3_cross_section_fit")
+    if fit is None:
+        raise ValueError(
+            "Alternative hh+4b limits require the completed c3 cross-section fit"
+        )
+    evaluate_hh4b_c3_fit(fit, 0.0)
+    if not aggregate:
+        raise ValueError("Alternative hh+4b limits require cut-result rows")
+
+    grid_by_point = {str(sample.point_id): sample for sample in grid_samples}
+    if set(grid_by_point) != {str(row["point_id"]) for row in aggregate}:
+        raise ValueError(
+            "Alternative hh+4b cut results must exactly match the c3/d4 grid"
+        )
+
+    reference_xsec_fb = float(sm_hh4b_result["xsec_fb"])
+    if not math.isfinite(reference_xsec_fb) or reference_xsec_fb <= 0.0:
+        raise ValueError("The SM hh+4b reference cross section must be positive")
+    luminosity = _finite_float(luminosity, "luminosity")
+    if luminosity <= 0.0:
+        raise ValueError("luminosity must be positive")
+    reference_folds = list(sm_hh4b_result.get("folds", ()))
+    if not reference_folds:
+        raise ValueError(
+            "Alternative hh+4b limits require the five frozen SM test folds"
+        )
+    reference_selected = float(
+        sm_hh4b_result["nominal_selected_signal_yield"]
+    )
+    folded_selected = float(
+        sum(float(fold["signal_physical_yield"]) for fold in reference_folds)
+    )
+    if not math.isclose(
+        folded_selected,
+        reference_selected,
+        rel_tol=1.0e-12,
+        abs_tol=1.0e-15,
+    ):
+        raise ValueError(
+            "The frozen SM hh+4b fold yields do not close to the published total"
+        )
+
+    for row in aggregate:
+        point_id = str(row["point_id"])
+        hhhh_sample = grid_by_point[point_id]
+        hhhh_xsec_fb = float(row.get("hhhh_xsec_fb", hhhh_sample.xsec_fb))
+        if not math.isfinite(hhhh_xsec_fb) or hhhh_xsec_fb <= 0.0:
+            raise ValueError(
+                f"{point_id}: a positive hhhh cross section is required for "
+                "the alternative hh+4b limit"
+            )
+        if len(reference_folds) != len(row["folds"]):
+            raise ValueError(
+                f"{point_id}: hhhh and frozen SM hh+4b fold counts do not match"
+            )
+
+        hh4b = _sm_hh4b_signal_cutflow_row(
+            sm_hh4b_result,
+            luminosity=luminosity,
+            point_id=point_id,
+            c3=float(row["c3"]),
+            d4=float(row["d4"]),
+            category="alternative common-signal-strength limit",
+            is_limit_representative=True,
+        )
+        hh4b_yield = float(hh4b["xgboost_events"])
+        hh4b_staterror = float(hh4b["xgboost_events_error"])
+        hh4b_fit_uncertainty = float(
+            hh4b.get("xgboost_events_fit_uncertainty") or 0.0
+        )
+        previous_yield = float(
+            row.get(
+                "combined_nominal_selected_signal_yield",
+                hhhh_xsec_fb * float(row["selected_signal_yield_per_fb"]),
+            )
+        )
+        previous_staterror = float(
+            row.get(
+                "combined_nominal_selected_signal_staterror",
+                hhhh_xsec_fb
+                * float(row["selected_signal_staterror_per_fb"]),
+            )
+        )
+        combined_yield = previous_yield + hh4b_yield
+        combined_sumw2 = previous_staterror**2 + hh4b_staterror**2
+        equivalent_unit_yield = combined_yield / hhhh_xsec_fb
+        equivalent_sumw2_unit = combined_sumw2 / (hhhh_xsec_fb**2)
+
+        previous_components = [
+            component
+            for component in str(
+                row.get("signal_components", "hhhh")
+            ).split(",")
+            if component
+        ]
+        if "hh4b" in previous_components:
+            raise ValueError(f"{point_id}: hh+4b was already added to the limit")
+        signal_components = ",".join([*previous_components, "hh4b"])
+        alternative_limit_scenario = "+".join(
+            [*previous_components, "hh4b"]
+        )
+        row.update(
+            {
+                "signal_components": signal_components,
+                "alternative_limit_scenario": alternative_limit_scenario,
+                "limit_parameter": "common-signal-strength",
+                "limit_cross_section_basis": "equivalent-hhhh-fb",
+                "hhhh_xsec_fb": hhhh_xsec_fb,
+                "reference_cut_signal_strength95_without_hh4b": row.get(
+                    "cut_signal_strength95"
+                ),
+                "reference_cut_sigma95_without_hh4b_fb": row.get(
+                    "cut_sigma95_fb"
+                ),
+                "postfit_sm_hh4b_in_limits": True,
+                "postfit_sm_hh4b_in_training": False,
+                "postfit_sm_hh4b_in_threshold_optimization": False,
+                "postfit_sm_hh4b_in_shape_binning_optimization": False,
+                "postfit_sm_hh4b_efficiency_policy": (
+                    "frozen-sm-efficiency-rescaled-by-c3-cross-section-fit"
+                ),
+                "postfit_sm_hh4b_fit_uncertainty_in_likelihood": False,
+                "hh4b_file": hh4b["file"],
+                "hh4b_xsec_fb": float(hh4b["production_xsec_fb"]),
+                "hh4b_xsec_uncertainty_fb": hh4b.get(
+                    "production_xsec_uncertainty_fb"
+                ),
+                "hh4b_reference_xsec_fb": reference_xsec_fb,
+                "hh4b_cross_section_rescale_factor": float(
+                    hh4b["cross_section_rescale_factor"]
+                ),
+                "hh4b_cross_section_fit_c3_min": hh4b.get(
+                    "cross_section_fit_c3_min"
+                ),
+                "hh4b_cross_section_fit_c3_max": hh4b.get(
+                    "cross_section_fit_c3_max"
+                ),
+                "hh4b_cross_section_fit_extrapolated": bool(
+                    hh4b.get("cross_section_fit_extrapolated", False)
+                ),
+                "hh4b_rate_factor": float(hh4b["rate_factor"]),
+                "hh4b_feature_tree_efficiency": float(
+                    hh4b["feature_tree_efficiency"]
+                ),
+                "hh4b_xgboost_efficiency": float(
+                    hh4b["xgboost_efficiency"]
+                ),
+                "hh4b_nominal_feature_signal_yield": float(
+                    hh4b["input_events"]
+                ),
+                "hh4b_nominal_selected_signal_yield": hh4b_yield,
+                "hh4b_nominal_selected_signal_staterror": hh4b_staterror,
+                "hh4b_nominal_selected_signal_fit_uncertainty": (
+                    hh4b_fit_uncertainty
+                ),
+                "hh4b_selected_raw_entries": int(hh4b["selected_entries"]),
+                "combined_nominal_selected_signal_yield_without_hh4b": (
+                    previous_yield
+                ),
+                "combined_nominal_selected_signal_yield": combined_yield,
+                "combined_nominal_selected_signal_staterror": math.sqrt(
+                    max(0.0, combined_sumw2)
+                ),
+                "combined_nominal_selected_signal_fit_uncertainty": (
+                    hh4b_fit_uncertainty
+                ),
+                "selected_signal_yield_per_fb": equivalent_unit_yield,
+                "selected_signal_staterror_per_fb": math.sqrt(
+                    max(0.0, equivalent_sumw2_unit)
+                ),
+            }
+        )
+
+        xsec_scale = float(hh4b["cross_section_rescale_factor"])
+        for aggregate_fold, reference_fold in zip(
+            row["folds"], reference_folds
+        ):
+            previous_fold_yield = (
+                hhhh_xsec_fb * float(aggregate_fold["signal_unit_yield"])
+            )
+            previous_fold_sumw2 = (
+                hhhh_xsec_fb**2
+                * float(aggregate_fold["signal_sumw2_unit"])
+            )
+            hh4b_fold_yield = (
+                xsec_scale * float(reference_fold["signal_physical_yield"])
+            )
+            hh4b_fold_sumw2 = (
+                xsec_scale**2
+                * float(reference_fold["signal_sumw2_physical"])
+            )
+            combined_fold_yield = previous_fold_yield + hh4b_fold_yield
+            combined_fold_sumw2 = previous_fold_sumw2 + hh4b_fold_sumw2
+            combined_fold_unit = combined_fold_yield / hhhh_xsec_fb
+            aggregate_fold.update(
+                {
+                    "signal_components": signal_components,
+                    "hh4b_signal_physical_yield": hh4b_fold_yield,
+                    "hh4b_signal_sumw2_physical": hh4b_fold_sumw2,
+                    "hh4b_signal_raw_entries": int(
+                        reference_fold["signal_raw_entries"]
+                    ),
+                    "combined_signal_nominal_yield_without_hh4b": (
+                        previous_fold_yield
+                    ),
+                    "combined_signal_nominal_yield": combined_fold_yield,
+                    "signal_unit_yield": combined_fold_unit,
+                    "signal_sumw2_unit": (
+                        combined_fold_sumw2 / (hhhh_xsec_fb**2)
+                    ),
+                    "cut_sigma95_fb": (
+                        float(aggregate_fold["s95_exact_events"])
+                        / combined_fold_unit
+                        if combined_fold_unit > 0.0
+                        else math.inf
+                    ),
+                }
+            )
+
+        background_yield = float(row["background_yield"])
+        s95 = exact_cls_signal_upper_limit(background_yield)
+        s95_down = exact_cls_signal_upper_limit(background_yield * 0.25)
+        s95_up = exact_cls_signal_upper_limit(background_yield * 4.0)
+        row.update(
+            {
+                "s95_exact_events": s95,
+                "cut_signal_strength95": (
+                    s95 / combined_yield
+                    if combined_yield > 0.0
+                    else math.inf
+                ),
+                "cut_signal_strength95_background_x0p25": (
+                    s95_down / combined_yield
+                    if combined_yield > 0.0
+                    else math.inf
+                ),
+                "cut_signal_strength95_background_x4": (
+                    s95_up / combined_yield
+                    if combined_yield > 0.0
+                    else math.inf
+                ),
+                "cut_sigma95_fb": (
+                    s95 / equivalent_unit_yield
+                    if equivalent_unit_yield > 0.0
+                    else math.inf
+                ),
+                "cut_sigma95_background_x0p25_fb": (
+                    s95_down / equivalent_unit_yield
+                    if equivalent_unit_yield > 0.0
+                    else math.inf
+                ),
+                "cut_sigma95_background_x4_fb": (
+                    s95_up / equivalent_unit_yield
+                    if equivalent_unit_yield > 0.0
+                    else math.inf
+                ),
+                "excluded_cut": bool(
+                    combined_yield >= s95 if combined_yield > 0.0 else False
+                ),
+                "fold_signal_yield_std": float(
+                    np.std(
+                        [fold["signal_unit_yield"] for fold in row["folds"]]
+                    )
+                ),
+                "fold_cut_sigma95_std": float(
+                    np.std(
+                        [fold["cut_sigma95_fb"] for fold in row["folds"]]
+                    )
                 ),
             }
         )
@@ -4411,7 +4714,29 @@ def _write_legacy_style_exclusion_contours(
         "hhhbb" in str(row.get("signal_components", "")).split(",")
         for row in rows
     )
-    if includes_postfit_hhhbb:
+    includes_postfit_sm_hh4b = any(
+        "hh4b" in str(row.get("signal_components", "")).split(",")
+        for row in rows
+    )
+    if includes_postfit_hhhbb and includes_postfit_sm_hh4b:
+        process_title = (
+            r"$hhhh + hhhg\,(g\to b\bar b) + hh+4b$ signal"
+        )
+        label = (
+            r"$hhhh + hhhg\,(g\to b\bar b) + hh+4b$, exact "
+            r"$\mathrm{CL}_{s}$ 95% (cut)"
+            if limit_kind == "cut"
+            else r"$hhhh + hhhg\,(g\to b\bar b) + hh+4b$, pyhf "
+            r"$\mathrm{CL}_{s}$ 95% (shape)"
+        )
+    elif includes_postfit_sm_hh4b:
+        process_title = r"$hhhh + hh+4b$ signal"
+        label = (
+            r"$hhhh + hh+4b$, exact $\mathrm{CL}_{s}$ 95% (cut)"
+            if limit_kind == "cut"
+            else r"$hhhh + hh+4b$, pyhf $\mathrm{CL}_{s}$ 95% (shape)"
+        )
+    elif includes_postfit_hhhbb:
         process_title = r"$hhhh + hhhg\,(g\to b\bar b)$ signal"
         label = (
             r"$hhhh + hhhg\,(g\to b\bar b)$, exact "
@@ -4900,6 +5225,156 @@ def _shape_model_for_record(record: Mapping[str, Any]) -> Any:
     return model
 
 
+def _enable_postfit_sm_hh4b_shape_limits(
+    records: Sequence[Mapping[str, Any]],
+    sm_hh4b_result: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Return shallow record copies with the frozen SM hh+4b template enabled."""
+
+    fit = sm_hh4b_result.get("c3_cross_section_fit")
+    if fit is None:
+        raise ValueError(
+            "Alternative hh+4b shape limits require the completed c3 fit"
+        )
+    evaluate_hh4b_c3_fit(fit, 0.0)
+    reference_xsec_fb = float(sm_hh4b_result["xsec_fb"])
+    if not math.isfinite(reference_xsec_fb) or reference_xsec_fb <= 0.0:
+        raise ValueError("The SM hh+4b reference cross section must be positive")
+    source_point_id = str(sm_hh4b_result["point_id"])
+    includes_postfit_hhhbb = any(
+        record.get("postfit_hhhbb_test") is not None
+        for record in records
+    )
+    config = {
+        "scenario": (
+            SM_HH4B_ALTERNATIVE_LIMIT_SCENARIO
+            if includes_postfit_hhhbb
+            else "hhhh+hh4b"
+        ),
+        "source_point_id": source_point_id,
+        "reference_xsec_fb": reference_xsec_fb,
+        "c3_cross_section_fit": copy.deepcopy(fit),
+        "efficiency_policy": (
+            "frozen-sm-score-template-rescaled-by-c3-cross-section-fit"
+        ),
+        "fit_uncertainty_in_likelihood": False,
+    }
+
+    enabled: list[dict[str, Any]] = []
+    for record in records:
+        postfit = record.get("postfit_sm_hh4b_test")
+        if not isinstance(postfit, Mapping):
+            raise ValueError(
+                "Every fold requires its scored SM hh+4b test template"
+            )
+        point = postfit.get("points", {}).get(source_point_id)
+        if not isinstance(point, Mapping):
+            raise ValueError(
+                f"SM hh+4b fold template is missing {source_point_id}"
+            )
+        sample_id = str(point["sample_id"])
+        if sample_id not in postfit.get("signal_rows", {}):
+            raise ValueError(
+                f"SM hh+4b fold score row {sample_id!r} is missing"
+            )
+        item = dict(record)
+        item["postfit_sm_hh4b_limit"] = copy.deepcopy(config)
+        for cache_name in (
+            "_validation_parameter_cache",
+            "_test_parameter_cache",
+        ):
+            item[cache_name] = {}
+        enabled.append(item)
+    return enabled
+
+
+def _postfit_sm_hh4b_shape_arrays(
+    record: Mapping[str, Any],
+    sample: EventSample | ShapePoint,
+) -> dict[str, Any] | None:
+    """Return the fitted hh+4b score template on the equivalent-hhhh basis."""
+
+    config = record.get("postfit_sm_hh4b_limit")
+    if config is None:
+        return None
+    if sample.c3 is None:
+        raise ValueError("The hh+4b shape fit requires a finite target c3")
+    postfit = record.get("postfit_sm_hh4b_test")
+    if not isinstance(postfit, Mapping):
+        raise ValueError("The scored SM hh+4b shape template is missing")
+    source_point_id = str(config["source_point_id"])
+    point = postfit.get("points", {}).get(source_point_id)
+    if not isinstance(point, Mapping):
+        raise ValueError(
+            f"The scored SM hh+4b shape template is missing {source_point_id}"
+        )
+    sample_id = str(point["sample_id"])
+    try:
+        score_row = postfit["signal_rows"][sample_id]
+    except KeyError as error:
+        raise ValueError(
+            f"The scored SM hh+4b shape row {sample_id!r} is missing"
+        ) from error
+
+    hhhh_xsec_fb = float(sample.xsec_fb)
+    reference_xsec_fb = float(config["reference_xsec_fb"])
+    if (
+        not math.isfinite(hhhh_xsec_fb)
+        or hhhh_xsec_fb <= 0.0
+        or not math.isfinite(reference_xsec_fb)
+        or reference_xsec_fb <= 0.0
+    ):
+        raise ValueError(
+            f"{sample.point_id}: positive hhhh and reference hh+4b cross "
+            "sections are required for the alternative shape limit"
+        )
+    evaluation = evaluate_hh4b_c3_fit(
+        config["c3_cross_section_fit"],
+        float(sample.c3),
+    )
+    target_xsec_fb = float(evaluation["cross_section_fb"])
+    target_uncertainty_fb = float(
+        evaluation["cross_section_uncertainty_fb"]
+    )
+    fit_c3_values = [
+        float(point["c3"])
+        for point in config["c3_cross_section_fit"]["points"]
+    ]
+    fit_c3_min = min(fit_c3_values)
+    fit_c3_max = max(fit_c3_values)
+    scores = np.asarray(score_row["scores"], dtype=float)
+    physical_weights = np.asarray(
+        score_row["physical_weights"], dtype=float
+    )
+    weights = (
+        physical_weights
+        * (target_xsec_fb / reference_xsec_fb)
+        / hhhh_xsec_fb
+    )
+    if scores.shape != weights.shape:
+        raise ValueError(
+            f"{sample.point_id}: SM hh+4b shape scores and weights do not match"
+        )
+    return {
+        "scores": scores,
+        "weights": weights,
+        "target_xsec_fb": target_xsec_fb,
+        "target_xsec_uncertainty_fb": target_uncertainty_fb,
+        "reference_xsec_fb": reference_xsec_fb,
+        "cross_section_rescale_factor": target_xsec_fb
+        / reference_xsec_fb,
+        "cross_section_fit_c3_min": fit_c3_min,
+        "cross_section_fit_c3_max": fit_c3_max,
+        "cross_section_fit_extrapolated": bool(
+            float(sample.c3) < fit_c3_min
+            or float(sample.c3) > fit_c3_max
+        ),
+        "fit_uncertainty_in_likelihood": bool(
+            config.get("fit_uncertainty_in_likelihood", False)
+        ),
+    }
+
+
 def _validation_fold_arrays(
     record: Mapping[str, Any],
     sample: EventSample | ShapePoint,
@@ -4978,6 +5453,14 @@ def _test_fold_arrays(
             )
         signal_scores = np.concatenate((signal_scores, postfit_scores))
         signal_weights = np.concatenate((signal_weights, postfit_weights))
+    sm_hh4b = _postfit_sm_hh4b_shape_arrays(record, sample)
+    if sm_hh4b is not None:
+        signal_scores = np.concatenate(
+            (signal_scores, np.asarray(sm_hh4b["scores"], dtype=float))
+        )
+        signal_weights = np.concatenate(
+            (signal_weights, np.asarray(sm_hh4b["weights"], dtype=float))
+        )
     if test.get("parameterized"):
         cache = record.setdefault("_test_parameter_cache", {})
         if sample.point_id not in cache:
@@ -5074,6 +5557,26 @@ def _compact_shape_records(
                 ),
                 "role": "postfit-signal-only",
             }
+        sm_hh4b_limit = record.get("postfit_sm_hh4b_limit")
+        if sm_hh4b_limit is not None:
+            postfit_sm_hh4b = record.get("postfit_sm_hh4b_test")
+            if not isinstance(postfit_sm_hh4b, Mapping):
+                raise ValueError(
+                    "The enabled SM hh+4b shape limit lacks its score template"
+                )
+            item["postfit_sm_hh4b_test"] = {
+                "points": {
+                    str(point_id): {"sample_id": str(point["sample_id"])}
+                    for point_id, point in postfit_sm_hh4b["points"].items()
+                },
+                "signal_rows": _compact_shape_partition_rows(
+                    postfit_sm_hh4b["signal_rows"], signal=False
+                ),
+                "role": "postfit-signal-only",
+            }
+            item["postfit_sm_hh4b_limit"] = copy.deepcopy(
+                sm_hh4b_limit
+            )
         if parameterized:
             model_path = record.get("model")
             if not model_path:
@@ -5445,6 +5948,10 @@ def _evaluate_shape_point(
         includes_postfit_hhhbb = any(
             record.get("postfit_hhhbb_test") is not None for record in records
         )
+        includes_postfit_sm_hh4b = any(
+            record.get("postfit_sm_hh4b_limit") is not None
+            for record in records
+        )
         base = {
             "point_id": sample.point_id,
             "c3": sample.c3,
@@ -5456,18 +5963,77 @@ def _evaluate_shape_point(
             "one_bin_signal_sumw2": one_bin_signal_sumw2,
             "one_bin_background_sumw2": one_bin_background_sumw2,
         }
-        if includes_postfit_hhhbb:
+        if includes_postfit_hhhbb or includes_postfit_sm_hh4b:
+            components = ["hhhh"]
+            if includes_postfit_hhhbb:
+                components.append("hhhbb")
+            if includes_postfit_sm_hh4b:
+                components.append("hh4b")
             base.update(
                 {
-                    "signal_components": "hhhh,hhhbb",
+                    "signal_components": ",".join(components),
                     "limit_parameter": "common-signal-strength",
                     "limit_cross_section_basis": "equivalent-hhhh-fb",
                     "hhhh_xsec_fb": float(sample.xsec_fb),
+                }
+            )
+        if includes_postfit_hhhbb:
+            base.update(
+                {
                     "postfit_hhhbb_in_training": False,
                     "postfit_hhhbb_in_threshold_optimization": False,
                     "postfit_hhhbb_in_shape_binning_optimization": False,
                     "postfit_hhhbb_role": (
                         "held-out-test-template-after-frozen-hhhh-validation-binning"
+                    ),
+                }
+            )
+        if includes_postfit_sm_hh4b:
+            hh4b = _postfit_sm_hh4b_shape_arrays(records[0], sample)
+            if hh4b is None:
+                raise RuntimeError(
+                    "The enabled SM hh+4b shape template was not returned"
+                )
+            base.update(
+                {
+                    "alternative_limit_scenario": (
+                        records[0]["postfit_sm_hh4b_limit"]["scenario"]
+                    ),
+                    "postfit_sm_hh4b_in_limits": True,
+                    "postfit_sm_hh4b_in_training": False,
+                    "postfit_sm_hh4b_in_threshold_optimization": False,
+                    "postfit_sm_hh4b_in_shape_binning_optimization": False,
+                    "postfit_sm_hh4b_role": (
+                        "frozen-sm-test-score-template-after-frozen-hhhh-"
+                        "validation-binning"
+                    ),
+                    "postfit_sm_hh4b_efficiency_policy": (
+                        "frozen-sm-score-template-rescaled-by-c3-cross-"
+                        "section-fit"
+                    ),
+                    "postfit_sm_hh4b_xsec_fb": float(
+                        hh4b["target_xsec_fb"]
+                    ),
+                    "postfit_sm_hh4b_xsec_uncertainty_fb": float(
+                        hh4b["target_xsec_uncertainty_fb"]
+                    ),
+                    "postfit_sm_hh4b_reference_xsec_fb": float(
+                        hh4b["reference_xsec_fb"]
+                    ),
+                    "postfit_sm_hh4b_cross_section_rescale_factor": float(
+                        hh4b["cross_section_rescale_factor"]
+                    ),
+                    "postfit_sm_hh4b_cross_section_fit_c3_min": float(
+                        hh4b["cross_section_fit_c3_min"]
+                    ),
+                    "postfit_sm_hh4b_cross_section_fit_c3_max": float(
+                        hh4b["cross_section_fit_c3_max"]
+                    ),
+                    "postfit_sm_hh4b_cross_section_fit_extrapolated": bool(
+                        hh4b["cross_section_fit_extrapolated"]
+                    ),
+                    "postfit_sm_hh4b_fit_uncertainty_in_likelihood": bool(
+                        hh4b["fit_uncertainty_in_likelihood"]
                     ),
                 }
             )
@@ -5756,6 +6322,7 @@ def _shape_fingerprint(
     package_versions: Mapping[str, Any],
     records: Sequence[Mapping[str, Any]],
     study_mode: str = "full",
+    signal_scenario: str = "canonical",
 ) -> str:
     """Bind reusable shape checkpoints to every physics-relevant input."""
 
@@ -5775,6 +6342,7 @@ def _shape_fingerprint(
         "shape_orchestration_version": SHAPE_ORCHESTRATION_VERSION,
         "method_version": METHOD_VERSION,
         "study_mode": str(study_mode),
+        "signal_scenario": str(signal_scenario),
         "shape_algorithm": {
             "backend": "pyhf-asymptotic-numpy",
             "confidence_level": 0.95,
@@ -5791,6 +6359,14 @@ def _shape_fingerprint(
             "postfit_signal_weight_basis": (
                 "physical-hhhbb-weight-divided-by-point-hhhh-xsec-fb"
             ),
+            "postfit_sm_hh4b_policy": (
+                "frozen-sm-score-template-rescaled-by-c3-cross-section-fit"
+                if any(
+                    record.get("postfit_sm_hh4b_limit") is not None
+                    for record in records
+                )
+                else "not-included"
+            ),
         },
         "strategy": str(strategy),
         "profile": str(profile),
@@ -5806,6 +6382,14 @@ def _shape_fingerprint(
         "input_hashes": dict(sorted(input_hashes.items())),
         "package_versions": dict(sorted(package_versions.items())),
         "models": models,
+        "postfit_sm_hh4b_limit": next(
+            (
+                record.get("postfit_sm_hh4b_limit")
+                for record in records
+                if record.get("postfit_sm_hh4b_limit") is not None
+            ),
+            None,
+        ),
     }
     encoded = json.dumps(_json_safe(payload), sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -6279,6 +6863,7 @@ def _run_c3d4_study_impl(
     write_input_report: bool = False,
     hhhbb_signal_specs: Sequence[Mapping[str, Any]] = (),
     sm_hh4b_signal_specs: Sequence[Mapping[str, Any]] = (),
+    include_sm_hh4b_in_alternative_limits: bool = False,
 ) -> dict[str, Any]:
     """Run the complete versioned study and return its machine-readable summary."""
 
@@ -6348,6 +6933,9 @@ def _run_c3d4_study_impl(
         "postfit_sm_hh4b_signal_point_count": len(
             sm_hh4b_signal_specs or ()
         ),
+        "include_sm_hh4b_in_alternative_limits": bool(
+            include_sm_hh4b_in_alternative_limits
+        ),
     }
     mode_policy = _resolve_study_mode(
         study_mode=study_mode,
@@ -6369,6 +6957,9 @@ def _run_c3d4_study_impl(
     hash_inputs = mode_policy.hash_inputs
     hhhbb_signal_specs = tuple(hhhbb_signal_specs or ())
     sm_hh4b_signal_specs = tuple(sm_hh4b_signal_specs or ())
+    include_sm_hh4b_in_alternative_limits = bool(
+        include_sm_hh4b_in_alternative_limits
+    )
     if hhhbb_signal_specs and mode_policy.run_parameterized_gate:
         raise ValueError(
             "Post-fit hhhbb is not yet supported for the full parameterized-gate "
@@ -6507,6 +7098,19 @@ def _run_c3d4_study_impl(
                 "The c3/d4 grid must contain (c3,d4)=(0,0) so the frozen "
                 "SM threshold can be applied to SM hh+4b"
             )
+    if include_sm_hh4b_in_alternative_limits:
+        if not sm_hh4b_samples:
+            raise ValueError(
+                "Alternative hh+4b limits require --sm-hh4b-signal-dir "
+                "or --sm-hh4b-signal-root"
+            )
+        if not (sm_hh4b_samples[0].metadata or {}).get(
+            "c3_cross_section_fit"
+        ):
+            raise ValueError(
+                "Alternative hh+4b limits require a completed quadratic c3 "
+                "cross-section fit"
+            )
     if not background_samples:
         raise ValueError("The study requires at least one background source")
     all_loaded_samples = [
@@ -6606,6 +7210,11 @@ def _run_c3d4_study_impl(
             "c3_cross_section_fit"
         )
     )
+    sm_hh4b_alternative_limit_scenario = (
+        SM_HH4B_ALTERNATIVE_LIMIT_SCENARIO
+        if hhhbb_samples
+        else "hhhh+hh4b"
+    )
     runtime_versions = _package_versions()
     shape_thread_environment = {
         variable: os.environ.get(variable) for variable in SHAPE_THREAD_ENVIRONMENT
@@ -6680,6 +7289,16 @@ def _run_c3d4_study_impl(
                 "included_in_shape_binning_optimization": False,
                 "included_in_background": False,
                 "included_in_limits": False,
+                "included_in_canonical_limits": False,
+                "included_in_alternative_limits": bool(
+                    include_sm_hh4b_in_alternative_limits
+                ),
+                "alternative_limit_scenario": (
+                    sm_hh4b_alternative_limit_scenario
+                    if include_sm_hh4b_in_alternative_limits
+                    else None
+                ),
+                "fit_uncertainty_in_likelihood": False,
                 "cross_section_fit_applied": sm_hh4b_fit_applied,
                 "table_point_matching": (
                     "same selected c3/d4 coordinates as hhhbb"
@@ -6704,6 +7323,7 @@ def _run_c3d4_study_impl(
             "thread_environment": shape_thread_environment,
             "strategies": {},
         },
+        "alternative_limit_scenarios": {},
         "fixed_xgboost_parameters": FIXED_XGBOOST_PARAMS,
         "legacy_contour_plots": {
             "style_version": LEGACY_CONTOUR_STYLE_VERSION,
@@ -6742,6 +7362,20 @@ def _run_c3d4_study_impl(
             stale_strategy
         ] = (
             None if strategy_archive is None else str(strategy_archive)
+        )
+        alternative_archive = _quarantine_strategy_outputs(
+            output_dir
+            / stale_strategy
+            / SM_HH4B_ALTERNATIVE_LIMIT_DIR,
+            f"{mode_policy.name}-startup-{source_commit}",
+            include_cut_preview=True,
+        )
+        manifest.setdefault("previous_alternative_output_archives", {})[
+            stale_strategy
+        ] = (
+            None
+            if alternative_archive is None
+            else str(alternative_archive)
         )
     if mode_policy.run_parameterized_gate:
         stale_gate = output_dir / "parameterized_classifier_gate.json"
@@ -7000,7 +7634,12 @@ def _run_c3d4_study_impl(
         strategy: str,
         strategy_dir: Path,
         records: Sequence[Mapping[str, Any]],
+        *,
+        signal_scenario: str = "canonical",
+        stage_key: str | None = None,
     ) -> list[dict[str, Any]]:
+        stage_key = str(stage_key or strategy)
+        canonical_stage = signal_scenario == "canonical"
         fingerprint = _shape_fingerprint(
             strategy=strategy,
             profile=selected_profile,
@@ -7014,12 +7653,14 @@ def _run_c3d4_study_impl(
             package_versions=runtime_versions,
             records=records,
             study_mode=mode_policy.name,
+            signal_scenario=signal_scenario,
         )
         checkpoint_dir = strategy_dir / "shape_checkpoints" / fingerprint
         archived_outputs = _quarantine_strategy_outputs(strategy_dir, fingerprint)
         shape_status_file = strategy_dir / "shape_results_status.json"
-        manifest["shape_evaluation"]["strategies"][strategy] = {
+        manifest["shape_evaluation"]["strategies"][stage_key] = {
             "status": "running",
+            "signal_scenario": signal_scenario,
             "shape_jobs": shape_jobs,
             "checkpoint_fingerprint": fingerprint,
             "checkpoint_dir": str(checkpoint_dir),
@@ -7032,19 +7673,31 @@ def _run_c3d4_study_impl(
             {
                 "status": "running",
                 "strategy": strategy,
+                "stage_key": stage_key,
+                "signal_scenario": signal_scenario,
                 "checkpoint_fingerprint": fingerprint,
                 "checkpoint_dir": str(checkpoint_dir),
                 "canonical_results_published": False,
+                "results_published": False,
                 "archived_previous_outputs": (
                     None if archived_outputs is None else str(archived_outputs)
                 ),
             },
         )
-        print(f"Selecting pyhf score shapes for {strategy}")
+        print(
+            f"Selecting pyhf score shapes for {strategy}"
+            + (
+                ""
+                if canonical_stage
+                else f" ({signal_scenario})"
+            )
+        )
         progress.emit(
-            f"shape:{strategy}",
+            f"shape:{stage_key}",
             "Starting checkpointed pyhf score-shape evaluation",
             strategy=strategy,
+            stage_key=stage_key,
+            signal_scenario=signal_scenario,
             shape_jobs=shape_jobs,
             checkpoint_dir=str(checkpoint_dir),
         )
@@ -7052,7 +7705,7 @@ def _run_c3d4_study_impl(
             shape, metadata = _shape_results(
                 grid_samples,
                 records,
-                strategy=strategy,
+                strategy=stage_key,
                 profile=selected_profile,
                 observable_set=observable_set,
                 n_folds=cv_folds,
@@ -7064,8 +7717,9 @@ def _run_c3d4_study_impl(
             )
         except KeyboardInterrupt:
             manifest["status"] = "interrupted"
-            manifest["shape_evaluation"]["strategies"][strategy] = {
+            manifest["shape_evaluation"]["strategies"][stage_key] = {
                 "status": "interrupted",
+                "signal_scenario": signal_scenario,
                 "shape_jobs": shape_jobs,
                 "checkpoint_fingerprint": fingerprint,
                 "checkpoint_dir": str(checkpoint_dir),
@@ -7075,17 +7729,21 @@ def _run_c3d4_study_impl(
                 {
                     "status": "interrupted",
                     "strategy": strategy,
+                    "stage_key": stage_key,
+                    "signal_scenario": signal_scenario,
                     "checkpoint_fingerprint": fingerprint,
                     "checkpoint_dir": str(checkpoint_dir),
                     "canonical_results_published": False,
+                    "results_published": False,
                 },
             )
             _write_json_atomic(output_dir / "method_manifest.json", manifest)
             raise
         except Exception as error:
             manifest["status"] = "incomplete"
-            manifest["shape_evaluation"]["strategies"][strategy] = {
+            manifest["shape_evaluation"]["strategies"][stage_key] = {
                 "status": "error",
+                "signal_scenario": signal_scenario,
                 "shape_jobs": shape_jobs,
                 "checkpoint_fingerprint": fingerprint,
                 "checkpoint_dir": str(checkpoint_dir),
@@ -7097,28 +7755,35 @@ def _run_c3d4_study_impl(
                 {
                     "status": "error",
                     "strategy": strategy,
+                    "stage_key": stage_key,
+                    "signal_scenario": signal_scenario,
                     "checkpoint_fingerprint": fingerprint,
                     "checkpoint_dir": str(checkpoint_dir),
                     "canonical_results_published": False,
+                    "results_published": False,
                     "error_type": type(error).__name__,
                     "error": str(error),
                 },
             )
             _write_json_atomic(output_dir / "method_manifest.json", manifest)
             progress.emit(
-                f"shape:{strategy}",
+                f"shape:{stage_key}",
                 "Shape evaluation stopped with an error; completed checkpoints are retained",
                 status="incomplete",
                 strategy=strategy,
+                stage_key=stage_key,
+                signal_scenario=signal_scenario,
                 error_type=type(error).__name__,
                 error=str(error),
             )
             raise
         metadata = {
             **metadata,
+            "stage_key": stage_key,
+            "signal_scenario": signal_scenario,
             "thread_environment": shape_thread_environment,
         }
-        manifest["shape_evaluation"]["strategies"][strategy] = metadata
+        manifest["shape_evaluation"]["strategies"][stage_key] = metadata
         _write_json_atomic(output_dir / "method_manifest.json", manifest)
         if metadata["status"] != "complete":
             _write_rows(strategy_dir / "shape_results.partial.csv", shape)
@@ -7129,18 +7794,23 @@ def _run_c3d4_study_impl(
                 {
                     "status": "incomplete",
                     "strategy": strategy,
+                    "stage_key": stage_key,
+                    "signal_scenario": signal_scenario,
                     "checkpoint_fingerprint": fingerprint,
                     "checkpoint_dir": str(checkpoint_dir),
                     "canonical_results_published": False,
+                    "results_published": False,
                     "retryable_points": metadata["retryable_points"],
                 },
             )
             _write_json_atomic(output_dir / "method_manifest.json", manifest)
             progress.emit(
-                f"shape:{strategy}",
+                f"shape:{stage_key}",
                 "Shape evaluation is incomplete; retryable checkpoints were retained",
                 status="incomplete",
                 strategy=strategy,
+                stage_key=stage_key,
+                signal_scenario=signal_scenario,
                 retryable_points=metadata["retryable_points"],
                 completed=metadata["completed_points"],
                 total=len(grid_samples),
@@ -7160,28 +7830,393 @@ def _run_c3d4_study_impl(
             {
                 "status": "ready_to_publish",
                 "strategy": strategy,
+                "stage_key": stage_key,
+                "signal_scenario": signal_scenario,
                 "checkpoint_fingerprint": fingerprint,
                 "checkpoint_dir": str(checkpoint_dir),
                 "canonical_results_published": False,
+                "results_published": False,
                 "resumed_points": metadata["resumed_points"],
             },
         )
         return shape
 
-    def mark_shape_results_published(strategy: str, strategy_dir: Path) -> None:
-        metadata = manifest["shape_evaluation"]["strategies"][strategy]
+    def mark_shape_results_published(
+        strategy: str,
+        strategy_dir: Path,
+        *,
+        signal_scenario: str = "canonical",
+        stage_key: str | None = None,
+    ) -> None:
+        stage_key = str(stage_key or strategy)
+        metadata = manifest["shape_evaluation"]["strategies"][stage_key]
         _write_json_atomic(
             strategy_dir / "shape_results_status.json",
             {
                 "status": "complete",
                 "strategy": strategy,
+                "stage_key": stage_key,
+                "signal_scenario": signal_scenario,
                 "checkpoint_fingerprint": metadata.get("checkpoint_fingerprint"),
                 "checkpoint_dir": metadata.get("checkpoint_dir"),
-                "canonical_results_published": True,
+                "canonical_results_published": signal_scenario == "canonical",
+                "results_published": True,
                 "resumed_points": metadata.get("resumed_points", 0),
                 "completed_points": metadata.get("completed_points", 0),
             },
         )
+
+    shape_result_fields = (
+        "status",
+        "bin_count",
+        "used_fallback",
+        "fallback_level",
+        "pyhf_one_bin_sigma95_fb",
+        "shape_sigma95_no_mcstat_fb",
+        "shape_sigma95_fb",
+        "shape_sigma95_background_x0p25_fb",
+        "shape_sigma95_background_x4_fb",
+    )
+
+    def merge_shape_results(
+        target_rows: Sequence[dict[str, Any]],
+        shape_rows: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Merge one pointwise shape result set into its cut-result copy."""
+
+        shape_by_point = {str(row["point_id"]): row for row in shape_rows}
+        target_points = {str(row["point_id"]) for row in target_rows}
+        if set(shape_by_point) != target_points:
+            raise ValueError(
+                "Shape and cut results must contain the same c3/d4 points"
+            )
+        for row in target_rows:
+            shape_row = shape_by_point[str(row["point_id"])]
+            for key in shape_result_fields:
+                row[f"shape_{key}" if key == "status" else key] = (
+                    shape_row.get(key)
+                )
+            one_bin = shape_row.get("pyhf_one_bin_sigma95_fb")
+            shape_limit = shape_row.get("shape_sigma95_fb")
+            row["shape_ratio_to_pyhf_one_bin"] = (
+                float(shape_limit) / float(one_bin)
+                if (
+                    shape_limit is not None
+                    and one_bin is not None
+                    and float(one_bin) > 0.0
+                )
+                else None
+            )
+
+    def publish_sm_hh4b_alternative_limits(
+        *,
+        strategy: str,
+        strategy_dir: Path,
+        canonical_rows: Sequence[Mapping[str, Any]],
+        records: Sequence[Mapping[str, Any]],
+        sm_hh4b_result: Mapping[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Publish the opt-in hhhh(+hhhbb)+hh+4b hypothesis separately."""
+
+        if not include_sm_hh4b_in_alternative_limits:
+            return None
+        if sm_hh4b_result is None:
+            raise ValueError(
+                "The requested alternative hh+4b limits lack the SM result"
+            )
+
+        alternative_dir = (
+            strategy_dir / SM_HH4B_ALTERNATIVE_LIMIT_DIR
+        )
+        alternative_prefix = f"{strategy}_with_sm_hh4b"
+        alternative_scenario = sm_hh4b_alternative_limit_scenario
+        stage_key = f"{strategy}:{alternative_scenario}"
+        alternative_rows = copy.deepcopy(list(canonical_rows))
+        for row in alternative_rows:
+            for key in (
+                "shape_status",
+                "bin_count",
+                "used_fallback",
+                "fallback_level",
+                "pyhf_one_bin_sigma95_fb",
+                "shape_sigma95_no_mcstat_fb",
+                "shape_sigma95_fb",
+                "shape_sigma95_background_x0p25_fb",
+                "shape_sigma95_background_x4_fb",
+                "shape_ratio_to_pyhf_one_bin",
+                "shape_exclusion_ratio",
+            ):
+                row.pop(key, None)
+        _add_postfit_sm_hh4b_cut_contribution(
+            alternative_rows,
+            grid_samples,
+            sm_hh4b_result,
+            luminosity=luminosity,
+        )
+        _annotate_result_rows(
+            alternative_rows,
+            mode_policy,
+            uses_complete_event_samples=uses_complete_event_samples,
+        )
+        canonical_cut_reference = {
+            (float(row["c3"]), float(row["d4"])): float(
+                row["cut_sigma95_fb"]
+            )
+            for row in canonical_rows
+        }
+        _add_baseline_ratios(
+            alternative_rows,
+            legacy,
+            canonical_cut_reference,
+        )
+        for row in alternative_rows:
+            row["cut_ratio_to_without_hh4b"] = row.get(
+                "cut_ratio_to_reference"
+            )
+
+        preview_watermark = mode_policy.plot_watermark or (
+            "PRELIMINARY - FULL RUN SHAPE FIT PENDING"
+            if run_shape
+            else "PRELIMINARY - SINGLE-BIN CUT RESULT"
+        )
+        progress.emit(
+            "alternative-limit",
+            "Publishing cut preview with fitted hh+4b signal",
+            strategy=strategy,
+            signal_scenario=alternative_scenario,
+        )
+        cut_preview = _publish_cut_preview(
+            alternative_rows,
+            alternative_dir,
+            strategy=alternative_prefix,
+            policy=mode_policy,
+            watermark=preview_watermark,
+            luminosity=luminosity,
+            contour_c3_range=contour_c3_range,
+            contour_d4_range=contour_d4_range,
+            contour_grid_bins=contour_grid_bins,
+            contour_interpolation=contour_interpolation,
+            xsec_source_dir=xsec_source_dir,
+            xsec_overlay=xsec_overlay,
+        )
+        scenario_metadata: dict[str, Any] = {
+            "status": "running",
+            "scenario": alternative_scenario,
+            "signal_components": (
+                ["hhhh", "hhhbb", "hh4b"]
+                if hhhbb_samples
+                else ["hhhh", "hh4b"]
+            ),
+            "limit_parameter": "common-signal-strength",
+            "limit_cross_section_basis": "equivalent-hhhh-fb",
+            "canonical_limits_unchanged": True,
+            "classifier_retrained_for_scenario": False,
+            "threshold_reoptimized_for_scenario": False,
+            "shape_binning_reoptimized_for_scenario": False,
+            "hh4b_efficiency_policy": (
+                "frozen-sm-efficiency-and-score-template-rescaled-by-c3-fit"
+            ),
+            "hh4b_cross_section_independent_of_d4": True,
+            "hh4b_fit_uncertainty_in_likelihood": False,
+            "hh4b_fit_source_c3_range": [
+                min(
+                    float(point["c3"])
+                    for point in sm_hh4b_result[
+                        "c3_cross_section_fit"
+                    ]["points"]
+                ),
+                max(
+                    float(point["c3"])
+                    for point in sm_hh4b_result[
+                        "c3_cross_section_fit"
+                    ]["points"]
+                ),
+            ],
+            "hh4b_fit_extrapolated_grid_point_count": sum(
+                bool(row["hh4b_cross_section_fit_extrapolated"])
+                for row in alternative_rows
+            ),
+            "cut_preview": cut_preview,
+            "output_dir": str(alternative_dir),
+        }
+        manifest["alternative_limit_scenarios"][strategy] = (
+            scenario_metadata
+        )
+        _write_json_atomic(output_dir / "method_manifest.json", manifest)
+
+        if run_shape:
+            alternative_records = _enable_postfit_sm_hh4b_shape_limits(
+                records,
+                sm_hh4b_result,
+            )
+            alternative_shape = run_shape_stage(
+                strategy,
+                alternative_dir,
+                alternative_records,
+                signal_scenario=alternative_scenario,
+                stage_key=stage_key,
+            )
+        else:
+            alternative_shape = [
+                {
+                    "point_id": sample.point_id,
+                    "c3": sample.c3,
+                    "d4": sample.d4,
+                    "status": "disabled",
+                    "signal_components": (
+                        "hhhh,hhhbb,hh4b"
+                        if hhhbb_samples
+                        else "hhhh,hh4b"
+                    ),
+                    "alternative_limit_scenario": (
+                        alternative_scenario
+                    ),
+                }
+                for sample in grid_samples
+            ]
+            manifest["shape_evaluation"]["strategies"][stage_key] = {
+                "status": "disabled",
+                "signal_scenario": alternative_scenario,
+                "shape_jobs": shape_jobs,
+            }
+        _annotate_result_rows(
+            alternative_shape,
+            mode_policy,
+            uses_complete_event_samples=uses_complete_event_samples,
+        )
+        merge_shape_results(alternative_rows, alternative_shape)
+
+        canonical_shape_reference = {
+            (float(row["c3"]), float(row["d4"])): row.get(
+                "shape_sigma95_fb"
+            )
+            for row in canonical_rows
+        }
+        for row in alternative_rows:
+            key = (float(row["c3"]), float(row["d4"]))
+            canonical_shape = canonical_shape_reference.get(key)
+            alternative_shape_limit = row.get("shape_sigma95_fb")
+            hhhh_xsec_fb = float(row["hhhh_xsec_fb"])
+            row["shape_ratio_to_without_hh4b"] = (
+                float(alternative_shape_limit) / float(canonical_shape)
+                if (
+                    alternative_shape_limit is not None
+                    and canonical_shape is not None
+                    and float(canonical_shape) > 0.0
+                )
+                else None
+            )
+            row["reference_shape_sigma95_without_hh4b_fb"] = (
+                canonical_shape
+            )
+            row["reference_shape_signal_strength95_without_hh4b"] = (
+                float(canonical_shape) / hhhh_xsec_fb
+                if canonical_shape is not None and hhhh_xsec_fb > 0.0
+                else None
+            )
+            row["shape_signal_strength95"] = (
+                float(alternative_shape_limit) / hhhh_xsec_fb
+                if (
+                    alternative_shape_limit is not None
+                    and hhhh_xsec_fb > 0.0
+                )
+                else None
+            )
+            row["excluded_shape"] = (
+                bool(hhhh_xsec_fb >= float(alternative_shape_limit))
+                if alternative_shape_limit is not None
+                else False
+            )
+        _add_baseline_ratios(
+            alternative_rows,
+            legacy,
+            canonical_cut_reference,
+        )
+        _write_rows(alternative_dir / "cut_results.csv", alternative_rows)
+        _write_json(alternative_dir / "cut_results.json", alternative_rows)
+        _write_rows(
+            alternative_dir / "shape_results.csv", alternative_shape
+        )
+        _write_json(
+            alternative_dir / "shape_results.json", alternative_shape
+        )
+        map_outputs = _write_standard_maps(
+            alternative_rows,
+            alternative_dir / "maps",
+            alternative_prefix,
+            watermark=mode_policy.plot_watermark,
+            legacy_contours=True,
+            luminosity=luminosity,
+            contour_c3_range=contour_c3_range,
+            contour_d4_range=contour_d4_range,
+            contour_grid_bins=contour_grid_bins,
+            contour_interpolation=contour_interpolation,
+            xsec_source_dir=xsec_source_dir,
+            xsec_overlay=xsec_overlay,
+        )
+        _write_json_atomic(
+            alternative_dir / "cut_results_status.json",
+            {
+                "status": "complete",
+                "strategy": strategy,
+                "signal_scenario": alternative_scenario,
+                "canonical_limits_unchanged": True,
+                "cut_results_csv": str(
+                    alternative_dir / "cut_results.csv"
+                ),
+                "cut_results_json": str(
+                    alternative_dir / "cut_results.json"
+                ),
+                "cut_results_sha256": _sha256(
+                    alternative_dir / "cut_results.json"
+                ),
+                "legacy_style_contours": map_outputs.get(
+                    "legacy_style_contours"
+                ),
+            },
+        )
+        if run_shape:
+            mark_shape_results_published(
+                strategy,
+                alternative_dir,
+                signal_scenario=alternative_scenario,
+                stage_key=stage_key,
+            )
+        scenario_metadata.update(
+            {
+                "status": "complete",
+                "cut_results": str(
+                    alternative_dir / "cut_results.json"
+                ),
+                "shape_results": str(
+                    alternative_dir / "shape_results.json"
+                ),
+                "maps": map_outputs,
+            }
+        )
+        manifest["alternative_limit_scenarios"][strategy] = (
+            scenario_metadata
+        )
+        _write_json_atomic(
+            alternative_dir / "scenario.json", scenario_metadata
+        )
+        _write_json_atomic(output_dir / "method_manifest.json", manifest)
+        progress.emit(
+            "alternative-limit",
+            "Completed separate fitted hh+4b limit products",
+            strategy=strategy,
+            signal_scenario=alternative_scenario,
+            results=str(alternative_dir / "cut_results.json"),
+            maps=str(alternative_dir / "maps"),
+        )
+        return {
+            "scenario": alternative_scenario,
+            "aggregate": alternative_rows,
+            "shape": alternative_shape,
+            "map_outputs": map_outputs,
+            "output_dir": str(alternative_dir),
+            "metadata": scenario_metadata,
+        }
 
     strategy_results: dict[str, Any] = {}
     manifest["cut_previews"] = {}
@@ -7600,28 +8635,14 @@ def _run_c3d4_study_impl(
             mode_policy,
             uses_complete_event_samples=uses_complete_event_samples,
         )
-        shape_by_point = {row["point_id"]: row for row in shape}
-        for row in aggregate:
-            shape_row = shape_by_point[row["point_id"]]
-            for key in (
-                "status",
-                "bin_count",
-                "used_fallback",
-                "fallback_level",
-                "pyhf_one_bin_sigma95_fb",
-                "shape_sigma95_no_mcstat_fb",
-                "shape_sigma95_fb",
-                "shape_sigma95_background_x0p25_fb",
-                "shape_sigma95_background_x4_fb",
-            ):
-                row[f"shape_{key}" if key == "status" else key] = shape_row.get(key)
-            one_bin = shape_row.get("pyhf_one_bin_sigma95_fb")
-            shape_limit = shape_row.get("shape_sigma95_fb")
-            row["shape_ratio_to_pyhf_one_bin"] = (
-                float(shape_limit) / float(one_bin)
-                if shape_limit is not None and one_bin is not None and float(one_bin) > 0.0
-                else None
-            )
+        merge_shape_results(aggregate, shape)
+        alternative_signal_limits = publish_sm_hh4b_alternative_limits(
+            strategy=strategy,
+            strategy_dir=strategy_dir,
+            canonical_rows=aggregate,
+            records=records,
+            sm_hh4b_result=sm_hh4b_result,
+        )
         coupling_holdout = None
         if mode_policy.run_coupling_holdout and parameterized_strategy:
             progress.emit(
@@ -7676,6 +8697,7 @@ def _run_c3d4_study_impl(
             "sm_signal_cutflow": sm_signal_cutflow,
             "sm_thresholds": sm_thresholds,
             "postfit_sm_hh4b": sm_hh4b_result,
+            "alternative_signal_limits": alternative_signal_limits,
             "coupling_holdout": coupling_holdout,
         }
         _write_rows(
@@ -8177,28 +9199,7 @@ def _run_c3d4_study_impl(
             mode_policy,
             uses_complete_event_samples=uses_complete_event_samples,
         )
-        shape_by_point = {row["point_id"]: row for row in shape}
-        for row in aggregate:
-            shape_row = shape_by_point[row["point_id"]]
-            for key in (
-                "status",
-                "bin_count",
-                "used_fallback",
-                "fallback_level",
-                "pyhf_one_bin_sigma95_fb",
-                "shape_sigma95_no_mcstat_fb",
-                "shape_sigma95_fb",
-                "shape_sigma95_background_x0p25_fb",
-                "shape_sigma95_background_x4_fb",
-            ):
-                row[f"shape_{key}" if key == "status" else key] = shape_row.get(key)
-            one_bin = shape_row.get("pyhf_one_bin_sigma95_fb")
-            shape_limit = shape_row.get("shape_sigma95_fb")
-            row["shape_ratio_to_pyhf_one_bin"] = (
-                float(shape_limit) / float(one_bin)
-                if shape_limit is not None and one_bin is not None and float(one_bin) > 0.0
-                else None
-            )
+        merge_shape_results(aggregate, shape)
         sm_parameter_reference = {
             (float(row["c3"]), float(row["d4"])): float(row["cut_sigma95_fb"])
             for row in strategy_results["sm-crossfit-v2"]["aggregate"]
@@ -8216,6 +9217,13 @@ def _run_c3d4_study_impl(
                 else None
             )
             row["cut_ratio_to_pooled"] = row.get("cut_ratio_to_reference")
+        alternative_signal_limits = publish_sm_hh4b_alternative_limits(
+            strategy=strategy,
+            strategy_dir=strategy_dir,
+            canonical_rows=aggregate,
+            records=records,
+            sm_hh4b_result=sm_hh4b_result,
+        )
         strategy_results[strategy] = {
             "records": records,
             "aggregate": aggregate,
@@ -8223,6 +9231,7 @@ def _run_c3d4_study_impl(
             "rotation_validation_limits": rotation_validation_limits,
             "shape": shape,
             "postfit_sm_hh4b": sm_hh4b_result,
+            "alternative_signal_limits": alternative_signal_limits,
         }
         _write_rows(
             strategy_dir / "per_fold_validation.csv",
@@ -8408,7 +9417,7 @@ def _run_c3d4_study_impl(
                     / "contribution_results.json"
                 ),
             }
-            for strategy in strategy_results
+            for strategy, result in strategy_results.items()
         }
     if sm_hh4b_samples:
         output_manifest["postfit_sm_hh4b"] = {
@@ -8427,6 +9436,10 @@ def _run_c3d4_study_impl(
                 ),
                 "point_count": 1,
                 "included_in_limits": False,
+                "included_in_canonical_limits": False,
+                "included_in_alternative_limits": bool(
+                    result.get("alternative_signal_limits")
+                ),
                 "cross_section_fit_applied": sm_hh4b_fit_applied,
                 "table_point_matching": (
                     "same selected c3/d4 coordinates as hhhbb"
@@ -8434,7 +9447,36 @@ def _run_c3d4_study_impl(
                     else "SM point only"
                 ),
             }
-            for strategy in strategy_results
+            for strategy, result in strategy_results.items()
+        }
+    alternative_limit_strategies = {
+        strategy: result["alternative_signal_limits"]
+        for strategy, result in strategy_results.items()
+        if result.get("alternative_signal_limits") is not None
+    }
+    if alternative_limit_strategies:
+        output_manifest["alternative_signal_limits"] = {
+            strategy: {
+                "scenario": result["scenario"],
+                "output_dir": result["output_dir"],
+                "cut_results_csv": str(
+                    Path(result["output_dir"]) / "cut_results.csv"
+                ),
+                "cut_results_json": str(
+                    Path(result["output_dir"]) / "cut_results.json"
+                ),
+                "shape_results_csv": str(
+                    Path(result["output_dir"]) / "shape_results.csv"
+                ),
+                "shape_results_json": str(
+                    Path(result["output_dir"]) / "shape_results.json"
+                ),
+                "scenario_json": str(
+                    Path(result["output_dir"]) / "scenario.json"
+                ),
+                "maps": result["map_outputs"],
+            }
+            for strategy, result in alternative_limit_strategies.items()
         }
     if input_observable_report is not None:
         output_manifest["input_observable_report"] = input_observable_report
@@ -8545,6 +9587,9 @@ def _run_c3d4_study_impl(
                 "sm_signal_cutflow": result.get("sm_signal_cutflow"),
                 "sm_thresholds": result.get("sm_thresholds"),
                 "postfit_sm_hh4b": result.get("postfit_sm_hh4b"),
+                "alternative_signal_limits": result.get(
+                    "alternative_signal_limits"
+                ),
                 "coupling_holdout": result.get("coupling_holdout"),
             }
             for strategy, result in strategy_results.items()
@@ -9445,6 +10490,7 @@ def run_c3d4_study(
     write_input_report: bool = False,
     hhhbb_signal_specs: Sequence[Mapping[str, Any]] = (),
     sm_hh4b_signal_specs: Sequence[Mapping[str, Any]] = (),
+    include_sm_hh4b_in_alternative_limits: bool = False,
 ) -> dict[str, Any]:
     """Run the v2 study and always leave truthful terminal restart metadata."""
 
@@ -9482,6 +10528,9 @@ def run_c3d4_study(
         "write_input_report": write_input_report,
         "hhhbb_signal_specs": hhhbb_signal_specs,
         "sm_hh4b_signal_specs": sm_hh4b_signal_specs,
+        "include_sm_hh4b_in_alternative_limits": (
+            include_sm_hh4b_in_alternative_limits
+        ),
     }
     try:
         return _run_c3d4_study_impl(**arguments)

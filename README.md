@@ -114,6 +114,10 @@ The optional post-training HEFT `hh+4b` signal uses one SM showered sample for
 its efficiency and a weighted quadratic Sherpa cross-section fit in `c3`.
 Setup, fitting, and normalization conventions are documented in
 [`HerwigSignalPoints/sm_hh4b_heft/README.md`](HerwigSignalPoints/sm_hh4b_heft/README.md).
+Passing `--include-sm-hh4b-in-alternative-limits` additionally writes a
+separate `limits_with_sm_hh4b/` result and plot tree for the common-strength
+`hhhh + hhh+bb + hh+4b` hypothesis. The ordinary `hhhh + hhh+bb` limit files
+are left unchanged.
 
 ## Sherpa Colour-Flow OpenMPI Runs
 

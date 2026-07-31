@@ -702,6 +702,37 @@ only for the full parameterized-classifier gate; it is supported by
 `fast-parameterized` and is scored at its true \((c_3,d_4)\) coordinate after
 the classifier, threshold, and score binning have been frozen.
 
+The singleton SM HEFT \(hh+4b\) sample remains a signal-only diagnostic by
+default. Supplying its completed quadratic \(c_3\) cross-section fit and
+
+```bash
+--include-sm-hh4b-in-alternative-limits
+```
+
+adds an explicitly separate hypothesis. At each grid point the SM selection
+efficiency and held-out score template are kept frozen, while their
+normalization is rescaled by the fitted \(hh+4b\) cross section at that
+\(c_3\); the fit is independent of \(d_4\). One common signal strength then
+multiplies \(hhhh\), the optional \(hhh+bb\) component, and \(hh+4b\). The
+classifier is not retrained, the cut threshold is not reoptimized, and the
+\(hhhh\)-only validation folds still choose the pyhf score bins. The fitted
+cross-section uncertainty is recorded point by point but is not profiled as a
+likelihood nuisance. Points outside the minimum and maximum fitted \(c_3\)
+inputs are retained because the HEFT dependence is quadratic, but they are
+explicitly flagged as cross-section-fit extrapolations in the result tables.
+
+For each classifier strategy, the alternative tables, checkpoints, maps, and
+paper-style contours are written below
+
+```text
+<strategy>/limits_with_sm_hh4b/
+```
+
+with the plot prefix `<strategy>_with_sm_hh4b`. The canonical
+`<strategy>/cut_results.*`, `<strategy>/shape_results.*`, and `<strategy>/maps/`
+continue to represent \(hhhh+hhhbb\) (or \(hhhh\) when no \(hhhbb\) grid was
+provided) and are not overwritten by the alternative result.
+
 For the SM cross-fit, the final
 `sm-crossfit-v2/sm_background_cutflow.{csv,json}` product contains
 role-labelled rows for the SM `hhhh` signal, the SM forced-splitting `hhhbb`

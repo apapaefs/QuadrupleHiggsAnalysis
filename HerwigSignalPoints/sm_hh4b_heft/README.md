@@ -28,8 +28,8 @@ Add this option to any v2 c3/d4 analyzer mode:
 
 The sample is scored only after each classifier and SM threshold are fixed. It
 is excluded from training, threshold and score-binning optimization,
-background totals, and c3/d4 limits. Each strategy writes exactly one row to
-`postfit_sm_hh4b/result.{csv,json}`. The default signal K factor of 2,
+background totals, and the canonical c3/d4 limits. Each strategy writes
+exactly one row to `postfit_sm_hh4b/result.{csv,json}`. The default signal K factor of 2,
 `BR(h -> bb)^2`, and the common eight-tag factor are applied by the analyzer.
 
 ## c3-dependent cross section
@@ -59,6 +59,17 @@ When the fit is present, the final signal-reference table adds an hh+4b row at
 every coupling coordinate already selected for hhhh and hhh+bb. These rows use
 the cross section evaluated at that row's `c3` and the single SM hh+4b
 analysis/XGBoost efficiency. They remain absent from classifier training,
-optimization, backgrounds, and limits. The fit contains raw Sherpa generator
-cross sections, so the analyzer applies the configured signal K-factor exactly
-once through the existing hh+4b rate factor.
+optimization, backgrounds, and canonical limits. The fit contains raw Sherpa
+generator cross sections, so the analyzer applies the configured signal
+K-factor exactly once through the existing hh+4b rate factor.
+
+To use these frozen yields in a separate common-strength limit hypothesis, add:
+
+```bash
+--include-sm-hh4b-in-alternative-limits
+```
+
+This writes `limits_with_sm_hh4b/` below each strategy without modifying its
+canonical result. The alternative combines `hhhh`, optional `hhh+bb`, and
+`hh+4b`; the cross-section-fit uncertainty is recorded but is not introduced
+as a pyhf nuisance.

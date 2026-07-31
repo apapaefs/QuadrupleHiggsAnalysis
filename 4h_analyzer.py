@@ -3202,7 +3202,12 @@ def _run_c3d4_xgboost_study_cli_impl(args):
         print(
             f"  post-fit SM hh+4b role: {role} after the "
             "classifier/threshold are frozen; excluded from training, "
-            "backgrounds, shape optimization, and limits"
+            "backgrounds, and shape optimization; excluded from the canonical "
+            "limits"
+        )
+        print(
+            "  separate hhhh(+hhhbb)+hh+4b limits:",
+            getattr(args, "include_sm_hh4b_in_alternative_limits", False),
         )
     print("  background samples:", len(background_specs))
     print("  output:", args.study_outdir)
@@ -3247,6 +3252,9 @@ def _run_c3d4_xgboost_study_cli_impl(args):
         xsec_source_dir=args.c3d4_xsec_source_dir,
         xsec_overlay=not args.no_c3d4_xsec_overlay,
         write_input_report=not args.no_sample_report,
+        include_sm_hh4b_in_alternative_limits=(
+            getattr(args, "include_sm_hh4b_in_alternative_limits", False)
+        ),
     )
     print("v2 study complete; selected profile =", summary["selected_feature_profile"])
     return 0
@@ -3697,7 +3705,8 @@ def _run_local_xgboost_cli():
         help=(
             "SM hh+4b HEFT _var.smear*.root or raw ROOT file. The v2 study "
             "requires one (c3,d4)=(0,0) sample and reports it only as a "
-            "post-training signal-efficiency diagnostic."
+            "post-training signal-efficiency diagnostic unless the separate "
+            "hh+4b limit hypothesis is requested."
         ),
     )
     parser.add_argument(
@@ -3707,7 +3716,7 @@ def _run_local_xgboost_cli():
         help=(
             "Directory searched recursively for the singleton SM hh+4b ROOT "
             "sample. It is excluded from training, backgrounds, shape "
-            "optimization, and limits."
+            "optimization, and canonical limits."
         ),
     )
     parser.add_argument(
@@ -3736,6 +3745,16 @@ def _run_local_xgboost_cli():
             "Quadratic raw-generator cross-section fit used to rescale the "
             "singleton SM hh+4b efficiency at the same c3/d4 table points as "
             "hhh+bb. The standard fit is used automatically when present."
+        ),
+    )
+    parser.add_argument(
+        "--include-sm-hh4b-in-alternative-limits",
+        action="store_true",
+        help=(
+            "Write a separate limits_with_sm_hh4b result and plot set for one "
+            "common signal strength multiplying hhhh, optional hhh+bb, and "
+            "fitted hh+4b. The classifier, thresholds, and validation-selected "
+            "shape bins remain frozen; canonical limits are unchanged."
         ),
     )
     parser.add_argument("--no-c3d4-chebyshev-fit", action="store_true", help="Disable the Chebyshev-Lobatto sigma*eff fit and plot only scored points.")

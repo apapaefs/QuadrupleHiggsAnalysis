@@ -251,7 +251,12 @@ def populated_shape_records(points, *, invalid_validation_signal=False):
 
 
 @contextmanager
-def mocked_mode_study_pipeline(*, shape_error=None, point_count=57):
+def mocked_mode_study_pipeline(
+    *,
+    shape_error=None,
+    point_count=57,
+    include_sm_hh4b=False,
+):
     """Provide a fast variable-size pipeline while retaining real publication."""
 
     sm_samples = [sample("sm", "sm_signal", [1.0] * 5, [1.0] * 5)]
@@ -262,10 +267,29 @@ def mocked_mode_study_pipeline(*, shape_error=None, point_count=57):
     background_samples = [
         sample("background", "background", [1.0] * 5, [1.0] * 5)
     ]
+    sm_hh4b_samples = []
+    if include_sm_hh4b:
+        sm_hh4b = sample(
+            "sm-hh4b",
+            "postfit_sm_hh4b_signal",
+            [1.0] * 5,
+            [0.02] * 5,
+            0.0,
+            0.0,
+        )
+        sm_hh4b.xsec_fb = 0.01
+        sm_hh4b.unit_xsec_weights = np.full(5, 2.0)
+        sm_hh4b.rate_factor = 0.2
+        sm_hh4b_samples.append(sm_hh4b)
     # Smoke mode records size/mtime instead of hashing inputs.  Point every
     # synthetic sample at one real, read-only file so that metadata path is
     # exercised without creating dozens of test files.
-    for synthetic_sample in [*sm_samples, *grid_samples, *background_samples]:
+    for synthetic_sample in [
+        *sm_samples,
+        *grid_samples,
+        *background_samples,
+        *sm_hh4b_samples,
+    ]:
         synthetic_sample.path = Path(__file__)
         synthetic_sample.metadata = {
             "feature_source_completion": {
@@ -275,10 +299,28 @@ def mocked_mode_study_pipeline(*, shape_error=None, point_count=57):
                 "expected_events": 5,
             }
         }
+    if include_sm_hh4b:
+        sm_hh4b_samples[0].metadata["c3_cross_section_fit"] = (
+            fit_hh4b_c3_cross_section(
+                [
+                    {
+                        "c3": c3,
+                        "cross_section_pb": (
+                            1.0e-5
+                            + 2.0e-6 * c3
+                            + 3.0e-7 * c3 * c3
+                        ),
+                        "integration_error_pb": 1.0e-8,
+                    }
+                    for c3 in (-20.0, -2.0, -1.0, 0.0, 20.0)
+                ]
+            )
+        )
     samples_by_kind = {
         "sm_signal": sm_samples,
         "grid_signal": grid_samples,
         "background": background_samples,
+        "postfit_sm_hh4b_signal": sm_hh4b_samples,
     }
 
     class FakeModel:
@@ -327,8 +369,9 @@ def mocked_mode_study_pipeline(*, shape_error=None, point_count=57):
 
     def fake_cut_results(*args, **kwargs):
         del args, kwargs
-        return [
-            {
+        rows = []
+        for point in grid_samples:
+            row = {
                 "point_id": point.point_id,
                 "c3": point.c3,
                 "d4": point.d4,
@@ -338,9 +381,75 @@ def mocked_mode_study_pipeline(*, shape_error=None, point_count=57):
                 "threshold_mean": 0.5,
                 "background_yield": 1.0,
                 "cut_sigma95_fb": 5.0,
+                "selected_signal_yield_per_fb": 0.6,
+                "selected_signal_staterror_per_fb": 0.1,
             }
-            for point in grid_samples
-        ]
+            if include_sm_hh4b:
+                row["cut_sigma95_fb"] = (
+                    runner.exact_cls_signal_upper_limit(1.0) / 0.6
+                )
+                row["folds"] = [
+                    {
+                        "threshold": 0.5,
+                        "signal_unit_yield": 0.12,
+                        "signal_sumw2_unit": 0.002,
+                        "signal_raw_entries": 1,
+                        "background_yield": 0.2,
+                        "background_sumw2": 0.04,
+                        "background_raw_entries": 1,
+                        "s95_exact_events": (
+                            runner.exact_cls_signal_upper_limit(0.2)
+                        ),
+                        "cut_sigma95_fb": 5.0,
+                    }
+                    for _ in range(5)
+                ]
+            rows.append(row)
+        return rows
+
+    def fake_postfit_rotation(
+        model,
+        validation,
+        component_samples,
+        *,
+        rotation,
+        **kwargs,
+    ):
+        del model, validation, kwargs
+        component = component_samples[0]
+        held_out = np.asarray([rotation], dtype=int)
+        return {
+            "rotation": rotation,
+            "points": {
+                component.point_id: {
+                    "rotation": rotation,
+                    "sample_id": component.sample_id,
+                    "c3": component.c3,
+                    "d4": component.d4,
+                    "threshold": 0.5,
+                    "signal_unit_yield": 2.0,
+                    "signal_sumw2_unit": 4.0,
+                    "signal_physical_yield": 0.02,
+                    "signal_sumw2_physical": 0.0004,
+                    "signal_raw_entries": 1,
+                    "signal_feature_unit_yield": 2.0,
+                    "signal_feature_physical_yield": 0.02,
+                    "xgboost_efficiency": 1.0,
+                }
+            },
+            "signal_rows": {
+                component.sample_id: {
+                    "scores": np.asarray([0.8]),
+                    "physical_weights": component.physical_weights[held_out],
+                    "unit_xsec_weights": component.unit_xsec_weights[
+                        held_out
+                    ],
+                    "scale": 1.0,
+                }
+            },
+            "role": "postfit-signal-only",
+            "parameterized": False,
+        }
 
     def fake_validation_aggregate(*args, **kwargs):
         del args, kwargs
@@ -435,6 +544,14 @@ def mocked_mode_study_pipeline(*, shape_error=None, point_count=57):
         stack.enter_context(
             mock.patch.object(runner, "_evaluate_test_rotation", fake_test_rotation)
         )
+        if include_sm_hh4b:
+            stack.enter_context(
+                mock.patch.object(
+                    runner,
+                    "_evaluate_postfit_signal_rotation",
+                    fake_postfit_rotation,
+                )
+            )
         stack.enter_context(
             mock.patch.object(runner, "_aggregate_cut_results", fake_cut_results)
         )
@@ -782,6 +899,66 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
             self.assertTrue(manifest["score_shape_enabled"])
             self.assertTrue((output / "sm-crossfit-v2").is_dir())
             self.assertFalse((output / "pooled-crossfit-v2").exists())
+
+    def test_opt_in_sm_hh4b_limits_are_published_separately(self):
+        with tempfile.TemporaryDirectory() as directory, mocked_mode_study_pipeline(
+            point_count=4,
+            include_sm_hh4b=True,
+        ):
+            output = Path(directory)
+            with redirect_stdout(io.StringIO()):
+                summary = runner.run_c3d4_study(
+                    sm_signal_specs=[{}],
+                    grid_signal_specs=[{}] * 4,
+                    sm_hh4b_signal_specs=[{}],
+                    background_specs=[{}],
+                    output_dir=output,
+                    study_mode="fast-sm",
+                    include_sm_hh4b_in_alternative_limits=True,
+                )
+
+            strategy_dir = output / "sm-crossfit-v2"
+            alternative_dir = (
+                strategy_dir / runner.SM_HH4B_ALTERNATIVE_LIMIT_DIR
+            )
+            canonical = json.loads(
+                (strategy_dir / "cut_results.json").read_text()
+            )
+            alternative = json.loads(
+                (alternative_dir / "cut_results.json").read_text()
+            )
+            self.assertNotIn("hh4b", canonical[0].get("signal_components", ""))
+            self.assertIn("hh4b", alternative[0]["signal_components"])
+            self.assertLess(
+                alternative[0]["cut_sigma95_fb"],
+                canonical[0]["cut_sigma95_fb"],
+            )
+            self.assertTrue(
+                (alternative_dir / "shape_results.json").exists()
+            )
+            self.assertTrue((alternative_dir / "scenario.json").exists())
+            self.assertTrue(
+                (
+                    alternative_dir
+                    / "maps"
+                    / "sm-crossfit-v2_with_sm_hh4b_cut_exclusion_contour.pdf"
+                ).exists()
+            )
+            manifest = summary["manifest"]
+            self.assertIn(
+                "alternative_signal_limits", manifest["outputs"]
+            )
+            self.assertTrue(
+                manifest["outputs"]["postfit_sm_hh4b"][
+                    "sm-crossfit-v2"
+                ]["included_in_alternative_limits"]
+            )
+            self.assertEqual(
+                summary["strategy_results"]["sm-crossfit-v2"][
+                    "alternative_signal_limits"
+                ]["scenario"],
+                "hhhh+hh4b",
+            )
 
     def test_fast_pooled_run_builds_only_pooled_strategy_and_cutflow(self):
         with tempfile.TemporaryDirectory() as directory, mocked_mode_study_pipeline(
@@ -1542,6 +1719,26 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
             self.assertEqual(plot["status"], "ok")
             self.assertIn("hhhg", plot["process_title"])
             self.assertIn("hhhg", plot["limit_label"])
+
+    def test_legacy_style_contour_labels_separate_hh4b_signal_scenario(self):
+        rows = legacy_contour_rows()
+        for row in rows:
+            row["signal_components"] = "hhhh,hhhbb,hh4b"
+        with tempfile.TemporaryDirectory() as directory:
+            metadata = runner._write_legacy_style_exclusion_contours(
+                rows,
+                Path(directory),
+                "combined-with-hh4b",
+                limit_kind="shape",
+                grid_bins=21,
+                xsec_overlay=False,
+            )
+
+            plot = metadata["outputs"]["no_xsec_atlas"]
+            self.assertEqual(plot["status"], "ok")
+            self.assertIn("hhhg", plot["process_title"])
+            self.assertIn("hh+4b", plot["process_title"])
+            self.assertIn("hh+4b", plot["limit_label"])
 
     def test_legacy_style_contour_writes_both_cross_section_variants(self):
         def constant_surface(spec, c3_grid, d4_grid, **kwargs):
@@ -2738,6 +2935,127 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
                 [],
             )
 
+    def test_sm_hh4b_changes_only_a_copied_alternative_cut_limit(self):
+        hhhh = sample("hhhh", "grid_signal", [1] * 5, [1] * 5, 0, 0)
+        hhhh.xsec_fb = 2.0
+        hhhh_rotations = []
+        for fold in range(5):
+            background = 0.4
+            hhhh_rotations.append(
+                {
+                    "points": {
+                        hhhh.point_id: {
+                            "threshold": 0.4,
+                            "signal_unit_yield": 0.2,
+                            "signal_sumw2_unit": 0.04,
+                            "signal_raw_entries": 1,
+                            "signal_feature_unit_yield": 0.2,
+                            "background_yield": background,
+                            "background_sumw2": background**2,
+                            "background_raw_entries": 1,
+                            "background_effective_entries": 1.0,
+                            "s95_exact_events": (
+                                runner.exact_cls_signal_upper_limit(background)
+                            ),
+                            "cut_sigma95_fb": (
+                                runner.exact_cls_signal_upper_limit(background)
+                                / 0.2
+                            ),
+                        }
+                    }
+                }
+            )
+        canonical = runner._aggregate_cut_results(
+            [hhhh], hhhh_rotations
+        )
+        canonical_snapshot = json.loads(
+            json.dumps(canonical, allow_nan=True)
+        )
+        alternative = json.loads(json.dumps(canonical, allow_nan=True))
+        fit = fit_hh4b_c3_cross_section(
+            [
+                {
+                    "c3": c3,
+                    "cross_section_pb": (
+                        1.0e-5 + 2.0e-6 * c3 + 3.0e-7 * c3 * c3
+                    ),
+                    "integration_error_pb": 1.0e-8,
+                }
+                for c3 in (-20.0, -2.0, -1.0, 0.0, 20.0)
+            ]
+        )
+        hh4b_folds = [
+            {
+                "threshold": 0.4,
+                "signal_physical_yield": 0.02,
+                "signal_sumw2_physical": 0.0004,
+                "signal_raw_entries": 1,
+            }
+            for _ in range(5)
+        ]
+        sm_hh4b_result = {
+            "component": "sm_hh4b",
+            "point_id": "c3=0,d4=0",
+            "c3": 0.0,
+            "d4": 0.0,
+            "file": "/sm-hh4b.root",
+            "process_id": "sm_hh4b_heft",
+            "xsec_fb": 0.01,
+            "rate_factor": 0.2,
+            "generated_events": 1000,
+            "normalisation_weight": 1000.0,
+            "entries": 100,
+            "analysis_efficiency": 0.5,
+            "feature_tree_efficiency": 0.5,
+            "xgboost_efficiency": 0.5,
+            "nominal_feature_signal_yield": 0.2,
+            "nominal_selected_signal_yield": 0.1,
+            "nominal_selected_signal_staterror": math.sqrt(0.002),
+            "effective_feature_xsec_fb": 0.002,
+            "effective_selected_xsec_fb": 0.001,
+            "selected_raw_entries": 5,
+            "folds": hh4b_folds,
+            "c3_cross_section_fit": fit,
+            "included_in_training": False,
+            "included_in_threshold_optimization": False,
+            "included_in_shape_binning_optimization": False,
+            "included_in_background": False,
+            "included_in_limits": False,
+        }
+
+        runner._add_postfit_sm_hh4b_cut_contribution(
+            alternative,
+            [hhhh],
+            sm_hh4b_result,
+            luminosity=100.0,
+        )
+
+        self.assertEqual(canonical, canonical_snapshot)
+        result = alternative[0]
+        self.assertEqual(result["signal_components"], "hhhh,hh4b")
+        self.assertEqual(
+            result["alternative_limit_scenario"], "hhhh+hh4b"
+        )
+        self.assertAlmostEqual(
+            result["combined_nominal_selected_signal_yield"], 2.1
+        )
+        self.assertAlmostEqual(
+            result["selected_signal_yield_per_fb"], 1.05
+        )
+        self.assertLess(
+            result["cut_sigma95_fb"],
+            canonical[0]["cut_sigma95_fb"],
+        )
+        self.assertEqual(
+            result["background_yield"], canonical[0]["background_yield"]
+        )
+        self.assertEqual(
+            result["threshold_mean"], canonical[0]["threshold_mean"]
+        )
+        self.assertFalse(
+            result["postfit_sm_hh4b_fit_uncertainty_in_likelihood"]
+        )
+
     def test_sm_background_cutflow_uses_exact_held_out_union_and_fold_thresholds(self):
         background = sample(
             "background",
@@ -3522,6 +3840,110 @@ assert np.ptp(model.predict_proba(X)[:, 1]) > 0.0
         self.assertFalse(result["postfit_hhhbb_in_threshold_optimization"])
         self.assertFalse(result["postfit_hhhbb_in_shape_binning_optimization"])
         np.testing.assert_allclose(result["one_bin_signal_sumw2"], 0.052)
+
+    def test_sm_hh4b_enters_only_an_enabled_frozen_test_shape(self):
+        point = sample("p3", "grid_signal", [1] * 5, [1] * 5, 3, 200)
+        point.xsec_fb = 2.0
+        records = populated_shape_records([point])
+        hh4b_scores = np.linspace(0.02, 0.98, 40, dtype=float)
+        hh4b_physical_weights = np.full(40, 0.01, dtype=float)
+        for record in records:
+            record["postfit_sm_hh4b_test"] = {
+                "rotation": record["rotation"],
+                "points": {
+                    "c3=0,d4=0": {
+                        "sample_id": "sm-hh4b",
+                        "c3": 0.0,
+                        "d4": 0.0,
+                    }
+                },
+                "signal_rows": {
+                    "sm-hh4b": {
+                        "scores": hh4b_scores.copy(),
+                        "physical_weights": hh4b_physical_weights.copy(),
+                        "scale": 1.0,
+                    }
+                },
+                "role": "postfit-signal-only",
+            }
+        fit = fit_hh4b_c3_cross_section(
+            [
+                {
+                    "c3": c3,
+                    "cross_section_pb": (
+                        1.0e-5 + 2.0e-6 * c3 + 3.0e-7 * c3 * c3
+                    ),
+                    "integration_error_pb": 1.0e-8,
+                }
+                for c3 in (-20.0, -2.0, -1.0, 0.0, 20.0)
+            ]
+        )
+        sm_hh4b_result = {
+            "point_id": "c3=0,d4=0",
+            "xsec_fb": 0.01,
+            "c3_cross_section_fit": fit,
+        }
+
+        canonical_validation = runner._validation_fold_arrays(
+            records[0], point
+        )
+        canonical_test = runner._test_fold_arrays(records[0], point)
+        enabled = runner._enable_postfit_sm_hh4b_shape_limits(
+            records, sm_hh4b_result
+        )
+        alternative_validation = runner._validation_fold_arrays(
+            enabled[0], point
+        )
+        alternative_test = runner._test_fold_arrays(enabled[0], point)
+
+        self.assertNotIn("postfit_sm_hh4b_limit", records[0])
+        self.assertEqual(len(canonical_validation["signal_scores"]), 80)
+        self.assertEqual(len(alternative_validation["signal_scores"]), 80)
+        self.assertEqual(len(canonical_test["signal_scores"]), 80)
+        self.assertEqual(len(alternative_test["signal_scores"]), 120)
+        # sigma(3)/sigma(0)=1.87; convert physical event weights to the
+        # equivalent-hhhh-fb basis by dividing by sigma_hhhh=2 fb.
+        np.testing.assert_allclose(
+            alternative_test["signal_weights"][-40:], 0.00935
+        )
+
+        compact = runner._compact_shape_records(
+            enabled,
+            observable_set="extended-91-v2",
+            profile="full91",
+            n_folds=5,
+        )
+        descriptor = runner._shape_point_descriptors([point])[0]
+        compact_test = runner._test_fold_arrays(compact[0], descriptor)
+        np.testing.assert_allclose(
+            compact_test["signal_weights"],
+            alternative_test["signal_weights"],
+        )
+
+        with mock.patch.object(
+            runner, "pyhf_one_bin_limit", new=successful_pyhf_limit
+        ), mock.patch.object(
+            runner, "pyhf_combined_limit", new=successful_pyhf_limit
+        ):
+            result = runner._shape_results(
+                [point], enabled, shape_jobs=1
+            )[0]
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["signal_components"], "hhhh,hh4b")
+        self.assertEqual(
+            result["alternative_limit_scenario"], "hhhh+hh4b"
+        )
+        self.assertAlmostEqual(result["postfit_sm_hh4b_xsec_fb"], 0.0187)
+        self.assertFalse(result["postfit_sm_hh4b_in_training"])
+        self.assertFalse(
+            result["postfit_sm_hh4b_in_threshold_optimization"]
+        )
+        self.assertFalse(
+            result["postfit_sm_hh4b_in_shape_binning_optimization"]
+        )
+        self.assertFalse(
+            result["postfit_sm_hh4b_fit_uncertainty_in_likelihood"]
+        )
 
     def test_pyhf_poi_bounds_follow_the_expected_limit_scale(self):
         channels = [
