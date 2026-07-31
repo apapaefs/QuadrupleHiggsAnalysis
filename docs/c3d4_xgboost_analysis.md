@@ -835,6 +835,18 @@ python 4h_analyzer.py \
   --study-outdir xgboost_c3d4_study_v2_uniform-smear-v1
 ```
 
+The same command also replots each alternative hypothesis explicitly
+registered in `method_manifest.json`.  In particular, an opt-in
+`hhhh+hhhbb+hh+4b` campaign regenerates both the final and cut-preview contour
+families below `<strategy>/limits_with_sm_hh4b/`.  The alternative tables are
+checked against their published SHA-256 digests and the manifest's complete
+coupling grid before plotting; an unregistered directory is not treated as a
+physics result.  Canonical and alternative products and any validation issues
+are reported separately in `contour_replot_manifest.json`.
+
+The paper-style contour title uses a 15-point font so that the longer combined
+signal hypothesis fits the standard figure width.
+
 Use the preview or smoke output directory explicitly when replotting those
 modes.  By default the replot command inherits the luminosity, viewport,
 resolution, cross-section source and overlay choice saved by the original

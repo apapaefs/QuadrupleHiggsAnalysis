@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import csv
 import importlib.util
 import io
@@ -1698,6 +1699,11 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
                 plot["legend_fontsize"],
                 runner.DEFAULT_CONTOUR_LEGEND_FONTSIZE,
             )
+            self.assertEqual(
+                plot["title_fontsize"],
+                runner.DEFAULT_CONTOUR_TITLE_FONTSIZE,
+            )
+            self.assertEqual(plot["title_fontsize"], 15.0)
             self.assertGreater(Path(plot["png"]).stat().st_size, 0)
             self.assertGreater(Path(plot["pdf"]).stat().st_size, 0)
 
@@ -1899,6 +1905,211 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
             self.assertEqual(
                 status["legacy_style_contours"]["cut"]["status"], "ok"
             )
+
+    def test_replot_includes_registered_sm_hh4b_alternative_contours(self):
+        canonical_rows = legacy_contour_rows()
+        alternative_rows = copy.deepcopy(canonical_rows)
+        for row in alternative_rows:
+            row["signal_components"] = "hhhh,hhhbb,hh4b"
+
+        contour_metadata = {
+            "style_version": runner.LEGACY_CONTOUR_STYLE_VERSION,
+            "cut": {"status": "ok"},
+            "shape": {"status": "ok"},
+        }
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            runner,
+            "_write_legacy_style_contour_set",
+            return_value=contour_metadata,
+        ) as write_contours, mock.patch.object(
+            runner, "_contour_product_count", return_value=2
+        ):
+            output = Path(directory)
+            strategy = output / "sm-crossfit-v2"
+            alternative = strategy / runner.SM_HH4B_ALTERNATIVE_LIMIT_DIR
+            alternative_preview = alternative / "cut_preview"
+            alternative_preview.mkdir(parents=True)
+            (output / "method_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "study_mode": "fast-sm",
+                        "status": "complete",
+                        "paper_ready": True,
+                        "score_shape_enabled": True,
+                        "luminosity_fb_inverse": 3000.0,
+                        "requested_training_strategy": "sm-crossfit-v2",
+                        "alternative_limit_scenarios": {
+                            "sm-crossfit-v2": {
+                                "status": "complete",
+                                "scenario": "hhhh+hhhbb+hh4b",
+                            }
+                        },
+                    }
+                )
+            )
+            canonical_path = strategy / "cut_results.json"
+            canonical_path.parent.mkdir(parents=True, exist_ok=True)
+            canonical_path.write_text(json.dumps(canonical_rows))
+            (strategy / "cut_results_status.json").write_text(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "cut_results_sha256": runner._sha256(canonical_path),
+                    }
+                )
+            )
+            alternative_path = alternative / "cut_results.json"
+            alternative_path.write_text(json.dumps(alternative_rows))
+            (alternative / "cut_results_status.json").write_text(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "cut_results_sha256": runner._sha256(alternative_path),
+                    }
+                )
+            )
+            alternative_preview_path = alternative_preview / "cut_results.json"
+            alternative_preview_path.write_text(json.dumps(alternative_rows))
+            (alternative_preview / "status.json").write_text(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "watermark": "PRELIMINARY - FULL RUN SHAPE FIT PENDING",
+                        "cut_results_sha256": runner._sha256(
+                            alternative_preview_path
+                        ),
+                    }
+                )
+            )
+
+            payload = runner.replot_c3d4_study_contours(
+                output,
+                contour_grid_bins=21,
+                xsec_overlay=False,
+            )
+
+            self.assertEqual(payload["status"], "complete")
+            self.assertEqual(payload["registered_alternative_scenario_count"], 1)
+            self.assertEqual(write_contours.call_count, 3)
+            calls_by_prefix = {
+                call.args[2]: call for call in write_contours.call_args_list
+            }
+            self.assertEqual(
+                set(calls_by_prefix),
+                {
+                    "sm-crossfit-v2",
+                    "sm-crossfit-v2_with_sm_hh4b",
+                    "sm-crossfit-v2_with_sm_hh4b_preview",
+                },
+            )
+            alternative_call = calls_by_prefix["sm-crossfit-v2_with_sm_hh4b"]
+            self.assertEqual(alternative_call.args[1], alternative / "maps")
+            self.assertIsNone(alternative_call.kwargs["watermark"])
+            preview_call = calls_by_prefix[
+                "sm-crossfit-v2_with_sm_hh4b_preview"
+            ]
+            self.assertEqual(
+                preview_call.kwargs["watermark"],
+                "PRELIMINARY - FULL RUN SHAPE FIT PENDING",
+            )
+            scenario = payload["strategies"]["sm-crossfit-v2"][
+                "alternative_scenarios"
+            ]["hhhh+hhhbb+hh4b"]
+            self.assertEqual(scenario["scenario_status"], "complete")
+            self.assertEqual(scenario["canonical_product_count"], 2)
+            self.assertEqual(scenario["cut_preview_product_count"], 2)
+            self.assertTrue(
+                (alternative / "maps" / "legacy_contour_manifest.json").exists()
+            )
+            alternative_status = json.loads(
+                (alternative / "cut_results_status.json").read_text()
+            )
+            self.assertEqual(
+                alternative_status["legacy_style_contours"], contour_metadata
+            )
+
+    def test_replot_rejects_registered_sm_hh4b_table_hash_mismatch(self):
+        rows = legacy_contour_rows(include_shape=False)
+        contour_metadata = {
+            "style_version": runner.LEGACY_CONTOUR_STYLE_VERSION,
+            "cut": {"status": "ok"},
+            "shape": {"status": "skipped"},
+        }
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            runner,
+            "_write_legacy_style_contour_set",
+            return_value=contour_metadata,
+        ) as write_contours, mock.patch.object(
+            runner, "_contour_product_count", return_value=1
+        ):
+            output = Path(directory)
+            strategy = output / "sm-crossfit-v2"
+            alternative = strategy / runner.SM_HH4B_ALTERNATIVE_LIMIT_DIR
+            alternative_preview = alternative / "cut_preview"
+            alternative_preview.mkdir(parents=True)
+            (output / "method_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "study_mode": "preview",
+                        "status": "complete",
+                        "paper_ready": False,
+                        "luminosity_fb_inverse": 3000.0,
+                        "requested_training_strategy": "sm-crossfit-v2",
+                        "alternative_limit_scenarios": {
+                            "sm-crossfit-v2": {
+                                "status": "complete",
+                                "scenario": "hhhh+hh4b",
+                            }
+                        },
+                    }
+                )
+            )
+            canonical_path = strategy / "cut_results.json"
+            canonical_path.parent.mkdir(parents=True, exist_ok=True)
+            canonical_path.write_text(json.dumps(rows))
+            alternative_path = alternative / "cut_results.json"
+            alternative_path.write_text(json.dumps(rows))
+            (alternative / "cut_results_status.json").write_text(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "cut_results_sha256": "not-the-table-digest",
+                    }
+                )
+            )
+            alternative_preview_path = alternative_preview / "cut_results.json"
+            alternative_preview_path.write_text(json.dumps(rows))
+            (alternative_preview / "status.json").write_text(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "cut_results_sha256": runner._sha256(
+                            alternative_preview_path
+                        ),
+                    }
+                )
+            )
+
+            payload = runner.replot_c3d4_study_contours(
+                output,
+                contour_grid_bins=21,
+                xsec_overlay=False,
+            )
+
+            self.assertEqual(payload["status"], "partial")
+            self.assertTrue(
+                any(
+                    "alternative hhhh+hh4b table is hash-mismatch" in issue
+                    for issue in payload["issues"]
+                )
+            )
+            prefixes = [call.args[2] for call in write_contours.call_args_list]
+            self.assertNotIn("sm-crossfit-v2_with_sm_hh4b", prefixes)
+            self.assertIn("sm-crossfit-v2_with_sm_hh4b_preview", prefixes)
+            scenario = payload["strategies"]["sm-crossfit-v2"][
+                "alternative_scenarios"
+            ]["hhhh+hh4b"]
+            self.assertEqual(scenario["canonical_table"]["status"], "hash-mismatch")
 
     def test_replot_rejects_a_luminosity_that_differs_from_the_manifest(self):
         with tempfile.TemporaryDirectory() as directory:

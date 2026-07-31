@@ -84,6 +84,7 @@ DEFAULT_CONTOUR_C3_RANGE = (-20.0, 20.0)
 DEFAULT_CONTOUR_D4_RANGE = (-300.0, 300.0)
 DEFAULT_CONTOUR_GRID_BINS = 301
 DEFAULT_CONTOUR_LEGEND_FONTSIZE = 7.0
+DEFAULT_CONTOUR_TITLE_FONTSIZE = 15.0
 EXPECTED_C3D4_SIGNAL_POINT_COUNT = 57
 CONTOUR_INTERPOLATION_METHODS = ("linear", "clough-tocher")
 SM_HH4B_ALTERNATIVE_LIMIT_DIR = "limits_with_sm_hh4b"
@@ -4580,7 +4581,7 @@ def _draw_legacy_style_exclusion_plot(
         process_title
         + " at 14 TeV, "
         + rf"$L={float(luminosity):g}\,\mathrm{{fb}}^{{-1}}$",
-        fontsize=20,
+        fontsize=DEFAULT_CONTOUR_TITLE_FONTSIZE,
     )
     axis.tick_params(axis="both", labelsize=15)
     _draw_plot_watermark(axis, watermark)
@@ -4604,6 +4605,7 @@ def _draw_legacy_style_exclusion_plot(
         "perturbativity_contour_drawn": perturbativity_drawn,
         "atlas_reference_curve": atlas_metadata,
         "process_title": process_title,
+        "title_fontsize": DEFAULT_CONTOUR_TITLE_FONTSIZE,
         "limit_label": limit_label,
         "legend_fontsize": DEFAULT_CONTOUR_LEGEND_FONTSIZE,
         "watermark": watermark,
@@ -9776,6 +9778,32 @@ def _read_replot_rows(path: Path) -> tuple[list[dict[str, Any]], str]:
     return [dict(row) for row in payload], "ok"
 
 
+def _read_replot_table_input(
+    table_path: Path,
+    status_path: Path,
+) -> dict[str, Any]:
+    """Read one saved result table and bind it to its published digest."""
+
+    rows, status = _read_replot_rows(table_path)
+    status_payload = _read_json_mapping(status_path)
+    expected_sha256 = status_payload.get("cut_results_sha256")
+    if (
+        status == "ok"
+        and expected_sha256
+        and _sha256(table_path) != expected_sha256
+    ):
+        rows = []
+        status = "hash-mismatch"
+    return {
+        "path": table_path,
+        "rows": rows,
+        "status": status,
+        "status_path": status_path,
+        "status_payload": status_payload,
+        "expected_sha256": expected_sha256,
+    }
+
+
 def _manifest_luminosity(manifest: Mapping[str, Any]) -> float:
     normalization = manifest.get("normalization_inputs", {})
     if not isinstance(normalization, Mapping):
@@ -10060,7 +10088,7 @@ def replot_c3d4_study_contours(
     xsec_source_dir: str | Path | None = None,
     xsec_overlay: bool | None = None,
 ) -> dict[str, Any]:
-    """Add paper-style contours to existing v2 tables without rerunning ML."""
+    """Add paper-style contours to all registered v2 result hypotheses."""
 
     output_dir = Path(output_dir)
     manifest = _read_json_mapping(output_dir / "method_manifest.json")
@@ -10085,218 +10113,317 @@ def replot_c3d4_study_contours(
     expected_strategies = _manifest_expected_strategies(manifest)
     strategy_names = list(expected_strategies)
 
+    raw_alternative_registry = manifest.get("alternative_limit_scenarios", {})
+    registry_issues: list[str] = []
+    if raw_alternative_registry is None:
+        alternative_registry: Mapping[str, Any] = {}
+    elif isinstance(raw_alternative_registry, Mapping):
+        alternative_registry = raw_alternative_registry
+    else:
+        alternative_registry = {}
+        registry_issues.append(
+            "The alternative-limit scenario registry in method_manifest.json "
+            "is malformed"
+        )
+
+    def contour_table_issues(
+        label: str,
+        table_input: Mapping[str, Any],
+        *,
+        include_shape: bool,
+    ) -> list[str]:
+        local_issues: list[str] = []
+        table_status = str(table_input["status"])
+        if table_status != "ok":
+            return [f"{label} table is {table_status}"]
+        rows = table_input["rows"]
+        for limit_kind in (("cut", "shape") if include_shape else ("cut",)):
+            precheck = _legacy_contour_spec(
+                rows,
+                limit_kind,
+                expected_coordinates=expected_coordinates,
+                expected_xsecs=expected_xsecs,
+            )
+            if precheck.get("status") != "ok":
+                local_issues.append(
+                    f"{label} {limit_kind} points are incomplete "
+                    f"({precheck.get('reason', 'unknown reason')})"
+                )
+            elif not precheck.get("band_complete", False):
+                local_issues.append(
+                    f"{label} {limit_kind} background envelope is incomplete"
+                )
+        return local_issues
+
     table_inputs: dict[str, dict[str, Any]] = {}
-    issues: list[str] = []
+    canonical_issues: list[str] = []
+    alternative_scenario_count = 0
     for strategy in strategy_names:
         strategy_dir = output_dir / strategy
-        canonical_path = strategy_dir / "cut_results.json"
-        preview_path = strategy_dir / "cut_preview" / "cut_results.json"
-        canonical_rows, canonical_status = _read_replot_rows(canonical_path)
-        preview_rows, preview_status = _read_replot_rows(preview_path)
-        canonical_status_payload = _read_json_mapping(
-            strategy_dir / "cut_results_status.json"
+        canonical = _read_replot_table_input(
+            strategy_dir / "cut_results.json",
+            strategy_dir / "cut_results_status.json",
         )
-        preview_status_payload = _read_json_mapping(
-            strategy_dir / "cut_preview" / "status.json"
+        preview = _read_replot_table_input(
+            strategy_dir / "cut_preview" / "cut_results.json",
+            strategy_dir / "cut_preview" / "status.json",
         )
-        canonical_expected_hash = canonical_status_payload.get(
-            "cut_results_sha256"
-        )
-        preview_expected_hash = preview_status_payload.get("cut_results_sha256")
-        if (
-            canonical_status == "ok"
-            and canonical_expected_hash
-            and _sha256(canonical_path) != canonical_expected_hash
-        ):
-            canonical_rows = []
-            canonical_status = "hash-mismatch"
-        if (
-            preview_status == "ok"
-            and preview_expected_hash
-            and _sha256(preview_path) != preview_expected_hash
-        ):
-            preview_rows = []
-            preview_status = "hash-mismatch"
-        table_inputs[strategy] = {
-            "canonical_path": canonical_path,
-            "canonical_rows": canonical_rows,
-            "canonical_status": canonical_status,
-            "preview_path": preview_path,
-            "preview_rows": preview_rows,
-            "preview_status": preview_status,
-            "canonical_expected_sha256": canonical_expected_hash,
-            "preview_expected_sha256": preview_expected_hash,
+        strategy_input: dict[str, Any] = {
+            "canonical": canonical,
+            "preview": preview,
+            "alternatives": [],
         }
+        table_inputs[strategy] = strategy_input
+
+        preview_status = str(preview["status"])
         if preview_status in {"malformed", "empty", "hash-mismatch"} or (
             manifest.get("method_version") is not None
             and preview_status != "ok"
         ):
-            issues.append(
+            canonical_issues.append(
                 f"{strategy}: cut-preview table is {preview_status}"
             )
-        if canonical_status != "ok":
-            issues.append(
-                f"{strategy}: canonical table is {canonical_status}"
-            )
-            continue
-        cut_precheck = _legacy_contour_spec(
-            canonical_rows,
-            "cut",
-            expected_coordinates=expected_coordinates,
-            expected_xsecs=expected_xsecs,
-        )
-        if cut_precheck.get("status") != "ok":
-            issues.append(
-                f"{strategy}: canonical cut points are incomplete "
-                f"({cut_precheck.get('reason', 'unknown reason')})"
-            )
-        elif not cut_precheck.get("band_complete", False):
-            issues.append(
-                f"{strategy}: canonical cut background envelope is incomplete"
-            )
-        if shape_expected:
-            shape_precheck = _legacy_contour_spec(
-                canonical_rows,
-                "shape",
-                expected_coordinates=expected_coordinates,
-                expected_xsecs=expected_xsecs,
-            )
-            if shape_precheck.get("status") != "ok":
-                issues.append(
-                    f"{strategy}: canonical shape points are incomplete "
-                    f"({shape_precheck.get('reason', 'unknown reason')})"
-                )
-            elif not shape_precheck.get("band_complete", False):
-                issues.append(
-                    f"{strategy}: canonical shape background envelope is incomplete"
-                )
-
-    if mode == "smoke":
-        canonical_watermark = "NON-PHYSICS SMOKE TEST"
-    elif mode == "preview":
-        canonical_watermark = "PRELIMINARY - SINGLE-BIN CUT RESULT"
-    elif status == "complete" and paper_ready and not issues:
-        canonical_watermark = None
-    else:
-        canonical_watermark = "INCOMPLETE FULL RUN - RESULTS NOT FINAL"
-
-    results: dict[str, Any] = {}
-    products = 0
-    for strategy in strategy_names:
-        strategy_dir = output_dir / strategy
-        table_input = table_inputs[strategy]
-        strategy_result: dict[str, Any] = {
-            "canonical_table": {
-                "path": str(table_input["canonical_path"]),
-                "status": table_input["canonical_status"],
-                "expected_sha256": table_input["canonical_expected_sha256"],
-            },
-            "cut_preview_table": {
-                "path": str(table_input["preview_path"]),
-                "status": table_input["preview_status"],
-                "expected_sha256": table_input["preview_expected_sha256"],
-            },
-        }
-        canonical_rows = table_input["canonical_rows"]
-        if table_input["canonical_status"] == "ok":
-            print(
-                f"Writing legacy-style canonical contours for {strategy}",
-                flush=True,
-            )
-            contour_metadata = _write_legacy_style_contour_set(
-                canonical_rows,
-                strategy_dir / "maps",
-                strategy,
-                watermark=canonical_watermark,
-                luminosity=config["luminosity"],
-                c3_range=config["c3_range"],
-                d4_range=config["d4_range"],
-                grid_bins=config["grid_bins"],
-                xsec_source_dir=config["xsec_source_dir"],
-                xsec_overlay=config["xsec_overlay"],
-                expected_coordinates=expected_coordinates,
-                expected_xsecs=expected_xsecs,
-                interpolation=config["interpolation"],
-            )
-            contour_manifest = strategy_dir / "maps" / "legacy_contour_manifest.json"
-            _write_json_atomic(contour_manifest, contour_metadata)
-            status_file = strategy_dir / "cut_results_status.json"
-            status_payload = _read_json_mapping(status_file)
-            if status_payload:
-                status_payload["legacy_style_contours"] = contour_metadata
-                status_payload.setdefault(
-                    "cut_results_sha256", _sha256(table_input["canonical_path"])
-                )
-                _write_json_atomic(status_file, status_payload)
-            strategy_result["canonical"] = contour_metadata
-            canonical_products = _contour_product_count(
-                contour_metadata,
+        canonical_issues.extend(
+            contour_table_issues(
+                f"{strategy}: canonical",
+                canonical,
                 include_shape=shape_expected,
             )
-            products += canonical_products
-            strategy_result["canonical_product_count"] = canonical_products
-            expected_canonical_products = (
-                3 if config["xsec_overlay"] else 1
-            ) * (2 if shape_expected else 1)
-            if canonical_products < expected_canonical_products:
-                issues.append(
-                    f"{strategy}: canonical contour set produced "
-                    f"{canonical_products}/{expected_canonical_products} plot pairs"
-                )
+        )
 
-        preview_dir = strategy_dir / "cut_preview"
-        preview_rows = table_input["preview_rows"]
-        if table_input["preview_status"] == "ok":
-            print(
-                f"Writing legacy-style cut-preview contours for {strategy}",
-                flush=True,
+        registered_alternative = alternative_registry.get(strategy)
+        if registered_alternative is None:
+            continue
+        if not isinstance(registered_alternative, Mapping):
+            registry_issues.append(
+                f"{strategy}: registered alternative-limit scenario is malformed"
             )
-            preview_status_file = preview_dir / "status.json"
-            preview_status = _read_json_mapping(preview_status_file)
+            continue
+
+        alternative_scenario_count += 1
+        scenario = str(registered_alternative.get("scenario", "")).strip()
+        alternative_issues: list[str] = []
+        if not scenario:
+            scenario = "registered-hh4b-alternative"
+            alternative_issues.append(
+                f"{strategy}: registered alternative-limit scenario has no name"
+            )
+        scenario_status = str(
+            registered_alternative.get("status", "unknown")
+        )
+        if scenario_status != "complete":
+            alternative_issues.append(
+                f"{strategy}: alternative {scenario} scenario is {scenario_status}"
+            )
+
+        alternative_dir = strategy_dir / SM_HH4B_ALTERNATIVE_LIMIT_DIR
+        alternative = _read_replot_table_input(
+            alternative_dir / "cut_results.json",
+            alternative_dir / "cut_results_status.json",
+        )
+        alternative_preview = _read_replot_table_input(
+            alternative_dir / "cut_preview" / "cut_results.json",
+            alternative_dir / "cut_preview" / "status.json",
+        )
+        alternative_issues.extend(
+            contour_table_issues(
+                f"{strategy}: alternative {scenario}",
+                alternative,
+                include_shape=shape_expected,
+            )
+        )
+        if alternative_preview["status"] != "ok":
+            alternative_issues.append(
+                f"{strategy}: alternative {scenario} cut-preview table is "
+                f"{alternative_preview['status']}"
+            )
+        strategy_input["alternatives"].append(
+            {
+                "scenario": scenario,
+                "scenario_status": scenario_status,
+                "directory": alternative_dir,
+                "canonical": alternative,
+                "preview": alternative_preview,
+                "issues": alternative_issues,
+            }
+        )
+
+    issues = [*canonical_issues, *registry_issues]
+    for strategy_input in table_inputs.values():
+        for alternative in strategy_input["alternatives"]:
+            issues.extend(alternative["issues"])
+
+    def final_watermark(local_issues: Sequence[str]) -> str | None:
+        if mode == "smoke":
+            return "NON-PHYSICS SMOKE TEST"
+        if mode == "preview":
+            return "PRELIMINARY - SINGLE-BIN CUT RESULT"
+        if status == "complete" and paper_ready and not local_issues:
+            return None
+        return "INCOMPLETE FULL RUN - RESULTS NOT FINAL"
+
+    canonical_watermark = final_watermark(canonical_issues)
+    results: dict[str, Any] = {}
+    products = 0
+
+    def table_descriptor(table_input: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "path": str(table_input["path"]),
+            "status": table_input["status"],
+            "expected_sha256": table_input["expected_sha256"],
+        }
+
+    def write_contours(
+        table_input: Mapping[str, Any],
+        *,
+        maps_dir: Path,
+        prefix: str,
+        watermark: str | None,
+        include_shape: bool,
+        label: str,
+        issue_sink: list[str] | None = None,
+    ) -> tuple[dict[str, Any], int]:
+        nonlocal products
+        print(f"Writing legacy-style {label}", flush=True)
+        contour_metadata = _write_legacy_style_contour_set(
+            table_input["rows"],
+            maps_dir,
+            prefix,
+            watermark=watermark,
+            luminosity=config["luminosity"],
+            c3_range=config["c3_range"],
+            d4_range=config["d4_range"],
+            grid_bins=config["grid_bins"],
+            xsec_source_dir=config["xsec_source_dir"],
+            xsec_overlay=config["xsec_overlay"],
+            expected_coordinates=expected_coordinates,
+            expected_xsecs=expected_xsecs,
+            interpolation=config["interpolation"],
+        )
+        _write_json_atomic(
+            maps_dir / "legacy_contour_manifest.json",
+            contour_metadata,
+        )
+        status_payload = dict(table_input["status_payload"])
+        if status_payload:
+            status_payload["legacy_style_contours"] = contour_metadata
+            status_payload.setdefault(
+                "cut_results_sha256", _sha256(table_input["path"])
+            )
+            _write_json_atomic(table_input["status_path"], status_payload)
+        count = _contour_product_count(
+            contour_metadata,
+            include_shape=include_shape,
+        )
+        products += count
+        expected_count = (3 if config["xsec_overlay"] else 1) * (
+            2 if include_shape else 1
+        )
+        if count < expected_count:
+            message = f"{label} produced {count}/{expected_count} plot pairs"
+            issues.append(message)
+            if issue_sink is not None:
+                issue_sink.append(message)
+        return contour_metadata, count
+
+    for strategy in strategy_names:
+        strategy_dir = output_dir / strategy
+        strategy_input = table_inputs[strategy]
+        canonical = strategy_input["canonical"]
+        preview = strategy_input["preview"]
+        strategy_result: dict[str, Any] = {
+            "canonical_table": table_descriptor(canonical),
+            "cut_preview_table": table_descriptor(preview),
+        }
+
+        if canonical["status"] == "ok":
+            contour_metadata, count = write_contours(
+                canonical,
+                maps_dir=strategy_dir / "maps",
+                prefix=strategy,
+                watermark=canonical_watermark,
+                include_shape=shape_expected,
+                label=f"canonical contours for {strategy}",
+            )
+            strategy_result["canonical"] = contour_metadata
+            strategy_result["canonical_product_count"] = count
+
+        if preview["status"] == "ok":
             preview_watermark = str(
-                preview_status.get(
+                preview["status_payload"].get(
                     "watermark", "PRELIMINARY - SINGLE-BIN CUT RESULT"
                 )
             )
-            contour_metadata = _write_legacy_style_contour_set(
-                preview_rows,
-                preview_dir / "maps",
-                f"{strategy}_preview",
+            contour_metadata, count = write_contours(
+                preview,
+                maps_dir=strategy_dir / "cut_preview" / "maps",
+                prefix=f"{strategy}_preview",
                 watermark=preview_watermark,
-                luminosity=config["luminosity"],
-                c3_range=config["c3_range"],
-                d4_range=config["d4_range"],
-                grid_bins=config["grid_bins"],
-                xsec_source_dir=config["xsec_source_dir"],
-                xsec_overlay=config["xsec_overlay"],
-                expected_coordinates=expected_coordinates,
-                expected_xsecs=expected_xsecs,
-                interpolation=config["interpolation"],
-            )
-            contour_manifest = preview_dir / "maps" / "legacy_contour_manifest.json"
-            _write_json_atomic(contour_manifest, contour_metadata)
-            if preview_status:
-                preview_status["legacy_style_contours"] = contour_metadata
-                preview_status.setdefault(
-                    "cut_results_sha256", _sha256(table_input["preview_path"])
-                )
-                _write_json_atomic(preview_status_file, preview_status)
-            strategy_result["cut_preview"] = contour_metadata
-            preview_products = _contour_product_count(
-                contour_metadata,
                 include_shape=False,
+                label=f"cut-preview contours for {strategy}",
             )
-            products += preview_products
-            strategy_result["cut_preview_product_count"] = preview_products
-            expected_preview_products = 3 if config["xsec_overlay"] else 1
-            if preview_products < expected_preview_products:
-                issues.append(
-                    f"{strategy}: cut-preview contour set produced "
-                    f"{preview_products}/{expected_preview_products} plot pairs"
+            strategy_result["cut_preview"] = contour_metadata
+            strategy_result["cut_preview_product_count"] = count
+
+        alternative_results: dict[str, Any] = {}
+        for alternative in strategy_input["alternatives"]:
+            scenario = alternative["scenario"]
+            alternative_dir = alternative["directory"]
+            alternative_prefix = f"{strategy}_with_sm_hh4b"
+            alternative_table = alternative["canonical"]
+            alternative_preview = alternative["preview"]
+            alternative_result: dict[str, Any] = {
+                "scenario": scenario,
+                "scenario_status": alternative["scenario_status"],
+                "output_dir": str(alternative_dir),
+                "canonical_table": table_descriptor(alternative_table),
+                "cut_preview_table": table_descriptor(alternative_preview),
+            }
+            alternative_watermark = final_watermark(alternative["issues"])
+            if alternative_table["status"] == "ok":
+                contour_metadata, count = write_contours(
+                    alternative_table,
+                    maps_dir=alternative_dir / "maps",
+                    prefix=alternative_prefix,
+                    watermark=alternative_watermark,
+                    include_shape=shape_expected,
+                    label=(
+                        f"alternative {scenario} contours for {strategy}"
+                    ),
+                    issue_sink=alternative["issues"],
                 )
+                alternative_result["canonical"] = contour_metadata
+                alternative_result["canonical_product_count"] = count
+
+            if alternative_preview["status"] == "ok":
+                alternative_preview_watermark = str(
+                    alternative_preview["status_payload"].get(
+                        "watermark",
+                        "PRELIMINARY - SINGLE-BIN CUT RESULT",
+                    )
+                )
+                contour_metadata, count = write_contours(
+                    alternative_preview,
+                    maps_dir=alternative_dir / "cut_preview" / "maps",
+                    prefix=f"{alternative_prefix}_preview",
+                    watermark=alternative_preview_watermark,
+                    include_shape=False,
+                    label=(
+                        f"alternative {scenario} cut-preview contours for "
+                        f"{strategy}"
+                    ),
+                    issue_sink=alternative["issues"],
+                )
+                alternative_result["cut_preview"] = contour_metadata
+                alternative_result["cut_preview_product_count"] = count
+            alternative_result["issues"] = list(alternative["issues"])
+            alternative_results[scenario] = alternative_result
+        if alternative_results:
+            strategy_result["alternative_scenarios"] = alternative_results
+
         if (
-            table_input["canonical_status"] != "missing"
-            or table_input["preview_status"] != "missing"
+            canonical["status"] != "missing"
+            or preview["status"] != "missing"
             or strategy in expected_strategies
         ):
             results[strategy] = strategy_result
@@ -10325,6 +10452,7 @@ def replot_c3d4_study_contours(
             None if expected_coordinates is None else len(expected_coordinates)
         ),
         "point_cross_sections_bound_to_manifest": expected_xsecs is not None,
+        "registered_alternative_scenario_count": alternative_scenario_count,
         "successful_plot_pairs": products,
         "issues": issues,
         "strategies": results,

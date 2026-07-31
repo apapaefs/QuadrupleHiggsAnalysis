@@ -117,7 +117,10 @@ Setup, fitting, and normalization conventions are documented in
 Passing `--include-sm-hh4b-in-alternative-limits` additionally writes a
 separate `limits_with_sm_hh4b/` result and plot tree for the common-strength
 `hhhh + hhh+bb + hh+4b` hypothesis. The ordinary `hhhh + hhh+bb` limit files
-are left unchanged.
+are left unchanged. A later `--replot-c3d4-study-contours` invocation
+regenerates both the canonical contours and every alternative scenario
+registered in the study manifest, including `limits_with_sm_hh4b`, without
+rerunning XGBoost or pyhf.
 
 ## Sherpa Colour-Flow OpenMPI Runs
 

@@ -3474,7 +3474,8 @@ def _run_local_xgboost_cli():
         action="store_true",
         help=(
             "Generate the legacy-style cut/shape exclusion contour family from existing "
-            "v2 JSON tables without retraining or rerunning pyhf."
+            "canonical and registered alternative v2 JSON tables without retraining or "
+            "rerunning pyhf."
         ),
     )
     parser.add_argument(
