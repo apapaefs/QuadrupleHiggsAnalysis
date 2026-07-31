@@ -30,7 +30,7 @@ import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -54,6 +54,19 @@ SIGNAL_XSEC_DEFINITION = (
     "before h->bb; scalar decay branching fractions are included"
 )
 BACKGROUND_NORM_UNCERTAINTY = 0.10
+PYHF_LIMIT_METHOD_VERSION = "bounded-independent-cls-roots-v1"
+DEFAULT_PYHF_POI_HARD_CAP = 10.0
+DEFAULT_PYHF_PHYSICAL_LIMIT_HARD_CAP_FB = 1.0e6
+DEFAULT_PYHF_REFERENCE_MAX_ATTEMPTS = 8
+PYHF_CLS_LEVEL = 0.05
+PYHF_LIMIT_CURVES = (
+    "observed_asimov",
+    "expected_minus2sigma",
+    "expected_minus1sigma",
+    "expected_median",
+    "expected_plus1sigma",
+    "expected_plus2sigma",
+)
 EPS_B = 0.85
 EPS_C = 0.10
 EPS_LIGHT = 0.01
@@ -1414,14 +1427,207 @@ def candidate_binnings(scores: np.ndarray, weights: np.ndarray) -> list[list[flo
     return candidates
 
 
+def _bounded_cls_roots(
+    cls_evaluator: Callable[[float], Sequence[float]],
+    root_solver: Callable[[Callable[[float], float], float, float], float],
+    *,
+    model_poi_bounds: Sequence[float],
+    hard_cap: float,
+    level: float = PYHF_CLS_LEVEL,
+) -> dict[str, Any]:
+    """Find observed and expected CLs roots without leaving the POI domain.
+
+    pyhf's automatic scan expands an insufficient upper bracket by doubling it,
+    even when that trial value lies outside the model's declared POI bounds.
+    Here the CLs values at the hard upper cap are evaluated first, each of the
+    six curves is classified independently, and a root solver is called only
+    for curves that are already bracketed inside the allowed interval.
+    """
+
+    try:
+        bounds = np.asarray(model_poi_bounds, dtype=float).reshape(-1)
+        if (
+            len(bounds) != 2
+            or np.any(~np.isfinite(bounds))
+            or bounds[1] <= bounds[0]
+            or not math.isfinite(hard_cap)
+            or hard_cap <= bounds[0]
+            or not math.isfinite(level)
+            or not 0.0 < level < 1.0
+        ):
+            raise ValueError("invalid POI bounds, hard cap, or CLs level")
+    except Exception as error:
+        return {
+            "status": "failed",
+            "diagnostic_type": "InvalidPoiBracketConfiguration",
+            "reason": "cannot construct a finite bounded POI interval",
+            "cause": {"type": type(error).__name__, "message": str(error)},
+        }
+
+    lower = float(bounds[0])
+    model_upper = float(bounds[1])
+    upper = min(float(hard_cap), model_upper)
+    cache: dict[float, np.ndarray] = {}
+
+    def evaluate(poi: float) -> np.ndarray:
+        poi = float(poi)
+        if poi < lower or poi > upper:
+            raise ValueError(
+                f"bounded CLs evaluator refused POI={poi:g} outside [{lower:g}, {upper:g}]"
+            )
+        if poi not in cache:
+            values = np.asarray(cls_evaluator(poi), dtype=float).reshape(-1)
+            if len(values) != len(PYHF_LIMIT_CURVES) or np.any(~np.isfinite(values)):
+                raise RuntimeError(
+                    "pyhf hypotest must return six finite observed/expected CLs values"
+                )
+            cache[poi] = values
+        return cache[poi]
+
+    # The upper-cap preflight is deliberately first: an absent crossing is a
+    # normal bounded diagnostic, not an invitation to ask pyhf for 2*upper.
+    try:
+        upper_values = evaluate(upper)
+        lower_values = evaluate(lower)
+    except Exception as error:
+        return {
+            "status": "failed",
+            "diagnostic_type": "PoiPreflightFailure",
+            "reason": "CLs preflight failed inside the bounded POI interval",
+            "cause": {"type": type(error).__name__, "message": str(error)},
+            "model_poi_bounds": [lower, model_upper],
+            "configured_poi_hard_cap": float(hard_cap),
+            "effective_poi_hard_cap": upper,
+            "tested_poi_values": sorted(cache),
+        }
+
+    curve_diagnostics: dict[str, dict[str, Any]] = {}
+    curve_roots: dict[str, float | None] = {}
+    for index, name in enumerate(PYHF_LIMIT_CURVES):
+        cls_lower = float(lower_values[index])
+        cls_upper = float(upper_values[index])
+        diagnostic: dict[str, Any] = {
+            "status": "pending",
+            "cls_at_lower_bound": cls_lower,
+            "cls_at_upper_cap": cls_upper,
+            "poi_limit": None,
+        }
+        if cls_lower < level:
+            diagnostic.update(
+                status="failed",
+                reason="CLs is already below the target at the POI lower bound",
+            )
+            curve_roots[name] = None
+        elif cls_upper > level:
+            diagnostic.update(
+                status="unbounded",
+                reason="CLs does not cross the target before the POI hard cap",
+            )
+            curve_roots[name] = None
+        else:
+            try:
+                if cls_lower == level:
+                    root = lower
+                elif cls_upper == level:
+                    root = upper
+                else:
+                    root = float(
+                        root_solver(
+                            lambda poi, curve=index: float(evaluate(poi)[curve]) - level,
+                            lower,
+                            upper,
+                        )
+                    )
+                if not math.isfinite(root) or root < lower or root > upper:
+                    raise RuntimeError("root solver returned a POI outside its bracket")
+                diagnostic.update(status="ok", poi_limit=root)
+                curve_roots[name] = root
+            except Exception as error:
+                diagnostic.update(
+                    status="failed",
+                    reason="bounded CLs root finding failed",
+                    cause={"type": type(error).__name__, "message": str(error)},
+                )
+                curve_roots[name] = None
+        curve_diagnostics[name] = diagnostic
+
+    observed_status = curve_diagnostics["observed_asimov"]["status"]
+    median_status = curve_diagnostics["expected_median"]["status"]
+    required_unbounded = [
+        name
+        for name in ("observed_asimov", "expected_median")
+        if curve_diagnostics[name]["status"] == "unbounded"
+    ]
+    incomplete = [
+        name
+        for name in PYHF_LIMIT_CURVES
+        if curve_diagnostics[name]["status"] != "ok"
+    ]
+    if required_unbounded:
+        status = "unbounded"
+        diagnostic_type = "RequiredLimitCurveNotBracketed"
+        reason = (
+            "required limit curves lie above the configured POI hard cap: "
+            + ", ".join(required_unbounded)
+        )
+    elif median_status != "ok" or observed_status != "ok":
+        status = "failed"
+        diagnostic_type = "RequiredLimitCurveFailure"
+        reason = "the observed Asimov or expected median limit could not be solved"
+    elif incomplete:
+        status = "partial"
+        diagnostic_type = "OptionalLimitBandsIncomplete"
+        reason = "the observed Asimov and median limits are finite, but some bands are not"
+    else:
+        status = "ok"
+        diagnostic_type = "AllLimitCurvesBounded"
+        reason = "all observed and expected CLs curves cross inside the POI hard cap"
+
+    return {
+        "status": status,
+        "diagnostic_type": diagnostic_type,
+        "reason": reason,
+        "curve_roots": curve_roots,
+        "curve_diagnostics": curve_diagnostics,
+        "incomplete_curves": incomplete,
+        "model_poi_bounds": [lower, model_upper],
+        "configured_poi_hard_cap": float(hard_cap),
+        "effective_poi_hard_cap": upper,
+        "cls_level": float(level),
+        "hard_cap_preflight": {
+            name: float(upper_values[index])
+            for index, name in enumerate(PYHF_LIMIT_CURVES)
+        },
+        "tested_poi_values": sorted(cache),
+        "n_hypotest_evaluations": len(cache),
+    }
+
+
 def _pyhf_limit(
     channels: Sequence[Mapping[str, Any]],
     background_norm: float = BACKGROUND_NORM_UNCERTAINTY,
+    poi_hard_cap: float = DEFAULT_PYHF_POI_HARD_CAP,
+    physical_limit_hard_cap_fb: float = DEFAULT_PYHF_PHYSICAL_LIMIT_HARD_CAP_FB,
+    max_reference_attempts: int = DEFAULT_PYHF_REFERENCE_MAX_ATTEMPTS,
 ) -> dict[str, Any]:
+    method_metadata = {"pyhf_limit_method_version": PYHF_LIMIT_METHOD_VERSION}
     try:
         import pyhf  # type: ignore
     except ImportError:
-        return {"status": "unavailable", "reason": "pyhf is not installed"}
+        return {
+            "status": "unavailable",
+            "reason": "pyhf is not installed",
+            **method_metadata,
+        }
+    try:
+        from scipy.optimize import toms748  # type: ignore
+    except ImportError as error:
+        return {
+            "status": "unavailable",
+            "reason": "scipy is required for bounded pyhf root finding",
+            "cause": {"type": type(error).__name__, "message": str(error)},
+            **method_metadata,
+        }
     try:
         prepared: list[dict[str, Any]] = []
         total_signal = 0.0
@@ -1467,6 +1673,19 @@ def _pyhf_limit(
             total_background_variance += float(np.sum(np.square(background_error)))
         if total_signal <= 0.0 or total_background < 0.0:
             raise ValueError("non-positive total signal or negative total background")
+        if not math.isfinite(poi_hard_cap) or poi_hard_cap <= 0.0:
+            raise ValueError("the pyhf POI hard cap must be positive and finite")
+        if (
+            not math.isfinite(physical_limit_hard_cap_fb)
+            or physical_limit_hard_cap_fb <= 0.0
+        ):
+            raise ValueError("the pyhf physical limit hard cap must be positive and finite")
+        if (
+            isinstance(max_reference_attempts, bool)
+            or not isinstance(max_reference_attempts, int)
+            or max_reference_attempts < 1
+        ):
+            raise ValueError("the pyhf reference-scale attempt count must be a positive integer")
         rough_limit = (
             3.0
             + 2.0 * math.sqrt(max(0.0, total_background + total_background_variance))
@@ -1475,25 +1694,31 @@ def _pyhf_limit(
         if not math.isfinite(rough_limit) or rough_limit <= 0.0:
             raise ValueError("non-finite rough cross-section limit")
     except Exception as error:
-        return {"status": "failed", "error_type": type(error).__name__, "error": str(error)}
+        return {
+            "status": "failed",
+            "error_type": type(error).__name__,
+            "error": str(error),
+            **method_metadata,
+        }
 
     # Fit a dimensionless mu against a signal template scaled to an O(limit)
-    # reference cross section.  Keeping mu in [0,10] avoids the SLSQP failures
-    # observed for very wide physical-sigma normfactor bounds.  Both signal
-    # yields and their absolute MC-statistical errors must receive the scale.
-    mu_upper = 10.0
-    boundary_fraction = 0.80
-    reference_xsec_fb = float(rough_limit)
-    attempt_records: list[dict[str, Any]] = []
-    last_error: Exception | None = None
-    for attempt in range(4):
+    # reference cross section. Both signal yields and their absolute MC-stat
+    # errors receive the same scale. If the observed or median curve does not
+    # cross before the dimensionless POI cap, increase only this physical
+    # reference scale and rebuild the workspace. Optional expected bands never
+    # trigger a retry. Every individual attempt still preflights and solves
+    # strictly inside POI bounds identical to those declared by the model.
+    maximum_reference_xsec_fb = float(physical_limit_hard_cap_fb) / float(poi_hard_cap)
+    reference_xsec_fb = min(float(rough_limit), maximum_reference_xsec_fb)
+
+    def evaluate_reference(reference_xsec: float) -> dict[str, Any]:
         try:
             channel_specs = []
             observations = []
             for channel in prepared:
                 name = channel["name"]
-                scaled_signal = channel["signal"] * reference_xsec_fb
-                scaled_signal_error = channel["signal_error"] * reference_xsec_fb
+                scaled_signal = channel["signal"] * reference_xsec
+                scaled_signal_error = channel["signal_error"] * reference_xsec
                 signal_modifiers = [{"name": "mu", "type": "normfactor", "data": None}]
                 if np.any(scaled_signal_error > 0.0):
                     signal_modifiers.append(
@@ -1550,8 +1775,8 @@ def _pyhf_limit(
                                 "parameters": [
                                     {
                                         "name": "mu",
-                                        "bounds": [[0.0, mu_upper]],
-                                        "inits": [1.0],
+                                        "bounds": [[0.0, float(poi_hard_cap)]],
+                                        "inits": [min(1.0, 0.5 * float(poi_hard_cap))],
                                     }
                                 ],
                             },
@@ -1560,79 +1785,186 @@ def _pyhf_limit(
                     "version": "1.0.0",
                 }
             )
-            pyhf.set_backend("numpy")
             model = workspace.model(measurement_name="expected_limit")
-            observed, expected = pyhf.infer.intervals.upper_limits.upper_limit(
-                workspace.data(model), model, level=0.05
-            )
-            observed_mu = float(np.asarray(observed))
-            bands_mu = np.asarray(expected, dtype=float).reshape(-1)
+            data = workspace.data(model)
+            poi_slice = model.config.par_slice(model.config.poi_name)
+            model_poi_bounds = model.config.suggested_bounds()[poi_slice.start]
             if (
-                len(bands_mu) != 5
-                or not math.isfinite(observed_mu)
-                or not np.all(np.isfinite(bands_mu))
-                or observed_mu < 0.0
-                or np.any(bands_mu < 0.0)
+                not math.isclose(float(model_poi_bounds[0]), 0.0, abs_tol=1.0e-12)
+                or not math.isclose(
+                    float(model_poi_bounds[1]),
+                    float(poi_hard_cap),
+                    rel_tol=1.0e-12,
+                    abs_tol=1.0e-12,
+                )
             ):
-                raise RuntimeError("pyhf did not return finite non-negative limit bands")
-            maximum_mu = max(observed_mu, float(np.max(bands_mu)))
-            attempt_records.append(
-                {
-                    "attempt": attempt + 1,
-                    "reference_xsec_fb": reference_xsec_fb,
-                    "maximum_returned_mu": maximum_mu,
-                    "status": "ok",
-                }
-            )
-            if maximum_mu <= boundary_fraction * mu_upper:
-                physical = bands_mu * reference_xsec_fb
                 return {
-                    "status": "ok",
-                    "observed_asimov": observed_mu * reference_xsec_fb,
-                    "expected_minus2sigma": float(physical[0]),
-                    "expected_minus1sigma": float(physical[1]),
-                    "expected_median": float(physical[2]),
-                    "expected_plus1sigma": float(physical[3]),
-                    "expected_plus2sigma": float(physical[4]),
-                    "pyhf_version": getattr(pyhf, "__version__", None),
-                    "poi_parameter": "mu",
-                    "sigma_reference_fb": reference_xsec_fb,
-                    "mu_fit_bounds": [0.0, mu_upper],
-                    "maximum_returned_mu": maximum_mu,
-                    "boundary_fraction_threshold": boundary_fraction,
-                    "fit_attempts": attempt_records,
-                }
-            reference_xsec_fb *= 2.0
-        except Exception as error:
-            last_error = error
-            attempt_records.append(
-                {
-                    "attempt": attempt + 1,
-                    "reference_xsec_fb": reference_xsec_fb,
                     "status": "failed",
-                    "error_type": type(error).__name__,
-                    "error": str(error),
+                    "diagnostic_type": "PoiBoundMismatch",
+                    "reason": "the workspace POI bounds do not match the configured hard cap",
+                    "configured_poi_hard_cap": float(poi_hard_cap),
+                    "model_poi_bounds": [float(value) for value in model_poi_bounds],
                 }
+
+            def cls_evaluator(poi: float) -> np.ndarray:
+                observed, expected = pyhf.infer.hypotest(
+                    poi,
+                    data,
+                    model,
+                    return_expected_set=True,
+                )
+                observed_value = float(np.asarray(observed))
+                expected_values = np.asarray(expected, dtype=float).reshape(-1)
+                if len(expected_values) != 5:
+                    raise RuntimeError(
+                        "pyhf hypotest did not return five expected CLs bands"
+                    )
+                return np.concatenate(([observed_value], expected_values))
+
+            return _bounded_cls_roots(
+                cls_evaluator,
+                lambda function, lower, upper: float(
+                    toms748(
+                        function,
+                        lower,
+                        upper,
+                        k=2,
+                        xtol=2.0e-12,
+                        rtol=1.0e-4,
+                    )
+                ),
+                model_poi_bounds=model_poi_bounds,
+                hard_cap=float(poi_hard_cap),
+                level=PYHF_CLS_LEVEL,
             )
-            # A too-small reference can make the true mu limit lie outside the
-            # fixed interval and manifest as a root/minimizer failure.  Increase
-            # the physical reference while retaining the stable mu bounds.
-            reference_xsec_fb *= 2.0
-    if last_error is not None:
-        return {
-            "status": "failed",
-            "error_type": type(last_error).__name__,
-            "error": str(last_error),
-            "rough_limit_fb": rough_limit,
-            "mu_fit_bounds": [0.0, mu_upper],
-            "fit_attempts": attempt_records,
-        }
-    return {
+        except Exception as error:
+            return {
+                "status": "failed",
+                "diagnostic_type": "PyhfWorkspaceOrFitFailure",
+                "reason": "pyhf workspace construction or bounded fit setup failed",
+                "cause": {"type": type(error).__name__, "message": str(error)},
+                "configured_poi_hard_cap": float(poi_hard_cap),
+            }
+
+    pyhf.set_backend("numpy")
+    attempt_records: list[dict[str, Any]] = []
+    bounded: dict[str, Any] = {
         "status": "failed",
-        "error_type": "BoundaryLimitedFit",
-        "error": "pyhf limits remained too close to the mu upper bound after four attempts",
+        "diagnostic_type": "NoPyhfFitAttempt",
+        "reason": "no bounded pyhf fit attempt was made",
+    }
+    required_unbounded: list[str] = []
+    rescaling_stop_reason = "fit_failed"
+    for attempt_index in range(max_reference_attempts):
+        bounded = evaluate_reference(reference_xsec_fb)
+        roots = bounded.get("curve_roots", {})
+        finite_roots = [
+            float(root)
+            for root in roots.values()
+            if root is not None and math.isfinite(float(root))
+        ]
+        tested_poi_values = [float(value) for value in bounded.get("tested_poi_values", [])]
+        attempt_record = {
+            "attempt": attempt_index + 1,
+            "reference_xsec_fb": reference_xsec_fb,
+            "physical_poi_cap_fb": reference_xsec_fb
+            * float(bounded.get("effective_poi_hard_cap", poi_hard_cap)),
+            "status": bounded.get("status", "failed"),
+            "diagnostic_type": bounded.get("diagnostic_type"),
+            "maximum_returned_mu": max(finite_roots) if finite_roots else None,
+            "incomplete_curves": bounded.get("incomplete_curves"),
+            "hard_cap_preflight": bounded.get("hard_cap_preflight"),
+            "tested_poi_values": tested_poi_values,
+            "tested_physical_xsec_values_fb": [
+                reference_xsec_fb * value for value in tested_poi_values
+            ],
+            "n_hypotest_evaluations": bounded.get("n_hypotest_evaluations", 0),
+        }
+        attempt_records.append(attempt_record)
+
+        diagnostics = bounded.get("curve_diagnostics")
+        required_unbounded = (
+            [
+                name
+                for name in ("observed_asimov", "expected_median")
+                if diagnostics.get(name, {}).get("status") == "unbounded"
+            ]
+            if isinstance(diagnostics, Mapping)
+            else []
+        )
+        if not required_unbounded:
+            rescaling_stop_reason = (
+                "required_curves_bracketed"
+                if bounded.get("status") in {"ok", "partial"}
+                else "fit_failed_without_an_unbounded_required_curve"
+            )
+            break
+        if attempt_index + 1 >= max_reference_attempts:
+            rescaling_stop_reason = "maximum_reference_attempts_reached"
+            break
+        next_reference_xsec_fb = min(
+            2.0 * reference_xsec_fb,
+            maximum_reference_xsec_fb,
+        )
+        if next_reference_xsec_fb <= reference_xsec_fb * (1.0 + 1.0e-12):
+            rescaling_stop_reason = "physical_limit_hard_cap_reached"
+            break
+        attempt_record["rescaled_for_unbounded_required_curves"] = required_unbounded
+        attempt_record["next_reference_xsec_fb"] = next_reference_xsec_fb
+        reference_xsec_fb = next_reference_xsec_fb
+
+    if required_unbounded:
+        bounded = dict(bounded)
+        bounded["reason"] = (
+            f"{bounded.get('reason', 'a required limit curve is not bracketed')}; "
+            f"adaptive reference rescaling stopped: {rescaling_stop_reason}"
+        )
+        bounded["rescaling_stop_reason"] = rescaling_stop_reason
+
+    roots = bounded.get("curve_roots", {})
+    physical_limits = {
+        name: (
+            None
+            if roots.get(name) is None
+            else float(roots[name]) * reference_xsec_fb
+        )
+        for name in PYHF_LIMIT_CURVES
+    }
+    finite_roots = [float(root) for root in roots.values() if root is not None]
+    maximum_mu = max(finite_roots) if finite_roots else None
+    return {
+        "status": bounded["status"],
+        **physical_limits,
+        "reason": bounded.get("reason"),
+        "diagnostic_type": bounded.get("diagnostic_type"),
+        "cause": bounded.get("cause"),
+        **method_metadata,
+        "pyhf_version": getattr(pyhf, "__version__", None),
+        "poi_parameter": "mu",
+        "sigma_reference_fb": reference_xsec_fb,
         "rough_limit_fb": rough_limit,
-        "mu_fit_bounds": [0.0, mu_upper],
+        "mu_fit_bounds": bounded.get("model_poi_bounds"),
+        "configured_poi_hard_cap": float(poi_hard_cap),
+        "effective_poi_hard_cap": bounded.get("effective_poi_hard_cap"),
+        "configured_physical_limit_hard_cap_fb": float(physical_limit_hard_cap_fb),
+        "physical_limit_cap_fb": reference_xsec_fb
+        * float(bounded.get("effective_poi_hard_cap", poi_hard_cap)),
+        "reference_xsec_hard_cap_fb": maximum_reference_xsec_fb,
+        "max_reference_attempts": max_reference_attempts,
+        "rescaling_stop_reason": bounded.get(
+            "rescaling_stop_reason", rescaling_stop_reason
+        ),
+        "maximum_returned_mu": maximum_mu,
+        "boundary_fraction_threshold": 0.80,
+        "cls_level": bounded.get("cls_level", PYHF_CLS_LEVEL),
+        "hard_cap_preflight": bounded.get("hard_cap_preflight"),
+        "curve_diagnostics": bounded.get("curve_diagnostics"),
+        "incomplete_curves": bounded.get("incomplete_curves"),
+        "tested_poi_values": bounded.get("tested_poi_values", []),
+        "n_hypotest_evaluations": sum(
+            int(record.get("n_hypotest_evaluations", 0))
+            for record in attempt_records
+        ),
         "fit_attempts": attempt_records,
     }
 
@@ -2702,7 +3034,18 @@ def _write_plots(output_dir: Path, topology: str, limit_rows: Sequence[Mapping[s
     except ImportError:
         return []
     outputs: list[str] = []
-    valid = [row for row in limit_rows if row.get("status") == "ok"]
+    # A bounded fit may legitimately lack an outer expected band while still
+    # providing a finite observed Asimov and median limit. Keep those partial
+    # medians in the plots; unavailable uncertainty-band endpoints become gaps.
+    valid = [
+        row
+        for row in limit_rows
+        if row.get("status") in {"ok", "partial"}
+        and isinstance(row.get("expected_median"), (int, float))
+        and not isinstance(row.get("expected_median"), bool)
+        and math.isfinite(float(row["expected_median"]))
+        and float(row["expected_median"]) > 0.0
+    ]
     if not valid:
         return outputs
     if topology == "direct":
@@ -2718,8 +3061,24 @@ def _write_plots(output_dir: Path, topology: str, limit_rows: Sequence[Mapping[s
             y = np.asarray([row["expected_median"] for row in rows], dtype=float)
             axis.plot(x, y, style, label=scenario)
             if scenario == "nominal":
-                low = np.asarray([row["expected_minus1sigma"] for row in rows], dtype=float)
-                high = np.asarray([row["expected_plus1sigma"] for row in rows], dtype=float)
+                low = np.asarray(
+                    [
+                        np.nan
+                        if row.get("expected_minus1sigma") is None
+                        else row["expected_minus1sigma"]
+                        for row in rows
+                    ],
+                    dtype=float,
+                )
+                high = np.asarray(
+                    [
+                        np.nan
+                        if row.get("expected_plus1sigma") is None
+                        else row["expected_plus1sigma"]
+                        for row in rows
+                    ],
+                    dtype=float,
+                )
                 axis.fill_between(x, low, high, alpha=0.22)
         axis.set(xlabel=r"$M_S$ [GeV]", ylabel=r"Expected 95% CL $\sigma_{95}$ [fb]", yscale="log")
         axis.grid(True, which="both", alpha=0.25)
@@ -2884,6 +3243,10 @@ def run_analysis(args: argparse.Namespace) -> int:
         "min_background_raw": args.min_background_raw,
         "min_background_neff": args.min_background_neff,
         "background_norm_uncertainty": BACKGROUND_NORM_UNCERTAINTY,
+        "pyhf_limit_method_version": PYHF_LIMIT_METHOD_VERSION,
+        "pyhf_poi_hard_cap": args.pyhf_poi_hard_cap,
+        "pyhf_physical_limit_hard_cap_fb": args.pyhf_physical_limit_hard_cap_fb,
+        "pyhf_reference_max_attempts": args.pyhf_reference_max_attempts,
         "seed": args.seed,
         "smoke_points": args.smoke_points if smoke else None,
         "smoke_max_events": args.smoke_max_events if smoke else None,
@@ -3316,7 +3679,16 @@ def run_analysis(args: argparse.Namespace) -> int:
                     abs_tol=1.0e-12,
                 )
                 point_score_rows.append(total_all_row)
-            fit = _pyhf_limit(channels) if channels else {"status": "invalid", "reason": "no valid category"}
+            fit = (
+                _pyhf_limit(
+                    channels,
+                    poi_hard_cap=args.pyhf_poi_hard_cap,
+                    physical_limit_hard_cap_fb=args.pyhf_physical_limit_hard_cap_fb,
+                    max_reference_attempts=args.pyhf_reference_max_attempts,
+                )
+                if channels
+                else {"status": "invalid", "reason": "no valid category"}
+            )
             point_limit_rows.append(
                 {
                     "topology": args.topology,
@@ -3404,11 +3776,15 @@ def run_analysis(args: argparse.Namespace) -> int:
             "both tagging scenarios must pass template validation"
         ),
         "pyhf_channels": "category_by_test_fold",
+        "pyhf_limit_method_version": PYHF_LIMIT_METHOD_VERSION,
         "pyhf_poi_parameterization": (
-            "dimensionless mu in fixed [0,10] multiplying signal and signal-staterror "
-            "templates scaled by an adaptive per-fit sigma_reference_fb; physical limits "
-            "are mu limits times that reference"
+            "dimensionless mu with an explicit configured hard upper bound multiplying "
+            "signal and signal-staterror templates scaled by sigma_reference_fb; "
+            "observed and expected CLs roots are solved independently inside that bound"
         ),
+        "pyhf_poi_hard_cap": args.pyhf_poi_hard_cap,
+        "pyhf_physical_limit_hard_cap_fb": args.pyhf_physical_limit_hard_cap_fb,
+        "pyhf_reference_max_attempts": args.pyhf_reference_max_attempts,
         "xgboost_used_stage_definition": (
             "sum of every score bin in categories with valid rotation-local templates; "
             "no post-training score cut is applied"
@@ -3486,6 +3862,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--background-replicas", type=int, default=3)
     parser.add_argument("--min-background-raw", type=int, default=25)
     parser.add_argument("--min-background-neff", type=float, default=10.0)
+    parser.add_argument(
+        "--pyhf-poi-hard-cap",
+        type=float,
+        default=DEFAULT_PYHF_POI_HARD_CAP,
+        help=(
+            "Maximum dimensionless pyhf POI tested for any observed or expected "
+            "limit curve; this is also the model POI upper bound."
+        ),
+    )
+    parser.add_argument(
+        "--pyhf-physical-limit-hard-cap-fb",
+        type=float,
+        default=DEFAULT_PYHF_PHYSICAL_LIMIT_HARD_CAP_FB,
+        help=(
+            "Maximum physical cross section tested while adaptively rescaling "
+            "the pyhf signal reference."
+        ),
+    )
+    parser.add_argument(
+        "--pyhf-reference-max-attempts",
+        type=int,
+        default=DEFAULT_PYHF_REFERENCE_MAX_ATTEMPTS,
+        help="Maximum bounded pyhf attempts with successively doubled signal references.",
+    )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--smoke-points", type=int, default=3)
     parser.add_argument("--smoke-max-events", type=int, default=250)
@@ -3521,6 +3921,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--background-k-factor must be positive and finite")
     if args.min_background_raw < 0 or not math.isfinite(args.min_background_neff) or args.min_background_neff < 0.0:
         raise SystemExit("background bin thresholds must be non-negative")
+    if not math.isfinite(args.pyhf_poi_hard_cap) or args.pyhf_poi_hard_cap <= 0.0:
+        raise SystemExit("--pyhf-poi-hard-cap must be positive and finite")
+    if (
+        not math.isfinite(args.pyhf_physical_limit_hard_cap_fb)
+        or args.pyhf_physical_limit_hard_cap_fb <= 0.0
+    ):
+        raise SystemExit("--pyhf-physical-limit-hard-cap-fb must be positive and finite")
+    if args.pyhf_reference_max_attempts < 1:
+        raise SystemExit("--pyhf-reference-max-attempts must be positive")
     if args.background_replicas < 1 or args.smoke_points < 1 or args.smoke_max_events < 1:
         raise SystemExit("replica and smoke counts must be positive")
     try:

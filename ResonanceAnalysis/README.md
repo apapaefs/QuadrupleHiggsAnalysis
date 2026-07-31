@@ -530,10 +530,38 @@ threshold satisfies the primary requirement is retried at
 \(N_{\rm eff}\geq5\); the unique-event requirement is never relaxed. The
 result tables record the selected tier and both audit counts, and open squares
 identify fallback limits in the fast plots. This fallback affects only the
-fast cut-and-count validation. The multi-bin pyhf template construction keeps
-the primary \(N_{\rm eff}\geq10\) requirement.
+fast cut-and-count validation. The pyhf template construction first requires
+the configured unique-event and \(N_{\rm eff}\) thresholds in every bin and
+both tagging scenarios for a 2--5-bin score shape. If no shape candidate
+passes across the current scan, the default `--pyhf-low-mc-policy exclude`
+uses a consistent resolved-only likelihood at every mass point; mixed and
+boosted channels are not switched on at isolated points. An explicit
+`--pyhf-low-mc-policy inclusive-diagnostic` run instead uses one inclusive
+\([0,1]\) score bin when both scenarios still have positive background yield,
+at least one unique event, and positive \(N_{\rm eff}\). This relaxed run is
+always labelled as diagnostic and is never marked physics-valid. Each template
+checkpoint records the policy, whether the inclusive fallback was attempted
+and used, its relaxed requirements, and the per-scenario validation yields,
+unique counts, and effective counts. `template_statistics_summary.json`
+separately records the retained scope, excluded categories, and all
+test-template bins that fail the primary MC-statistics requirements.
 
-The direct and cascade jobs may be launched together:
+For the current 14-sample Tiresias background set, no additional events are
+assumed: only the resolved templates meet the primary requirements. The
+default result is therefore labelled `resolved_only`; mixed and boosted AK8
+categories appear only in the existing-MC diagnostic run. Before retraining,
+`prepare_resonance_background_normalization_manifest.py` creates a new,
+immutable manifest that adopts the audited `HW-gg_to_4b_2c_2j` LHE-header
+normalization (2751.78 fb with 7.47% integration uncertainty). The accompanying
+audit sidecar is required for a result to be marked physics-valid; the existing
+10% background-normalization nuisance covers that integration uncertainty.
+
+On Tiresias,
+`scripts/extended_scalar_mass_scan/tiresias_ak8_corrected_analysis_32.sh`
+runs direct and cascade together with 16 workers each, validates the supported
+result before promoting it, and can subsequently produce the labelled
+all-category diagnostic with `start --with-diagnostic`. It consumes only the
+existing ROOT/LHE inputs. The equivalent individual commands are:
 
 ```bash
 nohup python3 -u Code/resonance_xgboost_analysis.py \
@@ -544,6 +572,7 @@ nohup python3 -u Code/resonance_xgboost_analysis.py \
   --point-jobs 8 \
   --min-background-neff 10 \
   --fallback-background-neff 5 \
+  --pyhf-low-mc-policy exclude \
   --output-dir ResonanceAnalysis/results/ak8-v1-neff10-fallback5/direct \
   > ResonanceAnalysis/logs/xgboost-ak8-v1-neff10-fallback5-direct-fast.log 2>&1 &
 
@@ -555,6 +584,7 @@ nohup python3 -u Code/resonance_xgboost_analysis.py \
   --point-jobs 8 \
   --min-background-neff 10 \
   --fallback-background-neff 5 \
+  --pyhf-low-mc-policy exclude \
   --output-dir ResonanceAnalysis/results/ak8-v1-neff10-fallback5/cascade \
   > ResonanceAnalysis/logs/xgboost-ak8-v1-neff10-fallback5-cascade-fast.log 2>&1 &
 ```
@@ -576,6 +606,7 @@ nohup python3 -u Code/resonance_xgboost_analysis.py \
   --pyhf-jobs 8 \
   --min-background-neff 10 \
   --fallback-background-neff 5 \
+  --pyhf-low-mc-policy exclude \
   --output-dir ResonanceAnalysis/results/ak8-v1-neff10-fallback5/direct \
   > ResonanceAnalysis/logs/xgboost-ak8-v1-neff10-fallback5-direct-full.log 2>&1 &
 
@@ -587,6 +618,7 @@ nohup python3 -u Code/resonance_xgboost_analysis.py \
   --pyhf-jobs 8 \
   --min-background-neff 10 \
   --fallback-background-neff 5 \
+  --pyhf-low-mc-policy exclude \
   --output-dir ResonanceAnalysis/results/ak8-v1-neff10-fallback5/cascade \
   > ResonanceAnalysis/logs/xgboost-ak8-v1-neff10-fallback5-cascade-full.log 2>&1 &
 ```

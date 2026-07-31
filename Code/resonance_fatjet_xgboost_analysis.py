@@ -34,6 +34,7 @@ from c3d4_xgboost_study import exact_cls_signal_upper_limit, poisson_median_obse
 
 FEATURE_SET = "fatjet-ak8-softdrop-v1"
 METHOD_VERSION = "resonance-fatjet-mass-aware-xgboost-v2"
+TEMPLATE_BINNING_VERSION = "fatjet-pyhf-template-binning-v3-resolved-only"
 PREPROCESSING_VERSION = "fatjet-ak8-preprocessing-v1"
 SMEARING_MODEL_ID = "cms-energy-uniform-fourvector-v1"
 N_FOLDS = 5
@@ -208,6 +209,143 @@ def _sha256_file(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _background_normalization_provenance(manifest: Path) -> dict[str, Any]:
+    """Validate the immutable LHE-normalization audit accompanying a manifest."""
+
+    audit_path = manifest.with_suffix(".normalization_audit.json")
+    result: dict[str, Any] = {
+        "status": "provisional",
+        "manifest": str(manifest),
+        "manifest_sha256": _sha256_file(manifest),
+        "audit": str(audit_path),
+        "adopted_samples": [],
+    }
+    if not audit_path.is_file():
+        result["reason"] = "missing immutable normalization audit sidecar"
+        return result
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        result["status"] = "invalid"
+        result["reason"] = f"unreadable normalization audit: {error}"
+        return result
+    if not isinstance(audit, Mapping):
+        result["status"] = "invalid"
+        result["reason"] = "normalization audit is not a JSON object"
+        return result
+    if audit.get("schema") != "resonance-background-normalization-audit-v1":
+        result["status"] = "invalid"
+        result["reason"] = "unsupported normalization audit schema"
+        return result
+    if audit.get("output_manifest_sha256") != result["manifest_sha256"]:
+        result["status"] = "invalid"
+        result["reason"] = "normalization audit does not match the manifest"
+        return result
+    adopted = audit.get("adopted_samples")
+    if not isinstance(adopted, list) or not adopted:
+        result["status"] = "invalid"
+        result["reason"] = "normalization audit contains no adopted samples"
+        return result
+    with manifest.open(newline="", encoding="utf-8") as handle:
+        manifest_rows = {
+            row.get("sample_id", "").strip(): row for row in csv.DictReader(handle)
+        }
+    verified: list[dict[str, Any]] = []
+    for item in adopted:
+        if not isinstance(item, Mapping):
+            result["status"] = "invalid"
+            result["reason"] = "malformed adopted-sample audit entry"
+            return result
+        sample_id = str(item.get("sample_id", "")).strip()
+        row = manifest_rows.get(sample_id)
+        if not sample_id or row is None:
+            result["status"] = "invalid"
+            result["reason"] = f"audited sample {sample_id!r} is absent from the manifest"
+            return result
+        try:
+            manifest_xsec = float(row["cross_section_fb"])
+            adopted_xsec = float(item["adopted_cross_section_fb"])
+            relative_uncertainty = float(item["relative_uncertainty"])
+        except (KeyError, TypeError, ValueError) as error:
+            result["status"] = "invalid"
+            result["reason"] = f"invalid normalization values for {sample_id}: {error}"
+            return result
+        if row.get("normalization_source", "").strip() != "source_lhe_init" or not math.isclose(
+            manifest_xsec, adopted_xsec, rel_tol=1.0e-10, abs_tol=1.0e-9
+        ):
+            result["status"] = "invalid"
+            result["reason"] = f"manifest normalization does not reproduce the audit for {sample_id}"
+            return result
+        if (
+            not math.isfinite(relative_uncertainty)
+            or relative_uncertainty < 0.0
+            or relative_uncertainty > BACKGROUND_NORM_UNCERTAINTY
+        ):
+            result["status"] = "invalid"
+            result["reason"] = (
+                f"{sample_id} integration uncertainty is not covered by the configured "
+                "background-normalization nuisance"
+            )
+            return result
+        verified.append(
+            {
+                "sample_id": sample_id,
+                "cross_section_fb": manifest_xsec,
+                "relative_uncertainty": relative_uncertainty,
+                "source_lhe": item.get("source_lhe"),
+                "source_lhe_sha256": item.get("source_lhe_sha256"),
+            }
+        )
+    result.update(
+        {
+            "status": "accepted",
+            "reason": "audited LHE-init normalizations are covered by the global nuisance",
+            "adopted_samples": verified,
+        }
+    )
+    return result
+
+
+def _limit_completion_summary(
+    rows: Sequence[Mapping[str, Any]], expected_count: int
+) -> dict[str, Any]:
+    terminal_statuses = {"ok", "partial", "unbounded", "invalid"}
+    median_statuses = {"ok", "partial"}
+    count_matches = len(rows) == expected_count
+    computationally_complete = count_matches and all(
+        row.get("status") in terminal_statuses for row in rows
+    )
+    median_limits_complete = count_matches and all(
+        row.get("status") in median_statuses
+        and isinstance(row.get("expected_median"), (int, float))
+        and not isinstance(row.get("expected_median"), bool)
+        and math.isfinite(float(row["expected_median"]))
+        and float(row["expected_median"]) > 0.0
+        for row in rows
+    )
+    return {
+        "expected_result_count": int(expected_count),
+        "result_count": len(rows),
+        "computationally_complete": computationally_complete,
+        "median_limits_complete": median_limits_complete,
+        "all_expected_bands_complete": count_matches
+        and all(row.get("status") == "ok" for row in rows),
+        "status_counts": {
+            status: sum(row.get("status") == status for row in rows)
+            for status in sorted(terminal_statuses | {"failed", "unavailable"})
+            if any(row.get("status") == status for row in rows)
+        },
+    }
+
+
+def _category_in_likelihood(category_name: str, low_mc_policy: str) -> bool:
+    if low_mc_policy == "exclude":
+        return category_name == "resolved"
+    if low_mc_policy == "inclusive-diagnostic":
+        return category_name in CATEGORY_NAMES
+    raise ValueError(f"unsupported pyhf low-MC policy {low_mc_policy!r}")
 
 
 def _fingerprint(payload: Any) -> str:
@@ -961,7 +1099,16 @@ def _select_template_edges(
     masks: Sequence[np.ndarray],
     min_raw: int,
     min_neff: float,
+    allow_inclusive_fallback: bool = False,
 ) -> tuple[list[float] | None, dict[str, Any]]:
+    """Choose a validated shape template or the terminal inclusive fallback.
+
+    Shape candidates retain the configured per-bin MC-statistics requirements.
+    If none passes in every tagging scenario, mirror the resolved analysis and
+    try one inclusive score bin.  The inclusive bin deliberately relaxes the
+    shape thresholds, but it must still have positive yield, at least one
+    unique source event, and positive effective statistics in every scenario.
+    """
     nominal_scores = np.concatenate(
         [scores[mask] for scores, mask in zip(background_scores, masks)]
     )
@@ -971,6 +1118,18 @@ def _select_template_edges(
             for sample, mask in zip(backgrounds, masks)
         ]
     )
+    shape_requirements = {
+        "requires_positive_background_yield_per_bin": True,
+        "minimum_raw_unique_events_per_bin": int(min_raw),
+        "minimum_background_neff_per_bin": float(min_neff),
+        "all_tagging_scenarios_must_pass": True,
+    }
+    inclusive_requirements = {
+        "requires_positive_background_yield": True,
+        "minimum_raw_unique_events": 1,
+        "requires_positive_background_neff": True,
+        "all_tagging_scenarios_must_pass": True,
+    }
     audit: list[dict[str, Any]] = []
     for edges in _candidate_edges(nominal_scores, nominal_weights):
         scenario_audit: dict[str, Any] = {}
@@ -999,10 +1158,101 @@ def _select_template_edges(
                 "valid": scenario_valid,
             }
             valid = valid and scenario_valid
-        audit.append({"edges": edges, "scenarios": scenario_audit, "valid": valid})
+        audit.append(
+            {
+                "edges": edges,
+                "n_bins": len(edges) - 1,
+                "scenarios": scenario_audit,
+                "valid": valid,
+            }
+        )
         if valid:
-            return edges, {"status": "ok", "candidates": audit}
-    return None, {"status": "invalid", "candidates": audit}
+            return edges, {
+                "status": "ok",
+                "fallback_level": "shape_2_to_5_bins",
+                "thresholds_relaxed": False,
+                "selected_edges": edges,
+                "selected_bin_count": len(edges) - 1,
+                "shape_requirements": shape_requirements,
+                "shape_candidates_evaluated": len(audit),
+                "inclusive_fallback_attempted": False,
+                "inclusive_fallback_used": False,
+                "inclusive_fallback_requirements": inclusive_requirements,
+                "candidates": audit,
+            }
+
+    if not allow_inclusive_fallback:
+        return None, {
+            "status": "invalid",
+            "reason": "no valid 2--5-bin background template; inclusive fallback disabled",
+            "fallback_level": "none",
+            "thresholds_relaxed": False,
+            "selected_edges": None,
+            "selected_bin_count": None,
+            "shape_requirements": shape_requirements,
+            "shape_candidates_evaluated": len(audit),
+            "inclusive_fallback_attempted": False,
+            "inclusive_fallback_used": False,
+            "inclusive_fallback_requirements": inclusive_requirements,
+            "candidates": audit,
+        }
+
+    inclusive_edges = [0.0, 1.0]
+    inclusive_scenario_audit: dict[str, Any] = {}
+    inclusive_valid = True
+    for scenario in TAGGING_SCENARIOS:
+        summaries = [
+            grouped_binned_summary(
+                scores,
+                sample.scenario_weights[scenario],
+                np.asarray(sample.table.arrays["event_index"], dtype=np.int64),
+                inclusive_edges,
+                mask,
+            )
+            for sample, scores, mask in zip(backgrounds, background_scores, masks)
+        ]
+        total = combine_summaries(summaries)
+        scenario_valid = bool(
+            np.all(total["yield"] > 0.0)
+            and np.all(total["raw"] >= 1)
+            and np.all(total["neff"] > 0.0)
+        )
+        inclusive_scenario_audit[scenario] = {
+            "yield": total["yield"],
+            "raw_unique_events": total["raw"],
+            "neff": total["neff"],
+            "valid": scenario_valid,
+        }
+        inclusive_valid = inclusive_valid and scenario_valid
+
+    common_audit = {
+        "shape_requirements": shape_requirements,
+        "shape_candidates_evaluated": len(audit),
+        "inclusive_fallback_attempted": True,
+        "inclusive_fallback_requirements": inclusive_requirements,
+        "inclusive_scenario_validation": inclusive_scenario_audit,
+        "candidates": audit,
+    }
+    if inclusive_valid:
+        return inclusive_edges, {
+            "status": "ok",
+            "fallback_level": "inclusive_1_bin",
+            "thresholds_relaxed": True,
+            "selected_edges": inclusive_edges,
+            "selected_bin_count": 1,
+            "inclusive_fallback_used": True,
+            **common_audit,
+        }
+    return None, {
+        "status": "invalid",
+        "reason": "no valid 2--5-bin or inclusive one-bin background template",
+        "fallback_level": "none",
+        "thresholds_relaxed": False,
+        "selected_edges": None,
+        "selected_bin_count": None,
+        "inclusive_fallback_used": False,
+        **common_audit,
+    }
 
 
 def _sample_category_rows(
@@ -1224,12 +1474,24 @@ def _build_point_template(index: int) -> tuple[int, str]:
     path = template_dir / f"{point.point_id}.json"
     fast_path = fast_dir / f"{point.point_id}.json"
     if path.exists() and fast_path.exists():
-        for checkpoint in (path, fast_path):
-            payload = _read_json(checkpoint)
+        template_payload = _read_json(path)
+        fast_payload = _read_json(fast_path)
+        for checkpoint, payload in (
+            (path, template_payload),
+            (fast_path, fast_payload),
+        ):
             if payload.get("core_fingerprint") != core_fingerprint:
                 raise resolved.AnalysisInputError(
                     f"{checkpoint}: stale checkpoint fingerprint"
                 )
+        if template_payload.get("template_binning_version") != TEMPLATE_BINNING_VERSION:
+            raise resolved.AnalysisInputError(
+                f"{path}: stale template-binning version; use a new output directory"
+            )
+        if template_payload.get("pyhf_low_mc_policy") != args.pyhf_low_mc_policy:
+            raise resolved.AnalysisInputError(
+                f"{path}: low-MC policy changed; use a new output directory"
+            )
         return index, "kept_existing"
     for checkpoint in (path, fast_path):
         if checkpoint.exists() and _read_json(checkpoint).get(
@@ -1270,6 +1532,31 @@ def _build_point_template(index: int) -> tuple[int, str]:
     signal_categories = np.asarray(signal.table.arrays["category"], dtype=int)
     for category, category_name in enumerate(CATEGORY_NAMES):
         category_audit: dict[str, Any] = {}
+        if not _category_in_likelihood(category_name, args.pyhf_low_mc_policy):
+            for fold in range(N_FOLDS):
+                category_audit[str(fold)] = {
+                    "validation_fold": (fold + 1) % N_FOLDS,
+                    "test_fold": fold,
+                    "validation_test_disjoint": True,
+                    "status": "invalid",
+                    "reason": (
+                        "excluded consistently from the resolved-only production "
+                        "likelihood because the existing background sample does not "
+                        "support this category across the scan"
+                    ),
+                    "fallback_level": "invalid",
+                    "thresholds_relaxed": False,
+                    "selected_edges": None,
+                    "selected_bin_count": None,
+                    "shape_candidates_evaluated": 0,
+                    "inclusive_fallback_attempted": False,
+                    "inclusive_fallback_used": False,
+                }
+            category_audit["status"] = "invalid"
+            category_audit["all_rotations_valid"] = False
+            category_audit["scope_exclusion"] = "resolved_only"
+            binning_audit[category_name] = category_audit
+            continue
         channel_starts = {
             scenario: len(channels[scenario]) for scenario in TAGGING_SCENARIOS
         }
@@ -1287,6 +1574,7 @@ def _build_point_template(index: int) -> tuple[int, str]:
                 masks,
                 args.min_background_raw,
                 args.min_background_neff,
+                args.pyhf_low_mc_policy == "inclusive-diagnostic",
             )
             category_audit[str(fold)] = {
                 "validation_fold": validation_fold,
@@ -1346,6 +1634,8 @@ def _build_point_template(index: int) -> tuple[int, str]:
         path,
         {
             "core_fingerprint": core_fingerprint,
+            "template_binning_version": TEMPLATE_BINNING_VERSION,
+            "pyhf_low_mc_policy": args.pyhf_low_mc_policy,
             "feature_set": FEATURE_SET,
             "point": point.as_dict(),
             "category_yields": category_rows,
@@ -1421,6 +1711,7 @@ def _collate_fast(
     template_dir: Path,
     fast_dir: Path,
     core_fingerprint: str,
+    low_mc_policy: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     limit_rows: list[dict[str, Any]] = []
     category_rows: list[dict[str, Any]] = []
@@ -1433,6 +1724,14 @@ def _collate_fast(
             "core_fingerprint"
         ) != core_fingerprint:
             raise resolved.AnalysisInputError(f"{point.point_id}: stale collation input")
+        if template.get("template_binning_version") != TEMPLATE_BINNING_VERSION:
+            raise resolved.AnalysisInputError(
+                f"{point.point_id}: stale template-binning version"
+            )
+        if template.get("pyhf_low_mc_policy") != low_mc_policy:
+            raise resolved.AnalysisInputError(
+                f"{point.point_id}: stale low-MC template policy"
+            )
         category_rows.extend(template.get("category_yields", []))
         audits[point.point_id] = template.get("binning_audit", {})
         for scenario in TAGGING_SCENARIOS:
@@ -1456,14 +1755,155 @@ def _collate_fast(
     return limit_rows, category_rows
 
 
+def _collate_template_mc_statistics(
+    output_dir: Path,
+    signals: Sequence[resolved.LoadedSample],
+    template_dir: Path,
+    core_fingerprint: str,
+    min_raw: int,
+    min_neff: float,
+    low_mc_policy: str,
+) -> dict[str, Any]:
+    """Write a compact audit separating complete templates from robust ones."""
+
+    rows: list[dict[str, Any]] = []
+    rotation_counts = {"shape_2_to_5_bins": 0, "inclusive_1_bin": 0, "invalid": 0}
+    inclusive_points: set[str] = set()
+    invalid_points: set[str] = set()
+    invalid_categories: set[str] = set()
+    channel_counts: list[int] = []
+    for signal in signals:
+        point = signal.spec.point
+        template_path = template_dir / f"{point.point_id}.json"
+        template = _read_json(template_path)
+        if template.get("core_fingerprint") != core_fingerprint:
+            raise resolved.AnalysisInputError(f"{template_path}: stale template fingerprint")
+        if template.get("template_binning_version") != TEMPLATE_BINNING_VERSION:
+            raise resolved.AnalysisInputError(
+                f"{template_path}: stale template-binning version"
+            )
+        if template.get("pyhf_low_mc_policy") != low_mc_policy:
+            raise resolved.AnalysisInputError(
+                f"{template_path}: stale low-MC template policy"
+            )
+        binning_audit = template.get("binning_audit", {})
+        for category in CATEGORY_NAMES:
+            category_audit = binning_audit.get(category, {})
+            category_invalid = False
+            for fold in range(N_FOLDS):
+                fold_audit = category_audit.get(str(fold), {})
+                fallback_level = str(fold_audit.get("fallback_level", "invalid"))
+                if fallback_level not in rotation_counts:
+                    fallback_level = "invalid"
+                rotation_counts[fallback_level] += 1
+                if fallback_level == "inclusive_1_bin":
+                    inclusive_points.add(point.point_id)
+                elif fallback_level == "invalid":
+                    invalid_points.add(point.point_id)
+                    category_invalid = True
+            if category_invalid:
+                invalid_categories.add(category)
+        for scenario in TAGGING_SCENARIOS:
+            channels = template.get("channels", {}).get(scenario, [])
+            channel_counts.append(len(channels))
+            for channel in channels:
+                category = str(channel["category"])
+                fold = int(channel["fold"])
+                fold_audit = binning_audit.get(category, {}).get(str(fold), {})
+                edges = list(channel["edges"])
+                for bin_index, (left, right) in enumerate(zip(edges, edges[1:])):
+                    rows.append(
+                        {
+                            "point_id": point.point_id,
+                            **point.as_dict(),
+                            "tagging_scenario": scenario,
+                            "category": category,
+                            "fold": fold,
+                            "bin": bin_index,
+                            "score_low": left,
+                            "score_high": right,
+                            "fallback_level": fold_audit.get("fallback_level"),
+                            "thresholds_relaxed": bool(
+                                fold_audit.get("thresholds_relaxed", False)
+                            ),
+                            "background_yield": channel["background"][bin_index],
+                            "background_sumw2": channel["background_sumw2"][bin_index],
+                            "background_raw_unique": channel["background_raw_unique"][
+                                bin_index
+                            ],
+                            "background_neff": channel["background_neff"][bin_index],
+                        }
+                    )
+    _write_csv(output_dir / "pyhf_template_mc_statistics.csv", rows)
+    _atomic_json(output_dir / "pyhf_template_mc_statistics.json", rows)
+    below_primary = [
+        row
+        for row in rows
+        if float(row["background_yield"]) <= 0.0
+        or int(row["background_raw_unique"]) < min_raw
+        or float(row["background_neff"]) < min_neff
+    ]
+    all_categories_retained = not invalid_points and all(
+        count == len(CATEGORY_NAMES) * N_FOLDS for count in channel_counts
+    )
+    retained_statistics_satisfied = bool(rows and not below_primary)
+    primary_statistics_satisfied = bool(
+        retained_statistics_satisfied
+        and all_categories_retained
+        and rotation_counts["inclusive_1_bin"] == 0
+    )
+    physics_scope = (
+        "full_ak8"
+        if primary_statistics_satisfied
+        else "resolved_only"
+        if retained_statistics_satisfied and "resolved" not in invalid_categories
+        else "diagnostic_existing_mc_only"
+        if all_categories_retained
+        else "invalid_incomplete_primary_categories"
+    )
+    summary = {
+        "template_binning_version": TEMPLATE_BINNING_VERSION,
+        "pyhf_low_mc_policy": low_mc_policy,
+        "primary_minimum_background_raw_unique_events_per_bin": int(min_raw),
+        "primary_minimum_background_neff_per_bin": float(min_neff),
+        "rotation_counts": rotation_counts,
+        "points_with_inclusive_fallback_count": len(inclusive_points),
+        "points_with_inclusive_fallback": sorted(inclusive_points),
+        "points_with_invalid_category_count": len(invalid_points),
+        "points_with_invalid_category": sorted(invalid_points),
+        "categories_failing_primary_template_support": sorted(invalid_categories),
+        "all_categories_retained": all_categories_retained,
+        "channel_bin_count": len(rows),
+        "channel_bins_below_primary_requirements": len(below_primary),
+        "minimum_test_template_background_neff": (
+            min(float(row["background_neff"]) for row in rows) if rows else None
+        ),
+        "retained_template_statistics_satisfied": retained_statistics_satisfied,
+        "primary_template_statistics_satisfied": primary_statistics_satisfied,
+        "physics_scope": physics_scope,
+        "statistical_interpretation": physics_scope,
+    }
+    _atomic_json(output_dir / "template_statistics_summary.json", summary)
+    return summary
+
+
 def _write_limit_plot(
     output_dir: Path,
     topology: str,
     rows: Sequence[Mapping[str, Any]],
     *,
     fast: bool,
+    physics_scope: str = "full_ak8",
 ) -> list[str]:
-    valid = [row for row in rows if row.get("status") == "ok"]
+    valid = [
+        row
+        for row in rows
+        if row.get("status") in {"ok", "partial"}
+        and isinstance(row.get("expected_median_limit_fb"), (int, float))
+        and not isinstance(row.get("expected_median_limit_fb"), bool)
+        and math.isfinite(float(row["expected_median_limit_fb"]))
+        and float(row["expected_median_limit_fb"]) > 0.0
+    ]
     if not valid:
         return []
     try:
@@ -1489,6 +1929,17 @@ def _write_limit_plot(
                     markersize=3,
                     label=scenario,
                 )[0]
+                partial = [row for row in selected if row.get("status") == "partial"]
+                if partial:
+                    axis.scatter(
+                        [float(row["MS_GeV"]) for row in partial],
+                        [float(row["expected_median_limit_fb"]) for row in partial],
+                        marker="x",
+                        s=42,
+                        color=line.get_color(),
+                        linewidths=1.3,
+                        label=f"{scenario} partial expected bands",
+                    )
                 fallback = [row for row in selected if row.get("used_neff_fallback")]
                 if fallback:
                     requirement = float(fallback[0]["required_background_neff"])
@@ -1534,12 +1985,32 @@ def _write_limit_plot(
                     linewidths=1.1,
                     label=f"fallback Neff >= {requirement:g}",
                 )
+            partial = [row for row in selected if row.get("status") == "partial"]
+            if partial:
+                axis.scatter(
+                    [float(row["M2_GeV"]) for row in partial],
+                    [float(row["M3_GeV"]) for row in partial],
+                    marker="x",
+                    s=42,
+                    color="black",
+                    linewidths=1.3,
+                    label="partial expected bands",
+                )
+            if fallback or partial:
                 axis.legend()
             axis.set_title(scenario)
             axis.set_xlabel(r"$M_2$ [GeV]")
             axis.set_ylabel(r"$M_3$ [GeV]")
     title = FAST_WATERMARK if fast else "Expected pyhf 95% CL exclusion"
-    figure.suptitle(title, fontsize=11, color="darkred" if fast else "black")
+    if not fast and physics_scope == "resolved_only":
+        title += " — RESOLVED-ONLY (AK8 TAILS EXCLUDED)"
+    elif not fast and physics_scope != "full_ak8":
+        title += " — DIAGNOSTIC: LIMITED BACKGROUND MC"
+    figure.suptitle(
+        title,
+        fontsize=11,
+        color="darkred" if fast or physics_scope != "full_ak8" else "black",
+    )
     stem = "fast_validation_limits" if fast else "pyhf_expected_limits"
     for extension in ("pdf", "png"):
         path = output_dir / f"{stem}.{extension}"
@@ -1549,15 +2020,28 @@ def _write_limit_plot(
     return outputs
 
 
-def _pyhf_worker(task: tuple[str, str, str, str]) -> tuple[str, str]:
-    template_text, output_text, scenario, pyhf_fingerprint = task
+def _pyhf_worker(
+    task: tuple[str, str, str, str, float, float, int]
+) -> tuple[str, str]:
+    (
+        template_text,
+        output_text,
+        scenario,
+        pyhf_fingerprint,
+        poi_hard_cap,
+        physical_limit_hard_cap_fb,
+        max_reference_attempts,
+    ) = task
     template_path = Path(template_text)
     output_path = Path(output_text)
     if output_path.exists():
         payload = _read_json(output_path)
         if payload.get("pyhf_fingerprint") != pyhf_fingerprint:
             raise resolved.AnalysisInputError(f"{output_path}: stale pyhf fingerprint")
-        return output_path.stem, "kept_existing"
+        if payload.get("status") in {"ok", "partial", "unbounded", "invalid"}:
+            return output_path.stem, "kept_existing"
+        # Failed optimizer/setup checkpoints are resumable diagnostics, not
+        # successful work products. Recompute and atomically replace them.
     template = _read_json(template_path)
     channels = []
     for channel in template.get("channels", {}).get(scenario, []):
@@ -1573,7 +2057,13 @@ def _pyhf_worker(task: tuple[str, str, str, str]) -> tuple[str, str]:
             }
         )
     fit = (
-        resolved._pyhf_limit(channels, BACKGROUND_NORM_UNCERTAINTY)
+        resolved._pyhf_limit(
+            channels,
+            BACKGROUND_NORM_UNCERTAINTY,
+            poi_hard_cap=poi_hard_cap,
+            physical_limit_hard_cap_fb=physical_limit_hard_cap_fb,
+            max_reference_attempts=max_reference_attempts,
+        )
         if channels
         else {"status": "invalid", "reason": "no complete category-by-fold templates"}
     )
@@ -1605,12 +2095,18 @@ def _run_pyhf_stage(
     pyhf_fingerprint = _fingerprint(
         {
             "core_fingerprint": core_fingerprint,
+            "template_binning_version": TEMPLATE_BINNING_VERSION,
+            "pyhf_low_mc_policy": args.pyhf_low_mc_policy,
             "pyhf_version": pyhf_version,
+            "pyhf_limit_method_version": resolved.PYHF_LIMIT_METHOD_VERSION,
+            "pyhf_poi_hard_cap": args.pyhf_poi_hard_cap,
+            "pyhf_physical_limit_hard_cap_fb": args.pyhf_physical_limit_hard_cap_fb,
+            "pyhf_reference_max_attempts": args.pyhf_reference_max_attempts,
             "background_norm_uncertainty": BACKGROUND_NORM_UNCERTAINTY,
             "likelihood": "multi-bin category-by-crossfit-fold",
         }
     )
-    tasks: list[tuple[str, str, str, str]] = []
+    tasks: list[tuple[str, str, str, str, float, float, int]] = []
     for signal in signals:
         point_id = signal.spec.point.point_id
         template = template_dir / f"{point_id}.json"
@@ -1618,8 +2114,17 @@ def _run_pyhf_stage(
             raise resolved.AnalysisInputError(
                 f"missing verified fast template {template}; run --mode fast first"
             )
-        if _read_json(template).get("core_fingerprint") != core_fingerprint:
+        template_payload = _read_json(template)
+        if template_payload.get("core_fingerprint") != core_fingerprint:
             raise resolved.AnalysisInputError(f"{template}: stale template fingerprint")
+        if template_payload.get("template_binning_version") != TEMPLATE_BINNING_VERSION:
+            raise resolved.AnalysisInputError(
+                f"{template}: stale template-binning version; run fast mode in a new output directory"
+            )
+        if template_payload.get("pyhf_low_mc_policy") != args.pyhf_low_mc_policy:
+            raise resolved.AnalysisInputError(
+                f"{template}: stale low-MC template policy; run fast mode in a new output directory"
+            )
         for scenario in TAGGING_SCENARIOS:
             tasks.append(
                 (
@@ -1627,6 +2132,9 @@ def _run_pyhf_stage(
                     str(pyhf_dir / f"{point_id}__{scenario}.json"),
                     scenario,
                     pyhf_fingerprint,
+                    args.pyhf_poi_hard_cap,
+                    args.pyhf_physical_limit_hard_cap_fb,
+                    args.pyhf_reference_max_attempts,
                 )
             )
     if args.pyhf_jobs == 1:
@@ -1664,6 +2172,9 @@ def run_analysis(args: argparse.Namespace) -> int:
     root = args.analysis_root.expanduser().resolve()
     signal_manifest = _resolve(root, args.signal_manifest)
     background_manifest = _resolve(root, args.background_manifest)
+    normalization_provenance = _background_normalization_provenance(
+        background_manifest
+    )
     signal_root_dir = _resolve(root, args.signal_root_dir)
     output_dir = _resolve(root, args.output_dir) if args.output_dir else (
         root / "ResonanceAnalysis/results/ak8-v1" / args.topology
@@ -1791,7 +2302,21 @@ def run_analysis(args: argparse.Namespace) -> int:
             )
             print(f"[{status}] {signals[index].spec.point.point_id}", flush=True)
         limit_rows, _ = _collate_fast(
-            output_dir, signals, template_dir, fast_dir, core_fingerprint
+            output_dir,
+            signals,
+            template_dir,
+            fast_dir,
+            core_fingerprint,
+            args.pyhf_low_mc_policy,
+        )
+        template_statistics = _collate_template_mc_statistics(
+            output_dir,
+            signals,
+            template_dir,
+            core_fingerprint,
+            args.min_background_raw,
+            args.min_background_neff,
+            args.pyhf_low_mc_policy,
         )
         plot_outputs = _write_limit_plot(
             output_dir, args.topology, limit_rows, fast=True
@@ -1817,6 +2342,8 @@ def run_analysis(args: argparse.Namespace) -> int:
         ]
         manifest = {
             "method_version": METHOD_VERSION,
+            "template_binning_version": TEMPLATE_BINNING_VERSION,
+            "pyhf_low_mc_policy": args.pyhf_low_mc_policy,
             "feature_set": FEATURE_SET,
             "mode": "fast" if args.mode == "fast" else "smoke",
             "status": "complete" if limits_complete else "incomplete",
@@ -1832,6 +2359,8 @@ def run_analysis(args: argparse.Namespace) -> int:
             "model_sha256": model_hashes,
             "feature_names": feature_names,
             "template_status": template_status,
+            "template_statistics": template_statistics,
+            "background_normalization_provenance": normalization_provenance,
             "point_jobs": args.point_jobs,
             "threads_per_process": 1,
             "tagging_scenarios": args.tagging_scenarios,
@@ -1849,7 +2378,21 @@ def run_analysis(args: argparse.Namespace) -> int:
                     if args.fallback_background_neff is not None
                     else "disabled"
                 ),
-                "pyhf_template_binning_uses_primary_requirement_only": True,
+            },
+            "pyhf_template_binning": {
+                "primary_policy": (
+                    "select 2--5 score bins only when every bin in both tagging "
+                    "scenarios has positive background yield, at least the configured "
+                    "raw unique-event count, and at least the configured Neff"
+                ),
+                "inclusive_fallback_policy": (
+                    "if no shape candidate passes, use one [0,1] score bin only when "
+                    "both tagging scenarios have positive background yield, at least "
+                    "one unique event, and positive Neff"
+                ),
+                "fallback_audit_location": (
+                    "checkpoints/templates/<point_id>.json:binning_audit"
+                ),
             },
             "neff_fallback_limit_count": len(fallback_limits),
             "neff_fallback_limits": fallback_limits,
@@ -1873,8 +2416,31 @@ def run_analysis(args: argparse.Namespace) -> int:
                 )
             if _read_json(path).get("core_fingerprint") != core_fingerprint:
                 raise resolved.AnalysisInputError(f"{path}: stale fast cache")
+        template_path = template_dir / f"{point_id}.json"
+        if _read_json(template_path).get("template_binning_version") != TEMPLATE_BINNING_VERSION:
+            raise resolved.AnalysisInputError(
+                f"{template_path}: stale template-binning version; run fast mode in a new output directory"
+            )
+        if _read_json(template_path).get("pyhf_low_mc_policy") != args.pyhf_low_mc_policy:
+            raise resolved.AnalysisInputError(
+                f"{template_path}: stale low-MC template policy; run fast mode in a new output directory"
+            )
     _, category_rows = _collate_fast(
-        output_dir, signals, template_dir, fast_dir, core_fingerprint
+        output_dir,
+        signals,
+        template_dir,
+        fast_dir,
+        core_fingerprint,
+        args.pyhf_low_mc_policy,
+    )
+    template_statistics = _collate_template_mc_statistics(
+        output_dir,
+        signals,
+        template_dir,
+        core_fingerprint,
+        args.min_background_raw,
+        args.min_background_neff,
+        args.pyhf_low_mc_policy,
     )
     pyhf_rows, pyhf_fingerprint = _run_pyhf_stage(
         args, signals, template_dir, pyhf_dir, core_fingerprint
@@ -1884,19 +2450,42 @@ def run_analysis(args: argparse.Namespace) -> int:
             row["expected_median_limit_fb"] = row["expected_median"]
     _write_csv(output_dir / "point_limits.csv", pyhf_rows)
     _atomic_json(output_dir / "point_limits.json", pyhf_rows)
-    plot_outputs = _write_limit_plot(output_dir, args.topology, pyhf_rows, fast=False)
-    limits_complete = len(pyhf_rows) == 2 * len(signals) and all(
-        row.get("status") == "ok" for row in pyhf_rows
+    plot_outputs = _write_limit_plot(
+        output_dir,
+        args.topology,
+        pyhf_rows,
+        fast=False,
+        physics_scope=template_statistics["physics_scope"],
     )
+    limit_completion = _limit_completion_summary(pyhf_rows, 2 * len(signals))
     _atomic_json(
         output_dir / "method_manifest.json",
         {
             "method_version": METHOD_VERSION,
+            "template_binning_version": TEMPLATE_BINNING_VERSION,
+            "pyhf_low_mc_policy": args.pyhf_low_mc_policy,
             "feature_set": FEATURE_SET,
             "mode": "full",
-            "status": "complete" if limits_complete else "incomplete",
-            "physics_result_valid": limits_complete,
-            "limit_status_complete": limits_complete,
+            "status": (
+                "complete"
+                if limit_completion["computationally_complete"]
+                else "incomplete"
+            ),
+            "physics_result_valid": bool(
+                limit_completion["median_limits_complete"]
+                and args.pyhf_low_mc_policy == "exclude"
+                and template_statistics["retained_template_statistics_satisfied"]
+                and normalization_provenance["status"] == "accepted"
+            ),
+            "full_ak8_result_valid": bool(
+                limit_completion["median_limits_complete"]
+                and template_statistics["primary_template_statistics_satisfied"]
+                and normalization_provenance["status"] == "accepted"
+            ),
+            "analysis_scope": template_statistics["physics_scope"],
+            "limit_completion": limit_completion,
+            "template_statistics": template_statistics,
+            "background_normalization_provenance": normalization_provenance,
             "core_fingerprint": core_fingerprint,
             "pyhf_fingerprint": pyhf_fingerprint,
             "topology": args.topology,
@@ -1906,8 +2495,28 @@ def run_analysis(args: argparse.Namespace) -> int:
             "template_reconstruction_performed": False,
             "pyhf_jobs": args.pyhf_jobs,
             "threads_per_process": 1,
-            "pyhf_likelihood": "multi-bin category-by-crossfit-fold",
+            "pyhf_likelihood": (
+                "category-by-crossfit-fold with validated 2--5-bin score shapes "
+                "or an audited inclusive one-bin fallback"
+            ),
+            "pyhf_template_binning": {
+                "primary_minimum_background_raw_unique_events_per_bin": (
+                    args.min_background_raw
+                ),
+                "primary_minimum_background_neff_per_bin": args.min_background_neff,
+                "inclusive_fallback": (
+                    "one [0,1] score bin requiring positive background yield, at "
+                    "least one unique event, and positive Neff in both tagging scenarios"
+                ),
+                "fallback_audit_location": (
+                    "checkpoints/templates/<point_id>.json:binning_audit"
+                ),
+            },
             "background_norm_uncertainty": BACKGROUND_NORM_UNCERTAINTY,
+            "pyhf_limit_method_version": resolved.PYHF_LIMIT_METHOD_VERSION,
+            "pyhf_poi_hard_cap": args.pyhf_poi_hard_cap,
+            "pyhf_physical_limit_hard_cap_fb": args.pyhf_physical_limit_hard_cap_fb,
+            "pyhf_reference_max_attempts": args.pyhf_reference_max_attempts,
             "normalization_denominator": "source sample generator-weight sum",
             "sumw2_grouping": "sum hypotheses per source event in each bin, then square",
             "plot_outputs": plot_outputs,
@@ -1916,7 +2525,7 @@ def run_analysis(args: argparse.Namespace) -> int:
             "optuna": "not used",
         },
     )
-    return 0 if limits_complete else 3
+    return 0 if limit_completion["computationally_complete"] else 3
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1966,6 +2575,34 @@ def build_parser() -> argparse.ArgumentParser:
             "retains the primary requirement"
         ),
     )
+    parser.add_argument(
+        "--pyhf-low-mc-policy",
+        choices=("exclude", "inclusive-diagnostic"),
+        default="exclude",
+        help=(
+            "exclude categories whose score templates fail the primary MC-statistics "
+            "requirements (default), or retain them as audited inclusive one-bin "
+            "diagnostic channels; the latter is never marked physics-valid"
+        ),
+    )
+    parser.add_argument(
+        "--pyhf-poi-hard-cap",
+        type=float,
+        default=resolved.DEFAULT_PYHF_POI_HARD_CAP,
+        help="Maximum dimensionless POI tested by each bounded pyhf fit.",
+    )
+    parser.add_argument(
+        "--pyhf-physical-limit-hard-cap-fb",
+        type=float,
+        default=resolved.DEFAULT_PYHF_PHYSICAL_LIMIT_HARD_CAP_FB,
+        help="Maximum physical cross section tested during pyhf reference rescaling.",
+    )
+    parser.add_argument(
+        "--pyhf-reference-max-attempts",
+        type=int,
+        default=resolved.DEFAULT_PYHF_REFERENCE_MAX_ATTEMPTS,
+        help="Maximum bounded pyhf attempts with successively doubled references.",
+    )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--point-jobs", type=int, default=8)
     parser.add_argument("--pyhf-jobs", type=int, default=8)
@@ -2013,6 +2650,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--fallback-background-neff must be non-negative and smaller than "
             "--min-background-neff"
         )
+    if not math.isfinite(args.pyhf_poi_hard_cap) or args.pyhf_poi_hard_cap <= 0.0:
+        raise SystemExit("--pyhf-poi-hard-cap must be positive and finite")
+    if (
+        not math.isfinite(args.pyhf_physical_limit_hard_cap_fb)
+        or args.pyhf_physical_limit_hard_cap_fb <= 0.0
+    ):
+        raise SystemExit(
+            "--pyhf-physical-limit-hard-cap-fb must be positive and finite"
+        )
+    if args.pyhf_reference_max_attempts < 1:
+        raise SystemExit("--pyhf-reference-max-attempts must be positive")
     args.tagging_scenarios = {
         "nominal": {
             "eps_bb": args.eps_bb_nominal,

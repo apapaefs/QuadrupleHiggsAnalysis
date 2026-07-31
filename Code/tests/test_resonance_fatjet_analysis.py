@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import inspect
+import json
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 import numpy as np
@@ -17,6 +19,19 @@ import resonance_xgboost_analysis as resolved
 
 
 class FatJetStatisticsTests(unittest.TestCase):
+    @staticmethod
+    def _template_background(
+        nominal: np.ndarray, conservative: np.ndarray
+    ) -> SimpleNamespace:
+        events = np.arange(len(nominal), dtype=np.int64)
+        return SimpleNamespace(
+            table=SimpleNamespace(arrays={"event_index": events}),
+            scenario_weights={
+                "nominal": np.asarray(nominal, dtype=float),
+                "conservative": np.asarray(conservative, dtype=float),
+            },
+        )
+
     def test_grouped_sumw2_combines_hypotheses_before_squaring(self) -> None:
         scores = np.asarray([0.9, 0.8, 0.7, 0.6])
         weights = np.asarray([0.2, 0.3, 0.4, 0.5])
@@ -104,6 +119,156 @@ class FatJetStatisticsTests(unittest.TestCase):
         self.assertEqual(result["status"], "invalid")
         self.assertEqual(result["fallback_valid_threshold_count"], 0)
 
+    def test_template_binning_uses_audited_inclusive_fallback(self) -> None:
+        scores = np.linspace(0.1, 0.9, 5)
+        background = self._template_background(np.ones(5), np.ones(5))
+        edges, audit = fat._select_template_edges(
+            [scores],
+            [background],
+            [np.ones(5, dtype=bool)],
+            min_raw=25,
+            min_neff=10.0,
+            allow_inclusive_fallback=True,
+        )
+        self.assertEqual(edges, [0.0, 1.0])
+        self.assertEqual(audit["status"], "ok")
+        self.assertEqual(audit["fallback_level"], "inclusive_1_bin")
+        self.assertTrue(audit["thresholds_relaxed"])
+        self.assertTrue(audit["inclusive_fallback_attempted"])
+        self.assertTrue(audit["inclusive_fallback_used"])
+        self.assertEqual(audit["selected_bin_count"], 1)
+        self.assertEqual(
+            audit["shape_requirements"]["minimum_raw_unique_events_per_bin"], 25
+        )
+        self.assertEqual(
+            audit["shape_requirements"]["minimum_background_neff_per_bin"],
+            10.0,
+        )
+        self.assertEqual(
+            audit["inclusive_fallback_requirements"]["minimum_raw_unique_events"],
+            1,
+        )
+        self.assertTrue(
+            audit["inclusive_scenario_validation"]["nominal"]["valid"]
+        )
+        self.assertTrue(
+            audit["inclusive_scenario_validation"]["conservative"]["valid"]
+        )
+
+    def test_template_binning_excludes_low_mc_category_by_default(self) -> None:
+        scores = np.linspace(0.1, 0.9, 5)
+        background = self._template_background(np.ones(5), np.ones(5))
+        edges, audit = fat._select_template_edges(
+            [scores],
+            [background],
+            [np.ones(5, dtype=bool)],
+            min_raw=25,
+            min_neff=10.0,
+        )
+        self.assertIsNone(edges)
+        self.assertEqual(audit["status"], "invalid")
+        self.assertFalse(audit["inclusive_fallback_attempted"])
+        self.assertIn("inclusive fallback disabled", audit["reason"])
+
+    def test_supported_likelihood_uses_resolved_category_at_every_point(self) -> None:
+        self.assertTrue(fat._category_in_likelihood("resolved", "exclude"))
+        self.assertFalse(fat._category_in_likelihood("mixed", "exclude"))
+        self.assertFalse(fat._category_in_likelihood("boosted", "exclude"))
+        for category in fat.CATEGORY_NAMES:
+            self.assertTrue(
+                fat._category_in_likelihood(category, "inclusive-diagnostic")
+            )
+
+    def test_template_binning_rejects_invalid_inclusive_scenario(self) -> None:
+        scores = np.linspace(0.1, 0.9, 5)
+        background = self._template_background(np.ones(5), -np.ones(5))
+        edges, audit = fat._select_template_edges(
+            [scores],
+            [background],
+            [np.ones(5, dtype=bool)],
+            min_raw=25,
+            min_neff=10.0,
+            allow_inclusive_fallback=True,
+        )
+        self.assertIsNone(edges)
+        self.assertEqual(audit["status"], "invalid")
+        self.assertEqual(audit["fallback_level"], "none")
+        self.assertTrue(audit["inclusive_fallback_attempted"])
+        self.assertFalse(audit["inclusive_fallback_used"])
+        self.assertTrue(
+            audit["inclusive_scenario_validation"]["nominal"]["valid"]
+        )
+        self.assertFalse(
+            audit["inclusive_scenario_validation"]["conservative"]["valid"]
+        )
+
+    def test_template_statistics_marks_complete_low_neff_fallback_diagnostic(self) -> None:
+        point = resolved.MassPoint("direct", ms=1000.0)
+        binning_audit = {
+            category: {
+                **{
+                    str(fold): {
+                        "status": "ok",
+                        "fallback_level": "inclusive_1_bin",
+                        "thresholds_relaxed": True,
+                    }
+                    for fold in range(fat.N_FOLDS)
+                },
+                "status": "ok",
+                "all_rotations_valid": True,
+            }
+            for category in fat.CATEGORY_NAMES
+        }
+        channels = [
+            {
+                "name": f"{category}_fold{fold}",
+                "category": category,
+                "fold": fold,
+                "edges": [0.0, 1.0],
+                "background": [2.0],
+                "background_sumw2": [2.0],
+                "background_raw_unique": [2],
+                "background_neff": [2.0],
+            }
+            for category in fat.CATEGORY_NAMES
+            for fold in range(fat.N_FOLDS)
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            templates = output / "templates"
+            templates.mkdir()
+            (templates / f"{point.point_id}.json").write_text(
+                json.dumps(
+                    {
+                        "core_fingerprint": "core",
+                        "template_binning_version": fat.TEMPLATE_BINNING_VERSION,
+                        "pyhf_low_mc_policy": "inclusive-diagnostic",
+                        "binning_audit": binning_audit,
+                        "channels": {
+                            "nominal": channels,
+                            "conservative": channels,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            summary = fat._collate_template_mc_statistics(
+                output,
+                [SimpleNamespace(spec=SimpleNamespace(point=point))],
+                templates,
+                "core",
+                min_raw=25,
+                min_neff=10.0,
+                low_mc_policy="inclusive-diagnostic",
+            )
+        self.assertTrue(summary["all_categories_retained"])
+        self.assertFalse(summary["primary_template_statistics_satisfied"])
+        self.assertEqual(summary["rotation_counts"]["inclusive_1_bin"], 15)
+        self.assertEqual(summary["channel_bin_count"], 30)
+        self.assertEqual(
+            summary["statistical_interpretation"], "diagnostic_existing_mc_only"
+        )
+
     def test_hypothesis_probabilities_close_for_both_working_points(self) -> None:
         # Two retained candidates: one genuine and one fake.  The four rows are
         # their complete pass/fail bitmask enumeration.
@@ -160,6 +325,60 @@ class FatJetStatisticsTests(unittest.TestCase):
             )
             with self.assertRaises(resolved.AnalysisInputError):
                 fat.load_or_predict_scores(sample, point, [], base, "new")
+
+    def test_limit_completion_keeps_partial_medians_but_not_missing_limits(self) -> None:
+        complete = fat._limit_completion_summary(
+            [
+                {"status": "ok", "expected_median": 1.0},
+                {"status": "partial", "expected_median": 2.0},
+            ],
+            2,
+        )
+        self.assertTrue(complete["computationally_complete"])
+        self.assertTrue(complete["median_limits_complete"])
+        self.assertFalse(complete["all_expected_bands_complete"])
+        incomplete = fat._limit_completion_summary(
+            [
+                {"status": "ok", "expected_median": 1.0},
+                {"status": "unbounded", "expected_median": None},
+            ],
+            2,
+        )
+        self.assertTrue(incomplete["computationally_complete"])
+        self.assertFalse(incomplete["median_limits_complete"])
+
+    def test_background_normalization_audit_is_required_and_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest = Path(temporary) / "backgrounds.csv"
+            manifest.write_text(
+                "sample_id,cross_section_fb,normalization_source\n"
+                "HW-gg_to_4b_2c_2j,2751.78,source_lhe_init\n",
+                encoding="utf-8",
+            )
+            provisional = fat._background_normalization_provenance(manifest)
+            self.assertEqual(provisional["status"], "provisional")
+            audit = {
+                "schema": "resonance-background-normalization-audit-v1",
+                "output_manifest_sha256": fat._sha256_file(manifest),
+                "adopted_samples": [
+                    {
+                        "sample_id": "HW-gg_to_4b_2c_2j",
+                        "adopted_cross_section_fb": 2751.78,
+                        "relative_uncertainty": 0.0747327,
+                        "source_lhe": "sample.lhe",
+                        "source_lhe_sha256": "abc",
+                    }
+                ],
+            }
+            manifest.with_suffix(".normalization_audit.json").write_text(
+                json.dumps(audit), encoding="utf-8"
+            )
+            accepted = fat._background_normalization_provenance(manifest)
+            self.assertEqual(accepted["status"], "accepted")
+            self.assertEqual(
+                accepted["adopted_samples"][0]["sample_id"],
+                "HW-gg_to_4b_2c_2j",
+            )
 
     def test_fast_module_has_no_pyhf_import(self) -> None:
         source = inspect.getsource(fat)
