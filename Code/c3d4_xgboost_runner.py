@@ -4721,9 +4721,7 @@ def _write_legacy_style_exclusion_contours(
         for row in rows
     )
     if includes_postfit_hhhbb and includes_postfit_sm_hh4b:
-        process_title = (
-            r"$hhhh + hhhg\,(g\to b\bar b) + hh+4b$ signal"
-        )
+        process_title = r"8 $b$-jet multi-Higgs boson signal"
         label = (
             r"$hhhh + hhhg\,(g\to b\bar b) + hh+4b$, exact "
             r"$\mathrm{CL}_{s}$ 95% (cut)"

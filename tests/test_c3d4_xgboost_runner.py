@@ -1742,8 +1742,11 @@ class C3D4XGBoostRunnerTests(unittest.TestCase):
 
             plot = metadata["outputs"]["no_xsec_atlas"]
             self.assertEqual(plot["status"], "ok")
-            self.assertIn("hhhg", plot["process_title"])
-            self.assertIn("hh+4b", plot["process_title"])
+            self.assertEqual(
+                plot["process_title"],
+                r"8 $b$-jet multi-Higgs boson signal",
+            )
+            self.assertIn("hhhg", plot["limit_label"])
             self.assertIn("hh+4b", plot["limit_label"])
 
     def test_legacy_style_contour_writes_both_cross_section_variants(self):
