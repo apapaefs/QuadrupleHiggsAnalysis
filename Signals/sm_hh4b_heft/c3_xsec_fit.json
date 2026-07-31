@@ -1,0 +1,124 @@
+{
+  "chi2": 0.5723253247397122,
+  "coefficient_order": [
+    "constant",
+    "linear",
+    "quadratic"
+  ],
+  "coefficients_pb": [
+    1.119348151319699e-05,
+    -4.171906122416194e-06,
+    1.1514257054179935e-06
+  ],
+  "coupling_convention": "c3 = kappa_lambda - 1",
+  "covariance_pb2": [
+    [
+      5.1263830114579136e-14,
+      2.49322640502696e-14,
+      -1.0268934698491287e-16
+    ],
+    [
+      2.4932264050269593e-14,
+      2.3715783011731334e-14,
+      1.1519452994641628e-16
+    ],
+    [
+      -1.0268934698491418e-16,
+      1.151945299464151e-16,
+      1.037371534389724e-16
+    ]
+  ],
+  "cross_section_convention": "raw Sherpa generator cross section before K-factor, Higgs branching fractions, tagging, or analysis efficiency",
+  "evaluation_range_c3": [
+    -20.0,
+    20.0
+  ],
+  "max_accepted_relative_error_percent": 3.5,
+  "model": "sigma_pb(c3) = constant + linear*c3 + quadratic*c3^2",
+  "ndof": 2,
+  "points": [
+    {
+      "c3": -20.0,
+      "cross_section_pb": 0.000554996,
+      "fit_cross_section_pb": 0.0005552018861287182,
+      "integration_error_pb": 5.54898e-06,
+      "kappa_lambda": -19.0,
+      "label": "c3_m20",
+      "log": "c3_m20/integrate.hiacc.np64.log",
+      "log_sha256": "6db83d7e59b4589348264708eca45f7c9a3e549aa5173d03800073ff9b50fbae",
+      "pull": -0.03710341877574426,
+      "relative_error_percent": 0.999824,
+      "residual_pb": -2.058861287182294e-07,
+      "result_archive": "c3_m20/Results_PartiallyUnweighted.zip",
+      "result_archive_sha256": "6dc405014dc44dcf780481a02ea00435c00255999953d5d4f1c1602c496626b4",
+      "status": "completed_integration"
+    },
+    {
+      "c3": -2.0,
+      "cross_section_pb": 2.40481e-05,
+      "fit_cross_section_pb": 2.414299657970135e-05,
+      "integration_error_pb": 3.092e-07,
+      "kappa_lambda": -1.0,
+      "label": "c3_m2",
+      "log": "c3_m2/integrate.hiacc.np64.log",
+      "log_sha256": "2aecdc7421ad862f4fa67db33b222dbfeb82727bc67d8e161391b5348a6a2f43",
+      "pull": -0.3069100249073421,
+      "relative_error_percent": 1.28576,
+      "residual_pb": -9.489657970135018e-08,
+      "result_archive": "c3_m2/Results_PartiallyUnweighted.zip",
+      "result_archive_sha256": "b86c0edc4a6c60ce938a0cb786a48805d17c3f15131b1d7ff321bc0060ab70df",
+      "status": "accepted_interrupted_checkpoint"
+    },
+    {
+      "c3": -1.0,
+      "cross_section_pb": 1.66219e-05,
+      "fit_cross_section_pb": 1.6516813341031175e-05,
+      "integration_error_pb": 2.12169e-07,
+      "kappa_lambda": 0.0,
+      "label": "c3_m1",
+      "log": "c3_m1/integrate.hiacc.np64.log",
+      "log_sha256": "828c70e944c3ec49e9d280567c55562e53abe1e287084b9d26558b4527a3619d",
+      "pull": 0.4952969518111781,
+      "relative_error_percent": 1.27644,
+      "residual_pb": 1.0508665896882585e-07,
+      "result_archive": "c3_m1/Results_PartiallyUnweighted.zip",
+      "result_archive_sha256": "b40ddfbf0b6fd2375ce636a1ad1621e72e22be86c30e0e7ae0c8c0a7ac7056ad",
+      "status": "accepted_cycle_cap"
+    },
+    {
+      "c3": 0.0,
+      "cross_section_pb": 1.10246e-05,
+      "fit_cross_section_pb": 1.119348151319699e-05,
+      "integration_error_pb": 3.54224e-07,
+      "kappa_lambda": 1.0,
+      "label": "c3_0",
+      "log": "c3_0/integrate.hiacc.np64.log",
+      "log_sha256": "fd639adff94f78d9e7eab4cd5d8e74e41d76fafa03566225b940a0513005537c",
+      "pull": -0.47676473981715123,
+      "relative_error_percent": 3.21303,
+      "residual_pb": -1.6888151319699058e-07,
+      "result_archive": "c3_0/Results_PartiallyUnweighted.zip",
+      "result_archive_sha256": "8d090f5b4d4f463ba604418b70f4f5ec7655739872e61bc51259f14180738ff8",
+      "status": "completed_integration"
+    },
+    {
+      "c3": 20.0,
+      "cross_section_pb": 0.000388709,
+      "fit_cross_section_pb": 0.0003883256412320705,
+      "integration_error_pb": 5.9644e-06,
+      "kappa_lambda": 21.0,
+      "label": "c3_p20",
+      "log": "c3_p20/integrate.hiacc.np64.log",
+      "log_sha256": "057409456957fbda03cbf754227d56e5b867767b0d9b5174fc95092569fd2c15",
+      "pull": 0.06427448996202377,
+      "relative_error_percent": 1.53441,
+      "residual_pb": 3.833587679294946e-07,
+      "result_archive": "c3_p20/Results_PartiallyUnweighted.zip",
+      "result_archive_sha256": "2dda70ca62613c1c035542bc6915cef8a76bde3eb6d1f57c5980af8b7de25eaf",
+      "status": "completed_integration"
+    }
+  ],
+  "process": "HEFT gg -> hh + b bbar b bbar",
+  "schema": "sm-hh4b-c3-cross-section-fit-v1",
+  "source_campaign": "SherpaColorFlow/runs/gg_hh4b_c3_fit_14tev"
+}
