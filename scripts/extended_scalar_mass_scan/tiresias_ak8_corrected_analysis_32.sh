@@ -103,6 +103,12 @@ is_positive_integer() {
     [[ $1 =~ ^[1-9][0-9]*$ ]]
 }
 
+git_in() {
+    local repository=$1
+    shift
+    git -c safe.directory="$repository" -C "$repository" "$@"
+}
+
 activate_runtime() {
     [[ -f $ROOT_ENV ]] || die "missing ROOT environment setup: $ROOT_ENV"
     [[ -f $XGB_ENV ]] || die "missing XGBoost environment setup: $XGB_ENV"
@@ -148,7 +154,7 @@ validate_config() {
     [[ $RUN_DIAGNOSTIC == 0 || $RUN_DIAGNOSTIC == 1 ]] || \
         die "AK8_RUN_DIAGNOSTIC must be 0 or 1"
     if [[ -z $CODE_COMMIT ]]; then
-        CODE_COMMIT=$(git -C "$SOURCE_REPO" rev-parse --verify "${CODE_REF}^{commit}") || \
+        CODE_COMMIT=$(git_in "$SOURCE_REPO" rev-parse --verify "${CODE_REF}^{commit}") || \
             die "cannot resolve AK8_CODE_REF=$CODE_REF in $SOURCE_REPO"
     fi
 }
@@ -229,15 +235,16 @@ resolve_isolated_code() {
     write_state preparing_code "snapshotting commit $CODE_COMMIT into isolated code tree"
     if [[ ! -e $CODE_DIR ]]; then
         mkdir -p -- "$(dirname -- "$CODE_DIR")"
-        git clone --shared --no-checkout "$SOURCE_REPO" "$CODE_DIR"
-        git -C "$CODE_DIR" checkout --detach "$CODE_COMMIT"
+        git -c safe.directory="$SOURCE_REPO" clone --shared --no-checkout \
+            "$SOURCE_REPO" "$CODE_DIR"
+        git_in "$CODE_DIR" checkout --detach "$CODE_COMMIT"
     fi
     [[ -d $CODE_DIR/.git ]] || die "$CODE_DIR exists but is not an isolated Git checkout"
     local isolated_commit
-    isolated_commit=$(git -C "$CODE_DIR" rev-parse HEAD)
+    isolated_commit=$(git_in "$CODE_DIR" rev-parse HEAD)
     [[ $isolated_commit == "$CODE_COMMIT" ]] || \
         die "$CODE_DIR is pinned to $isolated_commit, expected $CODE_COMMIT; choose a new AK8_RUN_ROOT"
-    [[ -z $(git -C "$CODE_DIR" status --porcelain) ]] || \
+    [[ -z $(git_in "$CODE_DIR" status --porcelain) ]] || \
         die "$CODE_DIR is not clean; choose a new AK8_RUN_ROOT"
     [[ -f $CODE_DIR/Code/resonance_fatjet_xgboost_analysis.py ]] || \
         die "isolated commit lacks the AK8 analysis"
