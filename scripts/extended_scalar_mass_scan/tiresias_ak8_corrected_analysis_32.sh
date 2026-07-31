@@ -15,6 +15,7 @@ SELF="${SCRIPT_DIR}/$(basename -- "${BASH_SOURCE[0]}")"
 # All paths can be overridden explicitly when the Tiresias layout differs.
 ANALYSIS_ROOT=${AK8_ANALYSIS_ROOT:-/home/apapaefs/Projects/QuadrupleHiggsAnalysis}
 SOURCE_REPO=${AK8_SOURCE_REPO:-${ANALYSIS_ROOT}}
+CODE_CLONE_SOURCE=${AK8_CODE_CLONE_SOURCE:-}
 CODE_REF=${AK8_CODE_REF:-HEAD}
 RUN_ROOT=${AK8_RUN_ROOT:-/mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis_runs/AK8ResolvedOnlyXsecFix/ak8-v1-xsecfix-20260731}
 CODE_DIR=${AK8_CODE_DIR:-${RUN_ROOT}/code_checkout}
@@ -70,6 +71,7 @@ never promoted.  This script never generates background events.
 
 Common overrides (set as environment variables before "start"):
   AK8_CODE_REF               Exact commit/ref to snapshot (default: HEAD)
+  AK8_CODE_CLONE_SOURCE      Clone URL/path (default: source repo's origin URL)
   AK8_RUN_ROOT               Immutable campaign/output root
   AK8_ANALYSIS_ROOT          Production data tree (read-only inputs)
   AK8_BACKGROUND_MANIFEST    Existing AK8 feature manifest
@@ -157,6 +159,10 @@ validate_config() {
         CODE_COMMIT=$(git_in "$SOURCE_REPO" rev-parse --verify "${CODE_REF}^{commit}") || \
             die "cannot resolve AK8_CODE_REF=$CODE_REF in $SOURCE_REPO"
     fi
+    if [[ -z $CODE_CLONE_SOURCE ]]; then
+        CODE_CLONE_SOURCE=$(git_in "$SOURCE_REPO" remote get-url origin) || \
+            die "cannot resolve an origin URL; set AK8_CODE_CLONE_SOURCE explicitly"
+    fi
 }
 
 write_config() {
@@ -164,6 +170,7 @@ write_config() {
     {
         printf 'ANALYSIS_ROOT=%q\n' "$ANALYSIS_ROOT"
         printf 'SOURCE_REPO=%q\n' "$SOURCE_REPO"
+        printf 'CODE_CLONE_SOURCE=%q\n' "$CODE_CLONE_SOURCE"
         printf 'CODE_REF=%q\n' "$CODE_REF"
         printf 'CODE_COMMIT=%q\n' "$CODE_COMMIT"
         printf 'RUN_ROOT=%q\n' "$RUN_ROOT"
@@ -235,8 +242,7 @@ resolve_isolated_code() {
     write_state preparing_code "snapshotting commit $CODE_COMMIT into isolated code tree"
     if [[ ! -e $CODE_DIR ]]; then
         mkdir -p -- "$(dirname -- "$CODE_DIR")"
-        git -c safe.directory="$SOURCE_REPO" clone --shared --no-checkout \
-            "$SOURCE_REPO" "$CODE_DIR"
+        git clone --no-checkout "$CODE_CLONE_SOURCE" "$CODE_DIR"
         git_in "$CODE_DIR" checkout --detach "$CODE_COMMIT"
     fi
     [[ -d $CODE_DIR/.git ]] || die "$CODE_DIR exists but is not an isolated Git checkout"
