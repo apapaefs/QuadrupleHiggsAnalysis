@@ -135,7 +135,7 @@ validate_config() {
     [[ $RUN_ROOT != / && $RUN_ROOT != "$ANALYSIS_ROOT" ]] || \
         die "AK8_RUN_ROOT must be a dedicated campaign directory"
     [[ -d $ANALYSIS_ROOT ]] || die "missing analysis root: $ANALYSIS_ROOT"
-    git -C "$SOURCE_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1 || \
+    git_in "$SOURCE_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1 || \
         die "not a Git repository: $SOURCE_REPO"
     [[ -x $PYTHON_BIN ]] || die "Python is not executable: $PYTHON_BIN"
     activate_runtime
