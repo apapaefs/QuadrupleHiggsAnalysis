@@ -50,6 +50,27 @@ def toy_hh4b_fit():
 
 
 class ScoreFitPoissonTests(unittest.TestCase):
+    def test_feature_profile_cli_defaults_to_core52_and_accepts_full91(self):
+        required = [
+            "--study-dir",
+            "/tmp/study",
+            "--repository",
+            "/tmp/repository",
+            "--output-dir",
+            "/tmp/output",
+        ]
+        parser = scorefit.build_parser()
+        self.assertEqual(parser.parse_args(required).feature_profile, "core52")
+        self.assertEqual(
+            parser.parse_args([*required, "--feature-profile", "full91"]).feature_profile,
+            "full91",
+        )
+
+    def test_feature_profile_contract_widths_are_explicit(self):
+        for profile, expected in scorefit.FEATURE_PROFILES.items():
+            indices = scorefit._profile_indices("extended-91-v2", profile)
+            self.assertEqual(len(indices), expected)
+
     def test_poisson_deviance_closes_and_handles_zero_observation(self):
         observed = np.asarray([0.0, 2.0, 5.0])
         self.assertAlmostEqual(

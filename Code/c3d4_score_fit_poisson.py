@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Core52 SM-trained XGBoost score-fit limits in the (c3, d4) plane.
+"""SM-trained XGBoost score-fit limits in the (c3, d4) plane.
 
 This is an intentionally small alternative to the historical threshold and
 pyhf paths.  It trains only on the dedicated SM hhhh sample, freezes the five
@@ -68,11 +68,12 @@ from observable_schemas import validate_model_contract
 from sample_report import _terminal_table, terminal_label, terminal_number
 
 
-SCHEMA_VERSION = "c3d4-core52-score-fit-poisson-v1"
-BUILDER_VERSION = "c3d4-score-fit-poisson-v1.2"
+SCHEMA_VERSION = "c3d4-score-fit-poisson-v1"
+BUILDER_VERSION = "c3d4-score-fit-poisson-v1.3"
 N_FOLDS = 5
 SM_POINT = (0.0, 0.0)
 SIMULTANEOUS_LEVELS = {"68": 2.30, "95": 5.991}
+FEATURE_PROFILES = {"core52": 52, "full91": 91}
 BACKGROUND_STRESS_FACTORS = (0.25, 1.0, 4.0)
 BINNING_SCHEMES = {
     "background_quantile_4bin": (0.0, 0.50, 0.80, 0.95, 1.0),
@@ -1394,6 +1395,7 @@ def make_plots(
     d4_range: Sequence[float],
     luminosity: float,
     sqrt_s_tev: float,
+    feature_profile: str,
 ) -> tuple[list[Path], dict[str, Any]]:
     import matplotlib
 
@@ -1506,8 +1508,8 @@ def make_plots(
     outputs.extend(
         _save_figure(
             fig,
-            output_dir / "paper" / "c3d4_core52_scorefit_95",
-            "Core52 XGBoost score-fit expected 95 percent c3/d4 contour",
+            output_dir / "paper" / f"c3d4_{feature_profile}_scorefit_95",
+            f"{feature_profile} XGBoost score-fit expected 95 percent c3/d4 contour",
         )
     )
     plt.close(fig)
@@ -1557,8 +1559,8 @@ def make_plots(
     outputs.extend(
         _save_figure(
             fig,
-            output_dir / "diagnostics" / "c3d4_core52_scorefit_68_95",
-            "Core52 score-fit simultaneous 68 and 95 percent contours",
+            output_dir / "diagnostics" / f"c3d4_{feature_profile}_scorefit_68_95",
+            f"{feature_profile} score-fit simultaneous 68 and 95 percent contours",
         )
     )
     plt.close(fig)
@@ -1879,6 +1881,7 @@ def _write_analysis_artifacts(
 
 def _method_readme(
     *,
+    feature_profile: str,
     selected_configuration: str,
     selected_scheme: str,
     background_norm_fraction: float,
@@ -1888,7 +1891,7 @@ def _method_readme(
         if background_norm_fraction == 0.0
         else f"enabled with fractional width {background_norm_fraction:g}"
     )
-    return f"""# Core52 XGBoost score-fit c3/d4 limits
+    return f"""# {feature_profile} XGBoost score-fit c3/d4 limits
 
 This directory contains an expected SM+B Asimov analysis at 14 TeV and
 3 ab^-1.  Five group-aware cross-fit classifiers are trained only on the
@@ -2039,7 +2042,7 @@ def run_analysis(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(manifest, Mapping) or manifest.get("status") != "complete":
         raise ScoreFitError("The source study manifest is not complete")
     if str(manifest.get("observable_set")) != "extended-91-v2":
-        raise ScoreFitError("Core52 requires the extended-91-v2 observable source")
+        raise ScoreFitError("The score fit requires the extended-91-v2 observable source")
     if int(manifest.get("cv_folds", -1)) != N_FOLDS:
         raise ScoreFitError("The source manifest does not use the required five folds")
     if int(args.scan_jobs) * int(args.xgboost_threads) > int(args.cpu_budget):
@@ -2048,6 +2051,8 @@ def run_analysis(args: argparse.Namespace) -> dict[str, Any]:
         raise ScoreFitError("score_jobs*prediction_threads exceeds cpu_budget")
     if int(args.grid_bins) < 101:
         raise ScoreFitError("grid_bins must be at least 101")
+    feature_profile = str(args.feature_profile)
+    expected_feature_count = FEATURE_PROFILES[feature_profile]
     luminosity = float(manifest.get("luminosity_fb_inverse", args.luminosity))
     if not math.isfinite(luminosity) or luminosity <= 0.0:
         raise ScoreFitError("The source manifest has no positive luminosity")
@@ -2061,7 +2066,7 @@ def run_analysis(args: argparse.Namespace) -> dict[str, Any]:
         "source_manifest_sha256": manifest_sha,
         "driver_sha256": driver_sha,
         "observable_set": "extended-91-v2",
-        "feature_profile": "core52",
+        "feature_profile": feature_profile,
         "training_strategy": "sm-crossfit-v2",
         "seed": int(args.seed),
         "folds": N_FOLDS,
@@ -2125,9 +2130,12 @@ def run_analysis(args: argparse.Namespace) -> dict[str, Any]:
         float(reference_hh4b["cross_section_fb"]) * hh4b_sample.unit_xsec_weights
     )
     hh4b_sample.xsec_fb = float(reference_hh4b["cross_section_fb"])
-    profile_indices = _profile_indices("extended-91-v2", "core52")
-    if len(profile_indices) != 52:
-        raise ScoreFitError(f"The core52 contract exposes {len(profile_indices)} features")
+    profile_indices = _profile_indices("extended-91-v2", feature_profile)
+    if len(profile_indices) != expected_feature_count:
+        raise ScoreFitError(
+            f"The {feature_profile} contract exposes {len(profile_indices)} features; "
+            f"expected {expected_feature_count}"
+        )
 
     _progress(start_time, "training", "building the five immutable training arrays")
     arrays_by_fold = [
@@ -2157,7 +2165,7 @@ def run_analysis(args: argparse.Namespace) -> dict[str, Any]:
                     background_samples=background_samples,
                     profile_indices=profile_indices,
                     observable_set="extended-91-v2",
-                    profile="core52",
+                    profile=feature_profile,
                     source_commit=source_commit,
                     seed=int(args.seed),
                     xgboost_threads=int(args.xgboost_threads),
@@ -2268,11 +2276,13 @@ def run_analysis(args: argparse.Namespace) -> dict[str, Any]:
         d4_range=(float(args.d4_min), float(args.d4_max)),
         luminosity=luminosity,
         sqrt_s_tev=float(args.sqrt_s_tev),
+        feature_profile=feature_profile,
     )
     readme_path = output_dir / "README.md"
     _atomic_text(
         readme_path,
         _method_readme(
+            feature_profile=feature_profile,
             selected_configuration=selected_configuration,
             selected_scheme=selected_scheme,
             background_norm_fraction=float(args.background_norm_fraction),
@@ -2365,7 +2375,7 @@ def run_analysis(args: argparse.Namespace) -> dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Train Core52 SM cross-fit classifiers and build transparent binned Poisson c3/d4 contours."
+        description="Train SM cross-fit classifiers and build transparent binned Poisson c3/d4 contours."
     )
     parser.add_argument("--study-dir", required=True, type=Path, help="Completed source study containing method_manifest.json.")
     parser.add_argument("--repository", required=True, type=Path, help="Repository against which relative manifest paths resolve.")
@@ -2373,6 +2383,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--luminosity", type=float, default=3000.0, help="Fallback only; the source manifest value is authoritative.")
     parser.add_argument("--sqrt-s-tev", type=float, default=14.0)
+    parser.add_argument(
+        "--feature-profile",
+        choices=tuple(FEATURE_PROFILES),
+        default="core52",
+        help="Observable feature contract; core52 remains the default publication setup.",
+    )
     parser.add_argument("--load-jobs", type=int, default=48)
     parser.add_argument("--scan-jobs", type=int, default=30)
     parser.add_argument("--xgboost-threads", type=int, default=6)
