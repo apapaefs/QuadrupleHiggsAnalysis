@@ -69,7 +69,7 @@ from sample_report import _terminal_table, terminal_label, terminal_number
 
 
 SCHEMA_VERSION = "c3d4-core52-score-fit-poisson-v1"
-BUILDER_VERSION = "c3d4-score-fit-poisson-v1.1"
+BUILDER_VERSION = "c3d4-score-fit-poisson-v1.2"
 N_FOLDS = 5
 SM_POINT = (0.0, 0.0)
 SIMULTANEOUS_LEVELS = {"68": 2.30, "95": 5.991}
@@ -1466,28 +1466,41 @@ def make_plots(
     )
     _draw_physics_overlays(ax, c3_grid, d4_grid, unitarity)
     _configure_axis(ax, c3_range=c3_range, d4_range=d4_range)
-    ax.text(
-        0.02,
-        0.98,
-        rf"$pp$, $\sqrt{{s}}={sqrt_s_tev:g}$ TeV, ${luminosity / 1000.0:g}\,\mathrm{{ab}}^{{-1}}$"
-        "\nSM+B Asimov; binned XGBoost score; statistics only",
-        transform=ax.transAxes,
-        ha="left",
-        va="top",
-        fontsize=10.0,
+    ax.set_title(
+        rf"8 $b$-jet multi-Higgs boson signal at {sqrt_s_tev:g} TeV, "
+        rf"$L={luminosity:g}\,\mathrm{{fb}}^{{-1}}$",
+        fontsize=14.0,
+        pad=8.0,
     )
     ax.legend(
         handles=[
-            Line2D([0], [0], color=red, lw=2.45, label="This work: expected 95%"),
-            Patch(facecolor=pale_red, edgecolor=red, alpha=0.72, label=r"$B/4$--$4B$ stress envelope"),
-            Line2D([0], [0], color=red, lw=1.15, ls=":", label=r"$B/4$ stress contour"),
-            Line2D([0], [0], color=red, lw=1.15, ls="--", label=r"$4B$ stress contour"),
+            Patch(
+                facecolor=pale_red,
+                edgecolor=red,
+                alpha=0.72,
+                label=r"Background $\times[0.25,4]$ (stress test)",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="black",
+                lw=1.25,
+                ls="--",
+                label=r"Perturbative unitarity, $hh\to hh$",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color=red,
+                lw=2.45,
+                label=r"$hhhh+hhhg\,(g\to b\bar b)+hh+4b$, Poisson 95% (score fit)",
+            ),
             Line2D([0], [0], color="blue", lw=2.0, label=ATL_PHYS_PUB_2025_003_LABEL),
-            Line2D([0], [0], color="black", lw=1.25, ls="--", label="Perturbative-unitarity guide"),
         ],
-        loc="lower right",
-        frameon=False,
-        fontsize=8.1,
+        loc="upper right",
+        frameon=True,
+        framealpha=0.82,
+        fontsize=8.4,
     )
     fig.tight_layout()
     outputs.extend(
