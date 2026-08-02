@@ -84,6 +84,46 @@ class BackgroundNormalizationManifestTests(unittest.TestCase):
                 normalization.prepare_manifest(root, source, output, ["target"])
             self.assertEqual(output.read_text(encoding="utf-8"), "user data\n")
 
+    def test_compatible_feature_pair_can_replace_one_registry_row(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "events.lhe").write_text(
+                "<init>\n2212 2212 1 1 0 0 0 0 3 1\n1 0.1 1 1\n</init>\n",
+                encoding="utf-8",
+            )
+            header = (
+                "sample_id,role,root_file,source_lhe,cross_section_fb,generated_events,"
+                "k_factor,hbb_power,c_mistags,light_mistags,lhe_event_count,hard_event_policy\n"
+            )
+            common = "target,background,{},events.lhe,500,{},2,0,0,4,29616,unique\n"
+            source = root / "input.csv"
+            source.write_text(
+                header + common.format("features/partial.root", 16953),
+                encoding="utf-8",
+            )
+            feature_source = root / "complete.csv"
+            feature_source.write_text(
+                header + common.format("features/complete.root", 29616),
+                encoding="utf-8",
+            )
+            output = root / "output.csv"
+            payload = normalization.prepare_manifest(
+                root,
+                source,
+                output,
+                ["target"],
+                feature_source,
+                "target",
+            )
+            with output.open(newline="", encoding="utf-8") as handle:
+                row = next(csv.DictReader(handle))
+            self.assertEqual(row["root_file"], "features/complete.root")
+            self.assertEqual(row["generated_events"], "29616")
+            self.assertEqual(
+                payload["feature_row_override"]["previous"]["generated_events"],
+                "16953",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

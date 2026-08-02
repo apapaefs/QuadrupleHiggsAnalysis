@@ -1,0 +1,32 @@
+{
+  "adopted_samples": [
+    {
+      "adopted_cross_section_fb": 2751.78,
+      "adopted_uncertainty_fb": 205.648,
+      "previous_cross_section_fb": 1570.28,
+      "relative_change": 0.7524135822910565,
+      "relative_uncertainty": 0.0747327184585977,
+      "sample_id": "HW-gg_to_4b_2c_2j",
+      "source_lhe": "/home/apapaefs/Projects/QuadrupleHiggsAnalysis/Backgrounds/merged_gg4b2c2j_events_20k_1_snapshot_20260706_weighted.lhe",
+      "source_lhe_sha256": "067372cefa7e3eaa63bb1fd8731712323584e15486ba59f85cbbaebc829c2b44"
+    }
+  ],
+  "feature_row_override": {
+    "previous": {
+      "generated_events": "16953",
+      "root_file": "ResonanceAnalysis/features/ak8-v1/backgrounds/HW-gg_to_4b_4j_fatjet.root"
+    },
+    "replacement": {
+      "generated_events": "29616",
+      "root_file": "ResonanceAnalysis/features/ak8-v1-cascade-r04-10k-20260731/backgrounds/HW-gg_to_4b_4j_fatjet.root"
+    },
+    "sample_id": "HW-gg_to_4b_4j",
+    "source_manifest": "/home/apapaefs/Projects/QuadrupleHiggsAnalysis/ResonanceAnalysis/background_manifest_ak8-v1-cascade-r04-10k-20260731_features.csv",
+    "source_manifest_sha256": "e64a836bf08af6863f349b32ddbca105df7b435c3211fc9570ffc6e72272472f"
+  },
+  "input_manifest": "/home/apapaefs/Projects/QuadrupleHiggsAnalysis/ResonanceAnalysis/background_manifest_ak8-v1-full14_features-v2.csv",
+  "input_manifest_sha256": "94687b0afc56d0319d5be703ec4f8d4a56e48aaa272516538b333b70e943d41b",
+  "output_manifest": "/home/apapaefs/Projects/QuadrupleHiggsAnalysis/ResonanceAnalysis/background_manifest_ak8-v1-full14_scorefit-v3.csv",
+  "output_manifest_sha256": "0136358b46f6053992f130e8fa966ba98c07227b66caddc5e146c16513ef1dc0",
+  "schema": "resonance-background-normalization-audit-v1"
+}

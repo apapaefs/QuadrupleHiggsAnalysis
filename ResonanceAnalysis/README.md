@@ -13,20 +13,46 @@ The scan manifest enforces \(M_S=M_3>4m_h\) for the direct topology and
 \(M_2>2m_h\), \(M_3>4m_h\), and \(M_3>2M_2\) for the cascade. The generated
 scalar widths are 1 GeV. Each signal point contains 10,000 Herwig events.
 
-## Current state (2026-07-16)
+## Current publication workflow (2026-08-02)
 
-- All **42 direct** and **441 cascade** raw Herwig signal samples are ready.
-  Their earlier fixed-mass feature files remain under
-  `ResonanceAnalysis/features/` as a non-overwritten legacy campaign and are
-  rejected by the current feature validator.
-- Three branch-complete background raw samples are ready:
-  `HW-gg_hhhh_SM`, `HW-gg_to_6b_2j`, and `HW-gg_to_4b_4j`.
-- The other nine required QCD/reducible backgrounds still need the
-  non-overwriting Herwig regeneration and feature-extraction steps below.
-- `background_manifest_smoke.csv` selects the three ready backgrounds for
-  technical smoke tests. A smoke result is deliberately marked non-physical.
-- `background_manifest.csv` is the 11-component QCD/reducible background model
-  plus SM \(hhhh\), and is required for the full result.
+- All **42 direct** and **441 cascade** AK4/AK8 signal pairs are complete.
+- The immutable background manifest contains 14 AK4/AK8 feature pairs: the
+  three SM multi-Higgs samples and all 11 conventional background samples.
+- The `gg -> 4b+4j` row uses the complete compatible 29,616-event feature
+  sample. The `gg -> 4b+2c+2j` normalization is taken from its audited LHE
+  header. Neither input is silently substituted by the score-fit driver.
+- The paper result is produced by `Code/resonance_score_fit_poisson.py` and
+  contains no pyhf model or classifier threshold cut. Older smoke, threshold,
+  and one-bin products below are retained only as provenance.
+
+The publication driver trains one five-fold mass-conditioned classifier for
+each topology. It compares four and five background-quantile score divisions,
+chooses one division globally for the topology, and uses every score bin that
+has sufficient background Monte Carlo support. A failing high-score bin is
+merged downward. The minimum per retained bin is 25 independent background
+source events and an effective count of five. This coarsening depends only on
+background support, not on the signal or the resulting limit.
+
+The SM Asimov counts contain the conventional backgrounds and the physical
+SM `hhhh`, `hhh+bb`, and `hh+4b` yields. The expected upper limit is obtained
+from the direct binned Poisson statistic at `q = 3.841`. The resonant template
+is normalized to 1 fb before the four Higgs decays. No nuisance parameter,
+expected band, or finite-Monte-Carlo term enters the likelihood.
+
+On Tiresias, launch both topologies within a combined 180-thread ceiling with:
+
+```bash
+cd /home/apapaefs/Projects/QuadrupleHiggsAnalysis
+bash Code/run_resonance_score_fit_tiresias.sh \
+  /mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis_runs/ResonanceScoreFit/ak4ak8-scorefit-v1
+```
+
+The wrapper uses `/home/apapaefs/xgb-py310/bin/python`, sources
+`/home/apapaefs/root310install`, applies NUMA interleaving, runs the direct and
+cascade jobs concurrently, and writes restartable models and point caches.
+Each topology produces the exact pointwise CSV/JSON limits, score-yield table,
+binning audit, category diagnostics, PDF/PNG figures, input hashes, package
+versions, timings, and a method manifest.
 
 ## Environment and build on Tiresias
 
@@ -48,6 +74,7 @@ export NUMEXPR_NUM_THREADS=1
 
 make -C Code FourHiggsResonanceAnalysis
 python3 -m unittest discover -s Code/tests -p 'test_resonance_xgboost_analysis.py'
+python3 -m unittest discover -s Code/tests -p 'test_resonance_fatjet_analysis.py'
 ```
 
 The extractor reads the raw HwSim `Data` tree and requires
@@ -159,10 +186,19 @@ physical signal mass point.
 The analysis uses five deterministic source-local folds and a fixed XGBoost
 configuration: 300 trees, depth 3, learning rate 0.05, 0.9 row/column
 subsampling, and one XGBoost worker. There is **no Optuna import, trial, or
-hyperparameter tuning**. Each rotation selects score bins from its validation
-fold and applies them only to the disjoint test fold. The pyhf likelihood uses
-category-by-fold channels, MC statistical errors, and a shared 10% background
-normalization nuisance.
+hyperparameter tuning**. Out-of-fold scores are divided by source event into a
+40% threshold-selection partition and a disjoint 60% evaluation partition.
+At each mass point, one score requirement is chosen with the nominal tagging
+working point by minimizing the median expected exact one-bin Poisson
+\(CL_s\) limit. The selection requires at least 25 unique background events and
+\(N_{\rm eff}\geq10\); there is no relaxed fallback. The same requirement is
+applied to both tagging scenarios, and the resolved, mixed, and boosted yields
+are summed into one count.
+
+The nominal result is a statistics-only projection with a known background.
+It uses no pyhf model, score-shape likelihood, nuisance parameter, or fitted
+Monte Carlo uncertainty. Finite-simulation information is retained in the
+threshold and final-count support gates and in the output audits.
 
 ## Short technical smoke test
 
@@ -280,7 +316,12 @@ writes
 `ResonanceAnalysis/background_manifest_cms-energy-uniform-fourvector-v1.csv`
 with the matching background paths.
 
-## Full direct and cascade analyses
+## Archived resolved-only shape analysis
+
+The commands in this section reproduce the earlier AK4 resolved-only pyhf
+study. They are retained for provenance and are not the nominal resonance
+limit prescription. The current AK4+AK8 simple counting analysis is documented
+below under `ak8-v1`.
 
 Do not start these until the feature-extraction command exits successfully,
 `ResonanceAnalysis/background_manifest_cms-energy-uniform-fourvector-v1.csv`
@@ -320,7 +361,7 @@ Background regeneration and feature extraction are also resumable. Existing
 targets are validated and kept. A lone/incompatible ROOT or JSON feature file
 is treated as an error, not overwritten silently.
 
-## Outputs
+## Archived resolved-only outputs
 
 Each direct/cascade result directory contains:
 
@@ -516,115 +557,73 @@ normalization/probability-closure diagnostics. Hadron multiplicities, tag
 exponents, and hypothesis identifiers are audit-only and cannot enter the
 classifier.
 
-### 3. Fast direct and cascade validation
+### 3. Historical one-bin direct and cascade limits
 
-Fast mode trains the same five fixed-configuration, mass-parameterized
-XGBoost models used by the final analysis. It caches pointwise out-of-fold
-scores and grouped multi-bin templates, scans one combined-category threshold
-in steps of 0.001, and evaluates an exact one-bin Poisson \(CL_s\) limit on a
-disjoint event-level test partition. It does not import or require pyhf.
-The threshold scan first requires at least 25 unique validation-background
-events and \(N_{\rm eff}\geq10\). With
-`--fallback-background-neff 5`, only a point and tagging scenario for which no
-threshold satisfies the primary requirement is retried at
-\(N_{\rm eff}\geq5\); the unique-event requirement is never relaxed. The
-result tables record the selected tier and both audit counts, and open squares
-identify fallback limits in the fast plots. This fallback affects only the
-fast cut-and-count validation. The pyhf template construction first requires
-the configured unique-event and \(N_{\rm eff}\) thresholds in every bin and
-both tagging scenarios for a 2--5-bin score shape. If no shape candidate
-passes across the current scan, the default `--pyhf-low-mc-policy exclude`
-uses a consistent resolved-only likelihood at every mass point; mixed and
-boosted channels are not switched on at isolated points. An explicit
-`--pyhf-low-mc-policy inclusive-diagnostic` run instead uses one inclusive
-\([0,1]\) score bin when both scenarios still have positive background yield,
-at least one unique event, and positive \(N_{\rm eff}\). This relaxed run is
-always labelled as diagnostic and is never marked physics-valid. Each template
-checkpoint records the policy, whether the inclusive fallback was attempted
-and used, its relaxed requirements, and the per-scenario validation yields,
-unique counts, and effective counts. `template_statistics_summary.json`
-separately records the retained scope, excluded categories, and all
-test-template bins that fail the primary MC-statistics requirements.
+This section documents the superseded threshold analysis and is not the
+publication workflow.
 
-For the current 14-sample Tiresias background set, no additional events are
-assumed: only the resolved templates meet the primary requirements. The
-default result is therefore labelled `resolved_only`; mixed and boosted AK8
-categories appear only in the existing-MC diagnostic run. Before retraining,
-`prepare_resonance_background_normalization_manifest.py` creates a new,
-immutable manifest that adopts the audited `HW-gg_to_4b_2c_2j` LHE-header
-normalization (2751.78 fb with 7.47% integration uncertainty). The accompanying
-audit sidecar is required for a result to be marked physics-valid; the existing
-10% background-normalization nuisance covers that integration uncertainty.
+Simple mode trains five fixed-configuration, mass-parameterized XGBoost
+models and caches one out-of-fold score for every hypothesis row. Generator
+events are then assigned by a deterministic hash to a 40% threshold-selection
+partition or a disjoint 60% evaluation partition. At each physical mass point,
+the nominal tagging working point selects one combined-category score
+requirement in steps of 0.001 by minimizing the median expected exact one-bin
+Poisson \(CL_s\) cross-section limit. Requirements within 1% of the optimum
+prefer the largest background \(N_{\rm eff}\).
 
-On Tiresias,
-`scripts/extended_scalar_mass_scan/tiresias_ak8_corrected_analysis_32.sh`
-runs direct and cascade together with 16 workers each, validates the supported
-result before promoting it, and can subsequently produce the labelled
-all-category diagnostic with `start --with-diagnostic`. It consumes only the
-existing ROOT/LHE inputs. The equivalent individual commands are:
+The selected region must contain at least 25 unique background source events
+and \(N_{\rm eff}\geq10\) in both the validation and evaluation samples. There
+is no low-statistics fallback: an unsupported point is reported as invalid and
+has no quoted limit. The one nominally selected threshold is reused for the
+conservative tagging scenario. Resolved, mixed, and boosted hypotheses all
+enter the same final count; their separate yields remain available as
+diagnostics.
+
+The expected observation is the lower integer median of a background-only
+Poisson distribution. The signal-event limit is the solution of
+
+\[
+\frac{P(N\leq n_{\rm med}\mid s_{95}+B)}
+     {P(N\leq n_{\rm med}\mid B)}=0.05,
+\qquad
+\sigma_{95}=\frac{s_{95}}{S_{1\,{\rm fb}}}\,{\rm fb}.
+\]
+
+The background is treated as known. No pyhf model, score-shape fit, nuisance
+parameter, or systematic uncertainty enters the limit; it is explicitly a
+statistics-only phenomenological projection. The audited
+`HW-gg_to_4b_2c_2j` LHE-header normalization (2751.78 fb with 7.47%
+integration uncertainty) is retained in the provenance record, but that
+uncertainty is not propagated through the counting model.
+
+Run the two topologies independently or concurrently with:
 
 ```bash
-nohup python3 -u Code/resonance_xgboost_analysis.py \
+nohup python3 -u Code/resonance_fatjet_xgboost_analysis.py \
   --analysis-root . \
   --feature-set fatjet-ak8-softdrop-v1 \
   --topology direct \
-  --mode fast \
+  --mode simple \
   --point-jobs 8 \
+  --min-background-raw 25 \
   --min-background-neff 10 \
-  --fallback-background-neff 5 \
-  --pyhf-low-mc-policy exclude \
-  --output-dir ResonanceAnalysis/results/ak8-v1-neff10-fallback5/direct \
-  > ResonanceAnalysis/logs/xgboost-ak8-v1-neff10-fallback5-direct-fast.log 2>&1 &
+  --output-dir ResonanceAnalysis/results/ak8-v1-simple-poisson/direct \
+  > ResonanceAnalysis/logs/xgboost-ak8-v1-simple-poisson-direct.log 2>&1 &
 
-nohup python3 -u Code/resonance_xgboost_analysis.py \
+nohup python3 -u Code/resonance_fatjet_xgboost_analysis.py \
   --analysis-root . \
   --feature-set fatjet-ak8-softdrop-v1 \
   --topology cascade \
-  --mode fast \
+  --mode simple \
   --point-jobs 8 \
+  --min-background-raw 25 \
   --min-background-neff 10 \
-  --fallback-background-neff 5 \
-  --pyhf-low-mc-policy exclude \
-  --output-dir ResonanceAnalysis/results/ak8-v1-neff10-fallback5/cascade \
-  > ResonanceAnalysis/logs/xgboost-ak8-v1-neff10-fallback5-cascade-fast.log 2>&1 &
+  --output-dir ResonanceAnalysis/results/ak8-v1-simple-poisson/cascade \
+  > ResonanceAnalysis/logs/xgboost-ak8-v1-simple-poisson-cascade.log 2>&1 &
 ```
 
-Fast plots are visibly labelled `FAST CUT-AND-COUNT VALIDATION — NOT FINAL
-PYHF`. They are validation products, not the final exclusion result.
-
-### 4. Cached full pyhf limits
-
-After inspecting the fast normalization, category yields, grouped `sumw2`,
-threshold audits, and direct/cascade plots, run only the missing pyhf fits:
-
-```bash
-nohup python3 -u Code/resonance_xgboost_analysis.py \
-  --analysis-root . \
-  --feature-set fatjet-ak8-softdrop-v1 \
-  --topology direct \
-  --mode full \
-  --pyhf-jobs 8 \
-  --min-background-neff 10 \
-  --fallback-background-neff 5 \
-  --pyhf-low-mc-policy exclude \
-  --output-dir ResonanceAnalysis/results/ak8-v1-neff10-fallback5/direct \
-  > ResonanceAnalysis/logs/xgboost-ak8-v1-neff10-fallback5-direct-full.log 2>&1 &
-
-nohup python3 -u Code/resonance_xgboost_analysis.py \
-  --analysis-root . \
-  --feature-set fatjet-ak8-softdrop-v1 \
-  --topology cascade \
-  --mode full \
-  --pyhf-jobs 8 \
-  --min-background-neff 10 \
-  --fallback-background-neff 5 \
-  --pyhf-low-mc-policy exclude \
-  --output-dir ResonanceAnalysis/results/ak8-v1-neff10-fallback5/cascade \
-  > ResonanceAnalysis/logs/xgboost-ak8-v1-neff10-fallback5-cascade-full.log 2>&1 &
-```
-
-Full mode refuses to train or rescore. It verifies the mode-independent core
-fingerprint, reuses the cached category-by-fold templates, and writes only
-missing pyhf checkpoints. The pyhf fingerprint additionally binds the pyhf
-version and fit settings. Any mismatch fails explicitly; a changed campaign
-must use a new output directory.
+There is no second fit stage. Each result directory contains
+`point_limits.csv/json`, `point_category_yields.csv/json`,
+`threshold_audit.json`, `simple_poisson_limits.pdf/png`, the cached models and
+scores, and `method_manifest.json`. Re-running the identical command verifies
+the fingerprints and reuses completed point checkpoints.

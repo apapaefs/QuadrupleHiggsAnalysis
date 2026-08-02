@@ -75,6 +75,8 @@ def prepare_manifest(
     input_manifest: Path,
     output_manifest: Path,
     adopted_samples: Sequence[str],
+    feature_row_source_manifest: Path | None = None,
+    feature_row_sample: str | None = None,
 ) -> dict[str, Any]:
     analysis_root = analysis_root.expanduser().resolve()
     input_manifest = input_manifest.expanduser().resolve()
@@ -88,6 +90,72 @@ def prepare_manifest(
         rows = list(reader)
     if not rows or "sample_id" not in fields or "source_lhe" not in fields:
         raise ValueError(f"{input_manifest}: missing required manifest fields")
+    if (feature_row_source_manifest is None) != (feature_row_sample is None):
+        raise ValueError(
+            "feature_row_source_manifest and feature_row_sample must be supplied together"
+        )
+    feature_override: dict[str, Any] | None = None
+    if feature_row_source_manifest is not None and feature_row_sample is not None:
+        source_manifest = feature_row_source_manifest.expanduser().resolve()
+        with source_manifest.open(newline="", encoding="utf-8") as handle:
+            source_rows = list(csv.DictReader(handle))
+        replacement = next(
+            (
+                row
+                for row in source_rows
+                if row.get("sample_id", "").strip() == feature_row_sample
+            ),
+            None,
+        )
+        target = next(
+            (row for row in rows if row["sample_id"].strip() == feature_row_sample),
+            None,
+        )
+        if replacement is None or target is None:
+            raise ValueError(
+                f"{feature_row_sample}: sample is absent from the input or feature manifest"
+            )
+        protected_fields = (
+            "sample_id",
+            "role",
+            "source_lhe",
+            "cross_section_fb",
+            "k_factor",
+            "hbb_power",
+            "c_mistags",
+            "light_mistags",
+            "lhe_event_count",
+            "hard_event_policy",
+        )
+        changed = [
+            field
+            for field in protected_fields
+            if target.get(field, "").strip() != replacement.get(field, "").strip()
+        ]
+        if changed:
+            raise ValueError(
+                f"{feature_row_sample}: replacement changes protected fields: "
+                + ", ".join(changed)
+            )
+        previous = {
+            "root_file": target.get("root_file"),
+            "generated_events": target.get("generated_events"),
+        }
+        for field in ("root_file", "generated_events"):
+            value = replacement.get(field, "").strip()
+            if not value:
+                raise ValueError(f"{feature_row_sample}: replacement has no {field}")
+            target[field] = value
+        feature_override = {
+            "sample_id": feature_row_sample,
+            "source_manifest": str(source_manifest),
+            "source_manifest_sha256": _sha256(source_manifest),
+            "previous": previous,
+            "replacement": {
+                "root_file": target["root_file"],
+                "generated_events": target["generated_events"],
+            },
+        }
     found: set[str] = set()
     audits: list[dict[str, Any]] = []
     extra_fields = [
@@ -151,6 +219,7 @@ def prepare_manifest(
         "output_manifest": str(output_manifest),
         "output_manifest_sha256": _sha256(output_manifest),
         "adopted_samples": audits,
+        "feature_row_override": feature_override,
     }
     audit_path = output_manifest.with_suffix(".normalization_audit.json")
     audit_text = json.dumps(_json_safe(payload), indent=2, sort_keys=True) + "\n"
@@ -167,6 +236,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input-manifest", type=Path, required=True)
     parser.add_argument("--output-manifest", type=Path, required=True)
     parser.add_argument("--adopt-lhe-xsec", action="append", default=[])
+    parser.add_argument("--feature-row-source-manifest", type=Path)
+    parser.add_argument("--feature-row-sample")
     return parser
 
 
@@ -177,6 +248,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.input_manifest,
         args.output_manifest,
         args.adopt_lhe_xsec,
+        args.feature_row_source_manifest,
+        args.feature_row_sample,
     )
     for audit in payload["adopted_samples"]:
         print(

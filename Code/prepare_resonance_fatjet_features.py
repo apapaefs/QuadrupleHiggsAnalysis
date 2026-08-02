@@ -206,6 +206,20 @@ def _versioned_manifest_text(
             row["root_file"] = str(target.relative_to(analysis_root))
         except ValueError:
             row["root_file"] = str(target)
+        # A feature manifest describes the persisted feature pair, rather than
+        # the potentially larger raw campaign from which it was extracted.
+        # Keep the strict entry check aligned with the immutable extractor
+        # summary (some legacy backgrounds intentionally used a validated raw
+        # subset).  The source manifest itself is never modified.
+        summary_path = target.with_suffix(".analysis_summary.json")
+        if "generated_events" in fields and target.is_file() and summary_path.is_file():
+            try:
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                row["generated_events"] = str(int(summary["input_counter"]["events"]))
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                raise RuntimeError(
+                    f"{summary_path}: cannot resolve the feature input event count"
+                ) from error
     stream = io.StringIO(newline="")
     writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n")
     writer.writeheader()
