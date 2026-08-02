@@ -73,6 +73,7 @@ BUILDER_VERSION = "c3d4-score-fit-poisson-v1.3"
 N_FOLDS = 5
 SM_POINT = (0.0, 0.0)
 SIMULTANEOUS_LEVELS = {"68": 2.30, "95": 5.991}
+FIXED_COUPLING_95_LEVEL = 3.841458820694124
 FEATURE_PROFILES = {"core52": 52, "full91": 91}
 BACKGROUND_STRESS_FACTORS = (0.25, 1.0, 4.0)
 BINNING_SCHEMES = {
@@ -1292,6 +1293,78 @@ def _surface_mesh(surface: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray]:
     )
 
 
+def _level_crossings_1d(
+    axis: Sequence[float], values: Sequence[float], level: float
+) -> list[float]:
+    """Return finite level crossings using local linear interpolation."""
+
+    coordinates = np.asarray(axis, dtype=float)
+    statistic = np.asarray(values, dtype=float)
+    if coordinates.ndim != 1 or statistic.ndim != 1 or coordinates.shape != statistic.shape:
+        raise ValueError("axis and values must be one-dimensional arrays of equal length")
+    if len(coordinates) < 2 or np.any(np.diff(coordinates) <= 0.0):
+        raise ValueError("axis must contain at least two strictly increasing values")
+    target = float(level)
+    crossings: list[float] = []
+    for left, right, q_left, q_right in zip(
+        coordinates[:-1], coordinates[1:], statistic[:-1], statistic[1:]
+    ):
+        if not (np.isfinite(q_left) and np.isfinite(q_right)):
+            continue
+        delta_left = float(q_left) - target
+        delta_right = float(q_right) - target
+        if delta_left == 0.0:
+            crossings.append(float(left))
+        if delta_left * delta_right < 0.0:
+            fraction = -delta_left / (delta_right - delta_left)
+            crossings.append(float(left + fraction * (right - left)))
+    if np.isfinite(statistic[-1]) and float(statistic[-1]) == target:
+        crossings.append(float(coordinates[-1]))
+    unique: list[float] = []
+    for crossing in crossings:
+        if not unique or abs(crossing - unique[-1]) > 1.0e-10:
+            unique.append(crossing)
+    return unique
+
+
+def fixed_coupling_95_intervals(
+    surface: Mapping[str, Any],
+    *,
+    factor_key: str = "background_x1",
+    interpolation: str = "clough",
+) -> dict[str, Any]:
+    """Extract one-parameter 95% intervals with the other coupling fixed to zero."""
+
+    c3_axis = np.asarray(surface["c3_axis"], dtype=float)
+    d4_axis = np.asarray(surface["d4_axis"], dtype=float)
+    values = np.asarray(surface["fields"][factor_key][interpolation], dtype=float)
+    if values.shape != (len(d4_axis), len(c3_axis)):
+        raise ValueError("surface shape does not match its c3 and d4 axes")
+    c3_zero = int(np.argmin(np.abs(c3_axis)))
+    d4_zero = int(np.argmin(np.abs(d4_axis)))
+    if abs(float(c3_axis[c3_zero])) > 1.0e-10 or abs(float(d4_axis[d4_zero])) > 1.0e-10:
+        raise ScoreFitError("fixed-coupling intervals require zero on both surface axes")
+    d4_crossings = _level_crossings_1d(
+        d4_axis, values[:, c3_zero], FIXED_COUPLING_95_LEVEL
+    )
+    c3_crossings = _level_crossings_1d(
+        c3_axis, values[d4_zero, :], FIXED_COUPLING_95_LEVEL
+    )
+    if len(d4_crossings) != 2 or len(c3_crossings) != 2:
+        raise ScoreFitError(
+            "expected exactly two 95% crossings for each fixed-coupling scan; "
+            f"found d4|c3=0: {d4_crossings}, c3|d4=0: {c3_crossings}"
+        )
+    return {
+        "confidence_level": 0.95,
+        "degrees_of_freedom": 1,
+        "q_threshold": FIXED_COUPLING_95_LEVEL,
+        "interpolation": interpolation,
+        "d4_at_c3_0": d4_crossings,
+        "c3_at_d4_0": c3_crossings,
+    }
+
+
 def _contour_segments(
     ax: Any,
     c3_grid: np.ndarray,
@@ -1337,9 +1410,15 @@ def _segment_audit(segments: Sequence[np.ndarray], tolerance: float = 1.0e-6) ->
 def _configure_axis(ax: Any, *, c3_range: Sequence[float], d4_range: Sequence[float]) -> None:
     ax.set_xlim(float(c3_range[0]), float(c3_range[1]))
     ax.set_ylim(float(d4_range[0]), float(d4_range[1]))
-    ax.set_xlabel(r"$c_3=\kappa_3-1$")
-    ax.set_ylabel(r"$d_4=\kappa_4-1$")
-    ax.tick_params(which="both", direction="in", top=True, right=True)
+    ax.set_xlabel(r"$c_3$", fontsize=20)
+    ax.set_ylabel(r"$d_4$", fontsize=20)
+    ax.tick_params(
+        which="both",
+        direction="in",
+        top=True,
+        right=True,
+        labelsize=15,
+    )
     ax.minorticks_on()
     ax.grid(alpha=0.15, linewidth=0.6)
 
@@ -1413,7 +1492,10 @@ def make_plots(
     high_clough = np.asarray(fields["background_x4"]["clough"], dtype=float)
     nominal_linear = np.asarray(fields["background_x1"]["linear"], dtype=float)
     outputs: list[Path] = []
-    audit: dict[str, Any] = {"selected_scheme": selected_scheme}
+    audit: dict[str, Any] = {
+        "selected_scheme": selected_scheme,
+        "fixed_coupling_95": fixed_coupling_95_intervals(selected_surface),
+    }
     red = "#c9272c"
     pale_red = "#f5c6c8"
     level95 = SIMULTANEOUS_LEVELS["95"]
@@ -1469,18 +1551,32 @@ def make_plots(
     _draw_physics_overlays(ax, c3_grid, d4_grid, unitarity)
     _configure_axis(ax, c3_range=c3_range, d4_range=d4_range)
     ax.set_title(
-        rf"8 $b$-jet multi-Higgs boson signal at {sqrt_s_tev:g} TeV, "
-        rf"$L={luminosity:g}\,\mathrm{{fb}}^{{-1}}$",
-        fontsize=14.0,
-        pad=8.0,
+        rf"Resolved $8b$ multi-Higgs boson analysis, $\sqrt{{s}}={sqrt_s_tev:g}$ TeV, "
+        rf"$\mathcal{{L}}={luminosity / 1000.0:g}\,\mathrm{{ab}}^{{-1}}$",
+        fontsize=18.0,
+        pad=10.0,
     )
     ax.legend(
         handles=[
+            Line2D(
+                [0],
+                [0],
+                color=red,
+                lw=2.45,
+                label=r"This analysis: $hhhh+hhh b\bar b+hh+4b$ (95% CL)",
+            ),
             Patch(
                 facecolor=pale_red,
                 edgecolor=red,
                 alpha=0.72,
-                label=r"Background $\times[0.25,4]$ (stress test)",
+                label=r"$\frac{1}{4}\times B\;-\;4\times B$ variation",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="blue",
+                lw=2.0,
+                label=r"ATLAS $hhh\to6b$ (95% CL, no syst.)",
             ),
             Line2D(
                 [0],
@@ -1490,26 +1586,28 @@ def make_plots(
                 ls="--",
                 label=r"Perturbative unitarity, $hh\to hh$",
             ),
-            Line2D(
-                [0],
-                [0],
-                color=red,
-                lw=2.45,
-                label=r"$hhhh+hhhg\,(g\to b\bar b)+hh+4b$, Poisson 95% (score fit)",
-            ),
-            Line2D([0], [0], color="blue", lw=2.0, label=ATL_PHYS_PUB_2025_003_LABEL),
         ],
         loc="upper right",
         frameon=True,
-        framealpha=0.82,
-        fontsize=8.4,
+        framealpha=0.88,
+        fontsize=8.5,
+        borderpad=0.45,
+        labelspacing=0.35,
+        handlelength=2.5,
+        handletextpad=0.65,
     )
     fig.tight_layout()
     outputs.extend(
         _save_figure(
             fig,
-            output_dir / "paper" / f"c3d4_{feature_profile}_scorefit_95",
-            f"{feature_profile} XGBoost score-fit expected 95 percent c3/d4 contour",
+            output_dir
+            / "paper"
+            / (
+                "c3d4_scorefit_95"
+                if feature_profile == "core52"
+                else f"c3d4_{feature_profile}_scorefit_95"
+            ),
+            "XGBoost score-fit expected 95 percent c3/d4 contour",
         )
     )
     plt.close(fig)
@@ -1909,6 +2007,8 @@ pointwise statistic is
     q = 2 sum_i [nu_i - n_i + n_i log(n_i / nu_i)].
 
 The simultaneous two-parameter levels are q=2.30 (68%) and q=5.991 (95%).
+When one coupling is fixed to its SM value, the 95% one-parameter interval
+instead uses q=3.8414588.
 The paper 95% curve uses Clough--Tocher interpolation of q after q has been
 evaluated at every physical point.  Physical yields are never interpolated
 before evaluating the likelihood.
@@ -2351,6 +2451,7 @@ def run_analysis(args: argparse.Namespace) -> dict[str, Any]:
             "observation": "SM signal plus background Asimov",
             "signals": ["hhhh", "hhhbb", "hh4b"],
             "simultaneous_levels": SIMULTANEOUS_LEVELS,
+            "fixed_coupling_95_level": FIXED_COUPLING_95_LEVEL,
             "background_stress_factors": BACKGROUND_STRESS_FACTORS,
             "background_norm_fraction": float(args.background_norm_fraction),
             "pyhf": False,

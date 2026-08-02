@@ -90,6 +90,15 @@ class ScoreFitPoissonTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "positive background"):
             scorefit.asimov_discovery_q([1.0], [0.0])
 
+    def test_fixed_coupling_interval_uses_one_parameter_95_percent_level(self):
+        self.assertAlmostEqual(scorefit.FIXED_COUPLING_95_LEVEL, 3.841458820694124)
+        crossings = scorefit._level_crossings_1d(
+            [-2.0, -1.0, 0.0, 1.0, 2.0],
+            [4.0, 1.0, 0.0, 1.0, 4.0],
+            1.5,
+        )
+        np.testing.assert_allclose(crossings, [-7.0 / 6.0, 7.0 / 6.0])
+
     def test_optional_background_nuisance_is_disabled_exactly_at_zero(self):
         tested = np.asarray([5.0, 1.0])
         sm = np.asarray([2.0, 3.0])

@@ -1,6 +1,6 @@
-# Resonant four-Higgs analysis
+# Resonant four-Higgs-boson analysis
 
-This workflow adds two mass-aware, resolved/merged XGBoost analyses alongside
+This workflow adds two mass-aware, resolved/merged AK4+AK8 analyses alongside
 the existing `c3,d4` analysis. It does not replace or modify that campaign.
 
 - **Direct:** `gg_iota0_hhhh`, interpreted as
@@ -17,42 +17,43 @@ scalar widths are 1 GeV. Each signal point contains 10,000 Herwig events.
 
 - All **42 direct** and **441 cascade** AK4/AK8 signal pairs are complete.
 - The immutable background manifest contains 14 AK4/AK8 feature pairs: the
-  three SM multi-Higgs samples and all 11 conventional background samples.
+  three SM multi-Higgs-boson samples and all 11 conventional background samples.
 - The `gg -> 4b+4j` row uses the complete compatible 29,616-event feature
   sample. The `gg -> 4b+2c+2j` normalization is taken from its audited LHE
-  header. Neither input is silently substituted by the score-fit driver.
-- The paper result is produced by `Code/resonance_score_fit_poisson.py` and
-  contains no pyhf model or classifier threshold cut. Older smoke, threshold,
-  and one-bin products below are retained only as provenance.
+  header. Neither input is silently substituted by the analysis driver.
+- The paper result is produced by `Code/resonance_one_bin_poisson.py` from the
+  validated inclusive yields of the completed score-fit run. It uses one fixed
+  event count at every mass point. Older score-fit, smoke, threshold and pyhf
+  products below are retained only as provenance.
 
-The publication driver trains one five-fold mass-conditioned classifier for
-each topology. It compares four and five background-quantile score divisions,
-chooses one division globally for the topology, and uses every score bin that
-has sufficient background Monte Carlo support. A failing high-score bin is
-merged downward. The minimum per retained bin is 25 independent background
-source events and an effective count of five. This coarsening depends only on
-background support, not on the signal or the resulting limit.
+The publication analysis adds the resolved, mixed and boosted reconstruction
+categories and uses the resulting total yield. The former classifier-score
+subdivision is discarded, so the XGBoost score does not enter the quoted
+limit. The fixed one-bin choice is conservative relative to the score fit and
+does not change definition across either mass scan.
+For display, the direct curve is the minimal non-increasing upper envelope of
+the exact pointwise limits; the exact values remain visible as markers and in
+the output tables.
 
 The SM Asimov counts contain the conventional backgrounds and the physical
 SM `hhhh`, `hhh+bb`, and `hh+4b` yields. The expected upper limit is obtained
-from the direct binned Poisson statistic at `q = 3.841`. The resonant template
-is normalized to 1 fb before the four Higgs decays. No nuisance parameter,
+from the direct one-bin Poisson statistic at `q = 3.841`. The resonant template
+is normalized to 1 fb before the four Higgs boson decays. No nuisance parameter,
 expected band, or finite-Monte-Carlo term enters the likelihood.
 
-On Tiresias, launch both topologies within a combined 180-thread ceiling with:
+The completed score-fit run remains the immutable source of the validated
+inclusive yields. On Tiresias, produce the fixed one-bin result with:
 
 ```bash
 cd /home/apapaefs/Projects/QuadrupleHiggsAnalysis
-bash Code/run_resonance_score_fit_tiresias.sh \
-  /mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis_runs/ResonanceScoreFit/ak4ak8-scorefit-v1
+/home/apapaefs/xgb-py310/bin/python Code/resonance_one_bin_poisson.py \
+  --input-root /mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis_runs/ResonanceScoreFit/ak4ak8-scorefit-v1 \
+  --output-dir /mnt/ssd2/Projects/4H/QuadrupleHiggsAnalysis_runs/ResonanceScoreFit/ak4ak8-onebin-v1
 ```
 
-The wrapper uses `/home/apapaefs/xgb-py310/bin/python`, sources
-`/home/apapaefs/root310install`, applies NUMA interleaving, runs the direct and
-cascade jobs concurrently, and writes restartable models and point caches.
-Each topology produces the exact pointwise CSV/JSON limits, score-yield table,
-binning audit, category diagnostics, PDF/PNG figures, input hashes, package
-versions, timings, and a method manifest.
+The output contains exact pointwise CSV/JSON limits, inclusive reference-yield
+tables, conservative display audits, PDF/PNG figures, input hashes, package
+versions and a method manifest.
 
 ## Environment and build on Tiresias
 
